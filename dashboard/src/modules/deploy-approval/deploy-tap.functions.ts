@@ -11,7 +11,7 @@ const PrepareInput = Schema.Struct({
   rule: Schema.optional(Schema.Literal(true)),
 });
 
-/** A Deploy's plan as Cloud reads it, with who enforces, which passkeys they trust, and each signed tag's digest. */
+/** A Deploy's plan as Cloud reads it, with which passkeys the Servers trust, and each signed tag's digest. */
 export const prepareDeployTapServerFn = createServerFn({ method: "POST" })
   .middleware(authenticated)
   .validator(strictValidator(PrepareInput))
@@ -25,7 +25,7 @@ const SaveInput = Schema.Struct({
   gate: Schema.Boolean,
 });
 
-/** What a Save saves, as the automatic deploy rule reads it, and with `gate` who enforces and which passkeys they trust. */
+/** What a Save saves, as the automatic deploy rule reads it, and with `gate` which passkeys the Servers trust. */
 export const prepareSaveTapServerFn = createServerFn({ method: "POST" })
   .middleware(authenticated)
   .validator(strictValidator(SaveInput))

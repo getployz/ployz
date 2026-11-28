@@ -1,2 +1,0 @@
-ALTER TABLE "machine_enrollment_token" ADD COLUMN "first_key_code" text;--> statement-breakpoint
-ALTER TABLE "machine_enrollment_token" ADD CONSTRAINT "machine_enrollment_token_first_key_code_check" CHECK ("first_key_code" ~ '^[a-z2-7]{10}$');

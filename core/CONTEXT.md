@@ -282,7 +282,7 @@ The explicit, user-chosen kind of an Environment's Volume: a Provisioned Volume 
 _Avoid_: Storage class, volume type dropdown
 
 **Shared Writes**:
-A Volume's opt-in to more than one writer: several replicas of one Service, or several Services mounting it. Off by default; while off, the Config Store refuses a change that adds a second writer or turns it off over several. Working State that already had several writers keeps them and still deploys. It changes nothing that runs, so it applies at once and is no diff row; discarding the whole Volume or Environment returns it to the deployed value. Paused for now: the Config Store refuses turning it on, and a Deploy refuses an Environment with a Volume that has it on. Whatever the setting, a Machine refuses to create or start a Service Container on a Provisioned Volume while another Service Container there runs on it; pre-deploy hooks are exempt.
+A Volume's opt-in to more than one writer: several replicas of one Service, or several Services mounting it. Off by default; while off, the Config Store refuses a change that adds a second writer or turns it off over several. Working State that already had several writers keeps them and still deploys. It changes nothing that runs, so it applies at once in the Config Store and is no diff row; discarding the whole Volume or Environment returns it to the deployed value. A Deploy freezes it into the spec of each Service Container that mounts the Volume, so a Machine learns it, on or off, only with the next Deploy. A Machine refuses to create or start a Service Container on a Provisioned Volume while another Service Container there runs on it, unless the one starting carries Shared Writes for that Volume; pre-deploy hooks are exempt.
 _Avoid_: Multi-attach, ReadWriteMany, shared volume
 
 **Config**:
@@ -497,11 +497,11 @@ A read-only point-in-time copy of a Provisioned Volume held in a hidden slot on 
 _Avoid_: replica, standby, backup, secondary
 
 **Trash**:
-Where a Machine keeps every copy of a Provisioned Volume it deletes, on the same Machine Pool, for 168 hourly sweeps it ran (7 days while it runs). A delete moves the copy there and frees no space; the sweep, or a person with Full access emptying it, destroys it. The Machine never empties it to make room. Plain and anonymous Docker volumes are not kept.
+Where a Machine keeps every copy of a Provisioned Volume it deletes, on the same Machine Pool, for 168 hourly sweeps it ran (7 days while it runs). A delete moves the copy there and frees no space; the sweep, or a person emptying it with Full access or a passkey approval of those entries on that Machine, destroys it. The Machine never empties it to make room. Plain and anonymous Docker volumes are not kept.
 _Avoid_: recycle bin, soft delete, retention, backup
 
 **Trash entry**:
-One deleted copy in a Machine's Trash: a root, a slot or a slot's copy, with its Docker Volume name, the place it came from, the origin of the data it holds and the sweep hour it was deleted at. A person with Full access restores it where its Volume has no copy, never a slot a restore was still filling.
+One deleted copy in a Machine's Trash: a root, a slot or a slot's copy, with its Docker Volume name, the place it came from, the origin of the data it holds and the sweep hour it was deleted at. A person with Full access, or with a passkey approval of that entry on that Machine, restores it where its Volume has no copy, never a slot a restore was still filling.
 _Avoid_: deleted volume, backup, snapshot
 
 **Lease**:

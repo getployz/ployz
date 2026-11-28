@@ -1,10 +1,11 @@
 //! The one Docker start of a Container, which refuses a second running Service
-//! Container on a Provisioned Volume root. Every start Ployz makes goes through
-//! [`start_inspected`], bridge recovery's included. Only Docker's own restarts bypass it.
+//! Container on a Provisioned Volume root, unless the Container starting may share that
+//! Volume. Every start Ployz makes goes through [`start_inspected`], bridge recovery's
+//! included. Only Docker's own restarts bypass it.
 
 use bollard::Docker;
 use bollard::query_parameters::ListContainersOptionsBuilder;
-use ployz_core::labels::ServiceLabels;
+use ployz_core::labels::{self, LabelMap, ServiceLabels};
 use ployz_core::{ContainerKind, PROVISIONED_VOLUME_DRIVER, QualifiedService, ResolvedServiceSpec};
 
 use super::Error;
@@ -24,8 +25,9 @@ pub(crate) async fn start(
 }
 
 /// Start `me` through Docker, unless it is a Service Container and another runs on a
-/// Provisioned Volume root it mounts. Its Volumes come from `spec`, the one this
-/// Machine kept; without one, as bridge recovery starts, from Docker's own mounts.
+/// Provisioned Volume root it mounts and doesn't share. Its Volumes come from `spec`, the
+/// one this Machine kept; without one, as bridge recovery starts, from Docker's own mounts
+/// less those its [`labels::SHARED_WRITES`] names.
 ///
 /// # Errors
 /// [`Error::VolumeHeld`] beside a running holder, the error of a read that failed,
@@ -38,17 +40,23 @@ pub(crate) async fn start_inspected(
     let id = me.id.as_deref().unwrap_or_default();
     if serving(me) {
         let volumes: Vec<String> = match spec {
-            Some(spec) => provisioned(spec),
-            None => me
-                .mounts
-                .iter()
-                .flatten()
-                .filter(|mount| {
-                    mount.typ.as_deref() == Some("volume")
-                        && mount.driver.as_deref() == Some(PROVISIONED_VOLUME_DRIVER)
-                })
-                .filter_map(|mount| mount.name.clone())
-                .collect(),
+            Some(spec) => exclusive(spec),
+            None => {
+                let shared = me
+                    .labels()
+                    .and_then(|map| map.label(labels::SHARED_WRITES))
+                    .unwrap_or_default();
+                me.mounts
+                    .iter()
+                    .flatten()
+                    .filter(|mount| {
+                        mount.typ.as_deref() == Some("volume")
+                            && mount.driver.as_deref() == Some(PROVISIONED_VOLUME_DRIVER)
+                    })
+                    .filter_map(|mount| mount.name.clone())
+                    .filter(|name| !shared.split(',').any(|shared| shared == name))
+                    .collect()
+            }
         };
         for name in &volumes {
             refuse_beside(client, Some(id), name).await?;
@@ -189,13 +197,31 @@ async fn active_beside(
     Ok(active_holders)
 }
 
-/// The Docker name of each Provisioned Volume `spec` mounts.
-pub(crate) fn provisioned(spec: &ResolvedServiceSpec) -> Vec<String> {
+/// The Docker name of each Provisioned Volume `spec` mounts and doesn't share: a
+/// Container of it starts only while no other Service Container runs on one.
+pub(crate) fn exclusive(spec: &ResolvedServiceSpec) -> Vec<String> {
     spec.volume_graph()
         .mounted_provisioned_volumes()
+        .filter(|volume| !spec.container.shared_writes.contains(&volume.reference))
         .filter_map(|volume| volume.source.docker_volume_name())
         .map(ToString::to_string)
         .collect()
+}
+
+/// The Docker name of each Volume `spec` mounts and may write beside another running
+/// Service Container, sorted, as [`labels::SHARED_WRITES`] carries them.
+pub(crate) fn shared(spec: &ResolvedServiceSpec) -> Vec<String> {
+    let mut shared: Vec<String> = spec
+        .volume_graph()
+        .volumes()
+        .iter()
+        .filter(|volume| spec.container.shared_writes.contains(&volume.reference))
+        .filter_map(|volume| volume.source.docker_volume_name())
+        .map(ToString::to_string)
+        .collect();
+    shared.sort();
+    shared.dedup();
+    shared
 }
 
 /// Whether `me` is a Service Container other than the Ingress Proxy's.

@@ -598,21 +598,15 @@ impl MachineRpc for MachineService {
     }
 
     async fn restore_trash(&self, request: Request<OpaquePayload>) -> Answer {
+        let local = self.at(&request);
         let request = expect::<op::RestoreTrash>(request)?;
-        finish(self.local.restore_trash(&request).await)
+        finish(local.restore_trash(&request).await)
     }
 
     async fn empty_trash(&self, request: Request<OpaquePayload>) -> Answer {
+        let local = self.at(&request);
         let request = expect::<op::EmptyTrash>(request)?;
-        finish(
-            self.local
-                .volume_verb::<ployz_core::TrashEmptied>(
-                    "EmptyTrash",
-                    crate::volume_copy::TRASH_EMPTY_ROUTE,
-                    &request,
-                )
-                .await,
-        )
+        finish(local.empty_trash(&request).await)
     }
 
     async fn close_preview(&self, request: Request<OpaquePayload>) -> Answer {
@@ -1145,6 +1139,13 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
                 "ployz private-access on from an approved device, or Connect in the dashboard with your passkey",
             ),
         )),
+        LocalMachineError::TrashRefused(_) => Err(gated(
+            tonic::Code::PermissionDenied,
+            &error,
+            &Gate::new(ployz_core::TRASH_APPROVAL_CAPABILITY).next(
+                "ployz volume trash on the Server, or the Server's Trash in the dashboard with your passkey",
+            ),
+        )),
         LocalMachineError::RuleGrantRefused(_)
         | LocalMachineError::RuleProofRefused(_)
         | LocalMachineError::RuleHeadUnread(_) => Err(build_refused(
@@ -1194,6 +1195,13 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             &Gate::new(ployz_core::ENROLL_MACHINE_CAPABILITY)
                 .because(GateReason::FirstKeySpent)
                 .next("sudo ployz key add LINE on this Server, with the key line from your install command"),
+        )),
+        LocalMachineError::Store(StoreError::NoFirstKey) => Err(gated(
+            tonic::Code::PermissionDenied,
+            &error,
+            &Gate::new(ployz_core::ENROLL_MACHINE_CAPABILITY)
+                .because(GateReason::NoFirstKey)
+                .next("ployz server add --command, then run the line it prints on this Server"),
         )),
         LocalMachineError::Store(StoreError::JoinUnanchored) => Err(gated(
             tonic::Code::PermissionDenied,
@@ -1445,6 +1453,7 @@ fn store_error(error: StoreError) -> RpcError {
         StoreError::JoinRefused(_)
         | StoreError::NotFirstKey { .. }
         | StoreError::FirstKeySpent
+        | StoreError::NoFirstKey
         | StoreError::JoinUnanchored
         | StoreError::JoinTrustMissing { .. } => RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
         StoreError::JoinRestrictionsPending => RpcErrorCode::Conflict,

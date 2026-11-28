@@ -896,6 +896,7 @@ pub(super) fn lower(
                 deployed: deployed.contains(&volume.resource_id),
                 birth: born.get(&volume.resource_id).cloned(),
                 first_copy: first_copies.get(&volume.resource_id).copied(),
+                shared_writes: volume.shared_writes,
             })
             .collect(),
         lineages: lineages.clone(),

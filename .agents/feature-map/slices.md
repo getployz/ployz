@@ -200,7 +200,7 @@ A verifier reports each entry as PASS, ISSUES or BLOCKED with evidence, against 
 - [VOL-05](volumes.md#vol-05-inspect-one-volume) Inspect one Volume
 - [VOL-06](volumes.md#vol-06-rename-a-volume) Rename a Volume
 - [VOL-07](volumes.md#vol-07-set-the-storage-limit-before-the-first-deploy) Set the storage limit before the first deploy
-- [VOL-10](volumes.md#vol-10-turn-a-volumes-shared-writes-off) Turn a Volume's shared writes off
+- [VOL-10](volumes.md#vol-10-share-a-volume-between-writers) Share a Volume between writers
 - [VOL-11](volumes.md#vol-11-one-container-writes-to-a-managed-volume) One container writes to a Managed Volume
 - [VOL-16](volumes.md#vol-16-deleted-data-waits-in-the-servers-trash-for-7-days) Deleted data waits in the Server's trash for 7 days
 - [VOL-17](volumes.md#vol-17-list-a-servers-trash) List a Server's trash

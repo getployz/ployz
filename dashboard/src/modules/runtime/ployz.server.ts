@@ -30,6 +30,9 @@ import type {
   PublishCertificateMaterialRequest,
   RuntimeWatchView,
   Signed,
+  TrashEmptied,
+  TrashList,
+  TrashRestores,
   VolumeSwitchReply,
   VolumeSwitchRequest,
   WatchOptions,
@@ -130,6 +133,12 @@ export interface PloyzSession {
   readonly setIngressDoors: (doors: readonly string[], token?: Redacted.Redacted<string>) => Effect.Effect<DoorsChanged, PloyzSdkError>;
   /** Turn Private Access on with `authKey`, sealed to the Cluster here and kept by it, not by Cloud, or off with null. */
   readonly setPrivateAccess: (on: PrivateAccessOn | null) => Effect.Effect<AccessChanged, PloyzSdkError>;
+  /** One Server's Trash as it lists it now. */
+  readonly listTrash: (machine: MachineTarget) => Effect.Effect<TrashList, PloyzSdkError>;
+  /** Restore each entry a person's passkey approved on `machine`; each refused entry is one of the result's failures. */
+  readonly restoreTrash: (machine: MachineTarget, approval: Signed) => Effect.Effect<TrashRestores, PloyzSdkError>;
+  /** Empty exactly the entries a person's passkey approved on `machine`. */
+  readonly emptyTrash: (machine: MachineTarget, approval: Signed) => Effect.Effect<TrashEmptied, PloyzSdkError>;
   /** Bring every Machine of the Cluster to hold its Sealing Key, generating one only on `generator`. */
   readonly backfillSealingKey: (request: BackfillSealingKeyRequest) => Effect.Effect<BackfillSealingKeyReport, PloyzSdkError>;
   /**
@@ -387,6 +396,9 @@ function wrapClient(client: Client): PloyzSession {
     setIngressDoors: (doors, token) =>
       sdkPromise("set ingress doors", () => client.setIngressDoors([...doors], token === undefined ? undefined : Redacted.value(token))),
     setPrivateAccess: (on) => sdkPromise("set private access", () => client.setPrivateAccess(on)),
+    listTrash: (machine) => sdkPromise("list trash", () => client.listTrash(machine)),
+    restoreTrash: (machine, approval) => sdkPromise("restore trash", () => client.restoreTrash(machine, approval)),
+    emptyTrash: (machine, approval) => sdkPromise("empty trash", () => client.emptyTrash(machine, approval)),
     volumeSwitch: (machine, request) =>
       sdkPromise("volume switch", () => client.volumeSwitch(machine, request)),
     inspectContainer: (machine, container) =>

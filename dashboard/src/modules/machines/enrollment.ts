@@ -20,11 +20,6 @@ const OrganizationId = Uuid;
 
 export const CliMintMachineEnrollmentInput = Schema.Struct({
   organizationId: OrganizationId,
-  /** The CLI's own Device, which the line it prints names with `--key`. */
-  firstKey: Schema.optionalKey(Schema.Struct({
-    kind: Schema.Literal("device"),
-    code: Schema.String.check(Schema.isPattern(/^[a-z2-7]{10}$/u)),
-  })),
 });
 
 export type CliMintMachineEnrollmentInput =

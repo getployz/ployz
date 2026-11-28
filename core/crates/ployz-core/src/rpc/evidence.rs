@@ -228,6 +228,9 @@ pub enum GateReason {
     /// The Server already used its First Key, so it founds a Cluster through Cloud only
     /// once it trusts a key again.
     FirstKeySpent,
+    /// The Server has no First Key, so it founds no Cluster through Cloud: a Cluster trusts a
+    /// key from the start.
+    NoFirstKey,
 }
 
 /// What a Machine's refusal of a gated call names: the capability that gates it and the

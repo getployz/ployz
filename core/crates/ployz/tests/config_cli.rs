@@ -3743,7 +3743,7 @@ fn auto_confirm_in_the_environment_never_stops_a_deploy() {
 }
 
 #[test]
-fn shared_writes_are_paused_and_a_second_writer_is_refused() {
+fn an_agent_allows_shared_writes_before_a_second_writer() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);
         ok(store, &["service", "add", "db", "--image", "postgres:17"]);
@@ -3752,14 +3752,21 @@ fn shared_writes_are_paused_and_a_second_writer_is_refused() {
         assert_eq!(refused["code"], "conflict", "{refused}");
         assert_eq!(
             refused["details"]["next"],
-            "ployz volume inspect data --env production --project shop"
+            "ployz volume set data --shared-writes --env production --project shop"
         );
 
-        let paused = error(store, &["volume", "set", "data", "--shared-writes"]);
-        assert_eq!(paused["code"], "unsupported", "{paused}");
-        let off = ok(store, &["volume", "set", "data", "--shared-writes=false"]);
-        assert_eq!(off["volume"]["shared_writes"], false);
-        let paused = error(
+        let allowed = ok(store, &["volume", "set", "data", "--shared-writes"]);
+        assert_eq!(allowed["volume"]["shared_writes"], true);
+        assert_eq!(allowed["staged"], json!([]));
+        ok(store, &["set", "db.replicas=2"]);
+        let off = error(store, &["volume", "set", "data", "--shared-writes=false"]);
+        assert_eq!(off["code"], "conflict", "{off}");
+        assert_eq!(
+            ok(store, &["volume", "inspect", "data"])["shared_writes"],
+            true
+        );
+
+        let added = ok(
             store,
             &[
                 "volume",
@@ -3770,11 +3777,11 @@ fn shared_writes_are_paused_and_a_second_writer_is_refused() {
                 "db:/up",
             ],
         );
-        assert_eq!(paused["code"], "unsupported", "{paused}");
+        assert_eq!(added["volume"]["shared_writes"], true);
         // One change at a time: storage and shared writes are separate writes.
         failed(
             store,
-            &["volume", "set", "data", "--shared-writes=false", "--docker"],
+            &["volume", "set", "data", "--shared-writes", "--docker"],
             2,
         );
     }

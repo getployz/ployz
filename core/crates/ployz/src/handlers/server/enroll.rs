@@ -141,24 +141,13 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
     }
     // Before Cloud mints a token, so a bad flag costs none.
     let shape = Shaping::from_matches(matches).pasted_args()?;
+    let minted: Minted = runtime.block_on(acting.post("servers/enroll", json!({})))?;
     if matches.get_flag("command") {
         let key = ployz_core::first_key::LineKey::Device {
             key: super::super::device::own_key(&config_path(matches)?)?,
         };
-        // Cloud keeps the Device the line names, so the founder's slot for it counts as this
-        // Organization's. A Cloud that predates it refuses the field; its token names no Device.
-        let minted: Minted = runtime.block_on(async {
-            let named = json!({ "firstKey": { "kind": "device", "code": key.code().to_string() } });
-            match acting.post("servers/enroll", named).await {
-                Err(LoginError::Status { status: 422, .. }) => {
-                    acting.post("servers/enroll", json!({})).await
-                }
-                minted => minted,
-            }
-        })?;
         return runtime.block_on(paste(&acting, &minted, &shape, &key, another(root)));
     }
-    let minted: Minted = runtime.block_on(acting.post("servers/enroll", json!({})))?;
     drop(runtime);
     enroll(
         root,

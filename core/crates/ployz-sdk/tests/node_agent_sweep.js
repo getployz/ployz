@@ -158,7 +158,7 @@ const FIXTURES = [
   ["service_add", { name: "db", image: "postgres:17" }],
   ["service_add", { name: "api", repository: "acme/api" }],
   ["volume_add", { name: "pgdata", size: "10GiB", service: "db", path: "/var/lib/postgresql/data" }],
-  ["volume_update", { volume: "pgdata", shared_writes: false }],
+  ["volume_update", { volume: "pgdata", shared_writes: true }],
   ["config_write", { config: "nginx", files: { "nginx.conf": "events {}" }, service: "web", path: "/etc/nginx" }],
   ["config_rename", { config: "nginx", to: "proxy" }],
   ["domain_add", { service: "web", hostname: "app.example.com" }],

@@ -1,14 +1,11 @@
 use clap::ArgMatches;
-use ployz_core::{
-    ClusterName, EnrollAs, EnrollRequest, Hint, LocalMachinePhase, MachineLayout, MachineRelease,
-    RpcErrorCode,
-};
+use ployz_core::{ClusterName, EnrollAs, EnrollRequest, Hint, LocalMachinePhase, RpcErrorCode};
 
 use super::super::runtime;
 use super::{ConnectionOptions, helpers};
 use crate::enrollment::machine;
 use crate::{
-    context::{Connection, Context, Transport},
+    context::{Context, Transport},
     handlers::{Error, leaf_matches},
 };
 use serde_json::json;
@@ -36,18 +33,24 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
             "context {context_name:?} already exists"
         )));
     }
-    let destination = matches.get_one::<String>("destination");
-    let connection = match destination {
-        None => Connection::unix(MachineLayout::production().socket())?,
-        Some(dest) => helpers::configure_ssh_key(
-            dest.parse()?,
-            matches.get_one::<String>("ssh-key").map(String::as_str),
-        )?,
+    // On the Server's own socket the person is root there: a Device made there would be root's
+    // on that Server, ride into every later join approval, and outlive the Server. With none,
+    // the Cluster would trust no key, so founding takes a computer that holds one.
+    let on_server = || {
+        Error::usage(
+            "A Cluster started on its own Server would trust no key. Start it from your computer, which approves your device on it:\n  ployz server add --standalone root@HOST",
+        )
     };
-    let local = destination.is_none();
-    // Over the Server's own socket the person is root there: a Device made now would be
-    // root's on that Server, ride into every later join approval, and outlive the Server.
-    let on_server = matches!(connection.transport(), Transport::Unix(_));
+    let destination = matches
+        .get_one::<String>("destination")
+        .ok_or_else(on_server)?;
+    let connection = helpers::configure_ssh_key(
+        destination.parse()?,
+        matches.get_one::<String>("ssh-key").map(String::as_str),
+    )?;
+    if matches!(connection.transport(), Transport::Unix(_)) {
+        return Err(on_server());
+    }
     let requested_name = helpers::requested_name(matches)?;
     let cluster_name = founding_name(root)?;
     let token_request = helpers::token_request(matches)?;
@@ -60,18 +63,10 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         (!matches.get_flag("yes")).then(|| crate::cli::Rerun::again(root).switch("yes"));
     let no_install = matches.get_flag("no-install");
     let storage = super::provision::resolve_storage(root)?;
-    let version = &matches
-        .get_one::<MachineRelease>("version")
-        .expect("version has a default")
-        .to_string();
     let runtime = runtime()?;
     let (machine, connection) = runtime.block_on(async {
         if !no_install {
-            if local {
-                crate::provisioning::provision_local(version, &storage).await?;
-            } else {
-                super::provision::provision(matches, &storage).await?;
-            }
+            super::provision::provision(matches, &storage).await?;
         }
         let mut target = if !no_install {
             helpers::reconnect_direct(matches, &connection).await?
@@ -149,28 +144,20 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
             recovery(args).line()
         })
         .await;
-        if on_server {
-            crate::ui::note(format_args!(
-                "{} trusts no device yet. From your computer, run:\n  ployz device approve --this-device --connect ssh://root@{}",
-                machine.name,
-                machine.public_ip.map_or_else(|| "HOST".to_owned(), |ip| ip.to_string()),
-            ));
-        } else {
-            let code = crate::handlers::device::approve_own(
-                &ready,
-                &crate::handlers::config_path(matches)?,
-            )
-            .await
-            .map_err(|error| {
-                error
-                    .context("Server initialized; this computer's device isn't approved on it yet.")
-                    .hint(Hint::Next("ployz device request".to_owned()))
-            })?;
-            crate::ui::note(format_args!(
-                "Approved this computer's device {code} on {}.",
-                machine.name
-            ));
-        }
+        let code =
+            crate::handlers::device::approve_own(&ready, &crate::handlers::config_path(matches)?)
+                .await
+                .map_err(|error| {
+                    error
+                        .context(
+                            "Server initialized; this computer's device isn't approved on it yet.",
+                        )
+                        .hint(Hint::Next("ployz device request".to_owned()))
+                })?;
+        crate::ui::note(format_args!(
+            "Approved this computer's device {code} on {}.",
+            machine.name
+        ));
         let closed = matches.get_flag("ingress-closed");
         crate::enrollment::founding::open_ingress(&mut ready, &machine, closed)
             .await

@@ -1,6 +1,7 @@
 //! `ployz volume trash`: list, restore and empty one Server's Trash. It reaches that Server's
-//! own socket, on the Server or over `--connect ssh://`, and never Cloud: only the Server's
-//! socket may restore or empty it (DESIGN.md bet 7).
+//! own socket, on the Server or over `--connect ssh://`, never Cloud, so it needs no approval:
+//! the socket is Full. Cloud restores or empties only with a person's passkey approval of the
+//! entries on that Server, which the Server checks itself (DESIGN.md bet 7).
 
 use chrono::DateTime;
 use clap::{ArgAction, ArgMatches, Command};
@@ -160,7 +161,14 @@ pub(in crate::handlers) fn restore(root: &ArgMatches) -> Result<(), Error> {
 async fn restore_call(server: &Server, id: TrashId, promote: bool) -> Result<TrashRestored, Error> {
     server
         .client
-        .call_shared::<op::RestoreTrash>(RestoreTrashRequest { id, promote }, once())
+        .call_shared::<op::RestoreTrash>(
+            RestoreTrashRequest {
+                id,
+                promote,
+                approval: None,
+            },
+            once(),
+        )
         .await
         .map_err(|error| {
             let error = crate::connect::rpc_error(error);
@@ -262,6 +270,7 @@ fn empty_request(root: &ArgMatches, ids: Vec<TrashId>) -> EmptyTrashRequest {
     EmptyTrashRequest {
         bulk: named(root).is_empty() || leaf_matches(root).get_flag("keep-restoring"),
         ids,
+        approval: None,
     }
 }
 
@@ -420,7 +429,7 @@ fn confirm_all(server: &str, retry: Rerun, count: usize) -> Result<(), Error> {
 /// `name` and no entry of it a restore pinned, besides `id` here: the pinned root then
 /// can't become a second writer. An answer without that proof, from a Ployz that doesn't
 /// know how, proves nothing.
-fn proven(
+pub(crate) fn proven(
     name: &DockerVolumeName,
     id: TrashId,
     here: MachineId,

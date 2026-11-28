@@ -141,5 +141,5 @@ service's older versions too, and runs the version it signed for it.
   clocks set automatically. A server refuses a forget stamped more than 10 minutes past its own
   clock, and the command exits 3. If that happens, check the server's clock as well as yours.
 
-`--forget-older` needs a deploy your device signs, so it works only when your servers
-[enforce device approval](deployments.md#deploy-from-an-approved-device).
+`--forget-older` needs a deploy your device signs; see
+[Deploy from an approved device](deployments.md#deploy-from-an-approved-device).

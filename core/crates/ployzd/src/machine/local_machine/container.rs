@@ -876,8 +876,9 @@ impl LocalMachine {
         ))
     }
 
-    /// Refuse to create a Service Container on a Provisioned Volume root another
-    /// Container here runs on, as [`crate::docker::holder::refuse_beside`] decides.
+    /// Refuse to create a Service Container on a Provisioned Volume root it doesn't share
+    /// while another Container here runs on it, as [`crate::docker::holder::refuse_beside`]
+    /// decides.
     /// Callers hold the switch lock, so no other start through Ployz lands between this
     /// read and Docker's create.
     ///
@@ -893,7 +894,7 @@ impl LocalMachine {
             return Ok(());
         }
         let containers = self.docker()?;
-        for name in crate::docker::holder::provisioned(spec) {
+        for name in crate::docker::holder::exclusive(spec) {
             containers.volumes().refuse_beside(&name).await?;
         }
         Ok(())

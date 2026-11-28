@@ -399,8 +399,6 @@ export const machineEnrollmentToken = pgTable(
     queuedAt: timestamp("queued_at", { mode: "date", withTimezone: true }),
     enrollmentRole: text("enrollment_role").$type<EnrollmentRole>(),
     serverEnrollmentId: uuid("server_enrollment_id"),
-    /** The Device code of the CLI that minted this token, which its install line names with `--key`. */
-    firstKeyCode: text("first_key_code"),
     createdAt,
     updatedAt,
   },
@@ -415,7 +413,6 @@ export const machineEnrollmentToken = pgTable(
       "machine_enrollment_token_hash_check",
       sql`${table.tokenHash} ~ '^[0-9a-f]{64}$'`,
     ),
-    check("machine_enrollment_token_first_key_code_check", sql`${table.firstKeyCode} ~ '^[a-z2-7]{10}$'`),
   ],
 );
 
