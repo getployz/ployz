@@ -263,10 +263,10 @@ fn rotate_while(
 ) -> (Vec<Namespace>, Vec<Namespace>) {
     let old = TrustedGrant {
         grant: Grant {
-            scope: KeyScope {
-                caps: CapSet::of(&[Cap::Spec]),
-                places: KeyPlaces::Cluster,
-            },
+            scope: scope(vec![
+                place(PRODUCTION, "app-prod", false),
+                place(STAGING, "app-staging", false),
+            ]),
             ..production_grant()
         },
         approved_by: PasskeyApprover::Unknown,

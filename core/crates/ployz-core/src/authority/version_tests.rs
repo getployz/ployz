@@ -379,7 +379,7 @@ fn approvers(admitted: &crate::authority::VersionAdmitted) -> Vec<Approver> {
         .collect()
 }
 
-/// A Machine trusting `person` as a Device and `ci` as a CI key over the whole Cluster.
+/// A Machine trusting `person` as a Device and `ci` as a CI key in app.
 fn trusting_ci(person: &Signer, ci: &Signer) -> TrustedKeys {
     TrustedKeys::new(
         [DeviceKey::from(person.public())],
@@ -390,7 +390,11 @@ fn trusting_ci(person: &Signer, ci: &Signer) -> TrustedKeys {
                 kind: GrantKind::Ci,
                 scope: KeyScope {
                     caps: CapSet::of(&[Cap::Spec]),
-                    places: KeyPlaces::Cluster,
+                    places: KeyPlaces::Only(vec![crate::authority::KeyPlace {
+                        environment: uuid::Uuid::nil(),
+                        namespace: crate::Namespace::parse("app").unwrap(),
+                        service: None,
+                    }]),
                 },
                 volumes: Vec::new(),
                 issued_at: Timestamp::from_millis(1).unwrap(),

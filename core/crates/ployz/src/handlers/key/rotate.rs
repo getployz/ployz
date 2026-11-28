@@ -478,10 +478,11 @@ fn carried(store: &Store, old: &TrustedGrant, applied: &Applied) -> Result<Vec<C
     let owned = store.read(&NamespacesQuery {})?.namespaces;
     let mut wanted: BTreeMap<Namespace, Option<BTreeSet<ServiceName>>> = BTreeMap::new();
     match &old.grant.scope.places {
-        ployz_core::authority::KeyPlaces::Cluster => {
-            for owned in &owned {
-                wanted.insert(owned.namespace.clone(), None);
-            }
+        ployz_core::authority::KeyPlaces::Unscoped => {
+            return Err(Error::conflict(format!(
+                "Key {} names no environment, so no server runs what it signs. Make a new key with ployz key add --ci --env, then remove this one with ployz key rm. Nothing changed.",
+                old.grant.key.code()
+            )));
         }
         ployz_core::authority::KeyPlaces::Only(places) => {
             for place in places {

@@ -5,8 +5,8 @@
 
 use clap::ArgMatches;
 use ployz_core::authority::{
-    Approved, Cap, CapSet, GrantKind, GrantVolume, KeyName, KeyPlace, KeyPlaces, KeyScope,
-    PlaceService, TrustedKeys,
+    Approved, Cap, CapSet, GrantVolume, KeyName, KeyPlace, KeyPlaces, KeyScope, PlaceService,
+    TrustedKeys,
 };
 use ployz_core::{
     DockerVolumeName, Namespace, SealingPublicKey, ServiceName, ServiceVolumeReference,
@@ -32,15 +32,15 @@ pub(super) struct Typed {
 
 impl Typed {
     /// # Errors
-    /// Returns a usage error for a malformed name, `--volume` or `--service` without
-    /// `--env`, and an agent key with no `--env`.
-    pub(super) fn of(matches: &ArgMatches, kind: GrantKind) -> Result<Self, Error> {
+    /// Returns a usage error for a malformed name, no `--env`, and `--service` without
+    /// exactly one.
+    pub(super) fn of(matches: &ArgMatches) -> Result<Self, Error> {
         let envs = strings(matches, "env")
             .map(|name| EnvironmentName::parse(name.to_owned()))
             .collect::<Result<Vec<_>, _>>()?;
-        if kind == GrantKind::Agent && envs.is_empty() {
+        if envs.is_empty() {
             return Err(Error::usage(
-                "An agent key needs at least one --env. Nothing changed.",
+                "Name at least one environment the key may deploy to with --env. Nothing changed.",
             ));
         }
         let service = matches
@@ -53,9 +53,6 @@ impl Typed {
         let volumes = strings(matches, "volume")
             .map(volume)
             .collect::<Result<Vec<_>, _>>()?;
-        if !volumes.is_empty() && envs.is_empty() {
-            return Err(Error::usage("--volume needs --env."));
-        }
         let name = matches
             .get_one::<String>("name")
             .map(|name| KeyName::parse(name))
@@ -204,9 +201,6 @@ pub(super) fn wanted(
 ) -> Result<Wanted, Error> {
     let mut volumes = Vec::new();
     let mut shown: Vec<String> = places.iter().map(|place| place.label.clone()).collect();
-    if places.is_empty() {
-        shown.push("every environment".to_owned());
-    }
     for resolved in &places {
         for (service, reference) in &typed.volumes {
             let entry = root_volume(store, resolved, (service, reference), (trusted, cluster))?;
@@ -219,14 +213,10 @@ pub(super) fn wanted(
             }
         }
     }
-    let places = match places.is_empty() {
-        true => KeyPlaces::Cluster,
-        false => KeyPlaces::Only(places.into_iter().map(|resolved| resolved.place).collect()),
-    };
     Ok(Wanted {
         scope: KeyScope {
             caps: CapSet::of(&[Cap::Spec]),
-            places,
+            places: KeyPlaces::Only(places.into_iter().map(|resolved| resolved.place).collect()),
         },
         volumes,
         name: typed.name.clone(),

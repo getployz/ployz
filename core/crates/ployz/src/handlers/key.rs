@@ -41,6 +41,10 @@ use wanted::{Typed, Wanted};
 /// How many times `key scope` reads again after a Server says the grant moved.
 const ROUNDS: usize = 3;
 
+/// What `key ls` and `key scope` show for a CI key made before every key named its
+/// Environments.
+const UNSCOPED: &str = "nowhere: it names no environment, so make a new key with --env";
+
 const LEAKED: &str = "If a key leaks, run ployz key rm <code>, then deploy from a terminal. \
                       Don't rotate it: rotating keeps what it deployed running.";
 
@@ -78,7 +82,7 @@ pub(crate) fn add_command(command: Command) -> Command {
             .conflicts_with_all(["env", "service", "volume", "name"]),
     )
     .arg(switch("ci", None).help("A key for a CI pipeline"))
-    .arg(switch("agent", None).help("A key for an agent; needs --env"))
+    .arg(switch("agent", None).help("A key for an agent"))
     .group(
         ArgGroup::new("kind")
             .args(["line", "ci", "agent"])
@@ -134,7 +138,7 @@ fn scope_args(command: Command) -> Command {
         .arg(
             many("env", None)
                 .value_name("ENV")
-                .help("An environment the key may deploy to; repeat for more [default for CI: every environment]"),
+                .help("An environment the key may deploy to; repeat for more. At least one"),
         )
         .arg(
             value("service", None)
@@ -163,7 +167,7 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
         true => GrantKind::Agent,
         false => GrantKind::Ci,
     };
-    let typed = Typed::of(leaf, kind)?;
+    let typed = Typed::of(leaf)?;
     let signing = own_signing(leaf)?;
     let store = super::store::store(root)?;
     let places = wanted::places(&store, &typed)?;
@@ -275,23 +279,20 @@ fn own_signing(leaf: &ArgMatches) -> Result<DeviceSigning, Error> {
 pub(crate) fn scope(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     let code = typed_code(leaf)?;
+    let typed = Typed::of(leaf)?;
     let signing = own_signing(leaf)?;
     let store = super::store::store(root)?;
     let yes = leaf.get_flag("yes");
     let runtime = runtime()?;
     let mut client = runtime.block_on(route::connect_full(leaf, context(leaf)))?;
     let mut settled: BTreeMap<MachineId, (String, DeviceSet)> = BTreeMap::new();
-    let mut resolved: Option<(Typed, Vec<wanted::Resolved>)> = None;
+    let mut resolved: Option<Vec<wanted::Resolved>> = None;
     for round in 1..=ROUNDS {
         let roster = runtime.block_on(Roster::read(&mut client))?;
         let (key, kind) = held_key(&roster.members, code)?;
-        let (typed, places) = match resolved.take() {
-            Some(resolved) => resolved,
-            None => {
-                let typed = Typed::of(leaf, kind)?;
-                let places = wanted::places(&store, &typed)?;
-                (typed, places)
-            }
+        let places = match resolved.take() {
+            Some(places) => places,
+            None => wanted::places(&store, &typed)?,
         };
         let wanted = wanted::wanted(
             &store,
@@ -299,7 +300,7 @@ pub(crate) fn scope(root: &ArgMatches) -> Result<(), Error> {
             places.clone(),
             (roster.trusted()?, roster.cluster()?),
         )?;
-        resolved = Some((typed, places));
+        resolved = Some(places);
         let held: Vec<(&Member, Option<&Grant>)> = roster
             .members
             .iter()
@@ -443,7 +444,7 @@ impl Contents {
     /// One line for each place, each Volume and the name.
     fn lines(&self) -> Vec<String> {
         let mut lines = match &self.scope.places {
-            KeyPlaces::Cluster => vec!["deploys to every environment".to_owned()],
+            KeyPlaces::Unscoped => vec![UNSCOPED.to_owned()],
             KeyPlaces::Only(places) => places
                 .iter()
                 .map(|place| match &place.service {
@@ -599,11 +600,10 @@ fn drops(grant: &Grant, after: &Contents) -> bool {
 /// Whether `scope` and `volumes` ask for nothing `grant` doesn't already give.
 fn inside(scope: &KeyScope, volumes: &[GrantVolume], grant: &Grant) -> bool {
     let places = match (&scope.places, &grant.scope.places) {
-        (_, KeyPlaces::Cluster) => true,
-        (KeyPlaces::Cluster, KeyPlaces::Only(_)) => false,
         (KeyPlaces::Only(wanted), KeyPlaces::Only(held)) => wanted
             .iter()
             .all(|place| held.iter().any(|held| place_inside(place, held))),
+        _ => false,
     };
     places
         && scope.caps.within(grant.scope.caps)
@@ -775,7 +775,7 @@ fn listed(answers: &[(MachineId, Vec<Grant>)]) -> Vec<Listed> {
 
 fn places_label(places: &KeyPlaces) -> String {
     match places {
-        KeyPlaces::Cluster => "every environment".to_owned(),
+        KeyPlaces::Unscoped => UNSCOPED.to_owned(),
         KeyPlaces::Only(places) => places
             .iter()
             .map(|place| match &place.service {

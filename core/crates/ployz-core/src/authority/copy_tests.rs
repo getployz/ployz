@@ -88,7 +88,7 @@ fn bundled(step: &CopyStep, signer: &Signer) -> Signed<CopyStep> {
     Signed::proposed(step, Signed::sign(&plan, signer).unwrap()).unwrap()
 }
 
-/// A Machine trusting `device()` as a Device and `ci()` as a CI key over the whole Cluster.
+/// A Machine trusting `device()` as a Device and `ci()` as a CI key in app.
 fn trusted() -> TrustedKeys {
     TrustedKeys::new(
         [DeviceKey::from(device().public())],
@@ -99,7 +99,11 @@ fn trusted() -> TrustedKeys {
                 kind: GrantKind::Ci,
                 scope: KeyScope {
                     caps: CapSet::ALL,
-                    places: KeyPlaces::Cluster,
+                    places: KeyPlaces::Only(vec![crate::authority::KeyPlace {
+                        environment: uuid::Uuid::nil(),
+                        namespace: crate::Namespace::parse("app").unwrap(),
+                        service: None,
+                    }]),
                 },
                 volumes: Vec::new(),
                 name: None,

@@ -268,6 +268,30 @@ fn a_ci_key_admits_a_version_only_in_a_namespace_its_scope_names() {
 }
 
 #[test]
+fn a_ci_key_made_before_keys_named_environments_admits_nothing() {
+    let held = TrustedGrant {
+        grant: grant(GrantKind::Ci, spec_scope(vec![place("app", None)]), NOW),
+        approved_by: PasskeyApprover::Server,
+    };
+    let mut legacy = serde_json::to_value(&held).unwrap();
+    *legacy.pointer_mut("/grant/scope/places").unwrap() = json!("cluster");
+    let [read] = <[TrustedGrant; 1]>::try_from(readable_grants(json!([legacy])).unwrap()).unwrap();
+    let trusted = trusting(read.grant);
+
+    assert_eq!(
+        admit(
+            &[version_of(&ci(), "app", "web", false)],
+            &trusted,
+            "app",
+            "web"
+        ),
+        Err(AuthorityRefusal::Unscoped {
+            code: ci().public().code()
+        }),
+    );
+}
+
+#[test]
 fn a_ci_key_admits_no_version_that_reaches_its_servers_host() {
     let trusted = ci_in_app();
     let spec = privileged("web");
@@ -425,7 +449,7 @@ fn a_ci_key_signs_no_key_change() {
 }
 
 #[test]
-fn a_key_step_refuses_a_ci_or_agent_scope_wider_than_its_kind() {
+fn a_key_step_refuses_a_ci_key_wider_than_its_kind_or_naming_no_environment() {
     let other = Signer::from_seed(&[4; 32]).public();
     let wider_caps = NewKey::Ci {
         key: other,
@@ -436,16 +460,16 @@ fn a_key_step_refuses_a_ci_or_agent_scope_wider_than_its_kind() {
         volumes: Vec::new(),
         name: None,
     };
-    let cluster_agent = NewKey::Agent {
+    let unscoped_ci = NewKey::Ci {
         key: other,
         scope: KeyScope {
             caps: CapSet::of(&[Cap::Spec]),
-            places: KeyPlaces::Cluster,
+            places: KeyPlaces::Unscoped,
         },
         volumes: Vec::new(),
         name: None,
     };
-    for key in [wider_caps, cluster_agent] {
+    for key in [wider_caps, unscoped_ci] {
         assert_eq!(
             verify_key(&key_bundle(trust(key), &device(), NOW), &ci_in_app()),
             Err(AuthorityRefusal::Mismatch {

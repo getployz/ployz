@@ -1110,6 +1110,11 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
                 "The {kind} key {code} that approved this deploy may not approve {what} here."
             );
         }
+        AuthorityRefusal::Unscoped { code } => {
+            return format!(
+                "The CI key {code} that approved this deploy names no environment, so this server runs nothing it signs. Make a new key with ployz key add --ci --env, put its PLOYZ_KEY in CI, then remove this one with ployz key rm {code}."
+            );
+        }
         AuthorityRefusal::VolumeNotGranted { code, kind, volume } => {
             return format!(
                 "The {kind} key {code} that approved this deploy may not mount volume {volume}. A person adds the volume to the key's grant, or deploys this version themselves."
