@@ -147,7 +147,7 @@ Copy the Client ID to `GITHUB_CLIENT_ID` and a new client secret to `GITHUB_CLIE
 | Request user authorization (OAuth) during installation | Checked |
 | Webhook URL | `https://cloud.example.com/api/github/webhook` (Active) |
 | Webhook secret | `openssl rand -hex 32`, also `GITHUB_APP_WEBHOOK_SECRET` |
-| Repository permissions | Contents: Read-only, Checks: Read and write, Metadata: Read-only, Actions: Read and write, Pull requests: Read-only |
+| Repository permissions | Contents: Read-only, Checks: Read and write, Metadata: Read-only, Actions: Read and write, Pull requests: Read and write |
 | Subscribe to events | Push, Check suite, Workflow run, Pull request |
 
 Actions: Read and write and the Workflow run event are for GitHub builds: Cloud checks for
@@ -156,6 +156,8 @@ them keep building on servers until their owner approves the new permissions in 
 
 Pull requests: Read-only, Checks: Read and write and the Pull request event are for PR
 Environments: Cloud makes one per pull request and posts a "Ployz · ready to merge" check.
+Pull requests: Read and write lets Cloud keep one comment on each pull request with its
+preview link. Until an installation's owner approves it, the link goes in the check instead.
 Add them only after upgrading to a release that handles pull request deliveries; older
 releases answer those deliveries with an error. Installations created before you add them
 get no PR Environments until their owner approves the new permissions in GitHub.

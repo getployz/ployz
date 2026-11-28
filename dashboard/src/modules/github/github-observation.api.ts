@@ -51,6 +51,10 @@ export type GithubObservationOperation =
   | "list_check_runs"
   | "create_check_run"
   | "update_check_run"
+  | "list_comments"
+  | "create_comment"
+  | "update_comment"
+  | "delete_comment"
   | "exchange_user_code"
   | "list_user_installations"
   | "read_user_membership";

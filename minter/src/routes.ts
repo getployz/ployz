@@ -5,6 +5,9 @@ import {
   BUILD_WORKFLOW_FILE,
   BUILD_WORKFLOW_PATH,
   PLOYZ_CHECK_NAMES,
+  PREVIEW_COMMENT_LINE,
+  PREVIEW_COMMENT_MARKER,
+  PREVIEW_COMMENT_MAX,
   READ_SET,
   readTokenPermissions,
   workflowDigest,
@@ -56,6 +59,7 @@ const EVENT = /^[a-z_]+$/;
 const CONNECT_CODE = /^[A-Za-z0-9_-]+$/;
 const CHECK_CONCLUSIONS = ["success", "neutral", "failure", "cancelled", "skipped", "timed_out", "action_required"] as const;
 const CHECK_PAGES = 10;
+const COMMENT_PAGES = 10;
 const INSTALLATION_PAGES = 10;
 
 /**
@@ -256,6 +260,41 @@ export const ROUTES: Readonly<Record<string, AnyRoute>> = {
     },
   }),
 
+  "/v1/comment": route({
+    body: { installation_id: id, repository_id: id, number: id, body: optional(text(PREVIEW_COMMENT_MAX, PREVIEW_COMMENT_LINE)) },
+    own: { pull_requests: "write" },
+    async handle(body, { github, config, facts, own }) {
+      facts.pull_request = body.number;
+      const token = await own();
+      const repository = `/repositories/${body.repository_id}` as const;
+      // Only a pull request's conversation: an issue's comments are no business of Cloud's.
+      await github.json("fetch_pull_request", token, "GET", `${repository}/pulls/${body.number}`);
+      let existing: { id: number; body: string | null } | undefined;
+      for (let page = 1; existing === undefined && page <= COMMENT_PAGES; page++) {
+        const comments = await github.json("list_comments", token, "GET", `${repository}/issues/${body.number}/comments?per_page=100&page=${page}`);
+        if (!Array.isArray(comments)) throw new GithubError("list_comments", { kind: "unreadable" });
+        const match = comments.find((comment) => ownComment(comment, config.appId));
+        if (match !== undefined) existing = { id: field(match, "id", "number", "list_comments"), body: nullable(match, "body", "string", "list_comments") };
+        if (comments.length < 100) break;
+      }
+      if (existing !== undefined) facts.comment_id = existing.id;
+      if (body.body === undefined) {
+        if (existing === undefined) return { comment_id: null };
+        const deleted = await github.send("delete_comment", token, "DELETE", `${repository}/issues/comments/${existing.id}`, { allow: [404] });
+        await deleted.body?.cancel();
+        return { comment_id: null };
+      }
+      const wanted = `${PREVIEW_COMMENT_MARKER}\n${body.body}`;
+      if (existing?.body === wanted) return { comment_id: existing.id };
+      const posted = existing === undefined
+        ? await github.json("create_comment", token, "POST", `${repository}/issues/${body.number}/comments`, { body: wanted })
+        : await github.json("update_comment", token, "PATCH", `${repository}/issues/comments/${existing.id}`, { body: wanted });
+      const commentId = field(posted, "id", "number", existing === undefined ? "create_comment" : "update_comment");
+      facts.comment_id = commentId;
+      return { comment_id: commentId };
+    },
+  }),
+
   "/v1/connect": route({
     body: { code: text(512, CONNECT_CODE) },
     async handle(body, { github, config }) {
@@ -336,6 +375,13 @@ function runFields(run: unknown, operation: string) {
 function ownCheckRun(run: unknown, appId: string): boolean {
   const app = isRecord(run) ? run["app"] : undefined;
   return isRecord(app) && String(app["id"]) === appId;
+}
+
+/** The App's own comment, which starts with the marker the comment route writes. */
+function ownComment(comment: unknown, appId: string): boolean {
+  const app = isRecord(comment) ? comment["performed_via_github_app"] : undefined;
+  const text = isRecord(comment) ? comment["body"] : undefined;
+  return isRecord(app) && String(app["id"]) === appId && typeof text === "string" && text.startsWith(`${PREVIEW_COMMENT_MARKER}\n`);
 }
 
 function encodeBranch(name: string): string {

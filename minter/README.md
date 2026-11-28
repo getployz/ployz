@@ -1,6 +1,6 @@
 # Minter
 
-The minter holds the Ployz GitHub App's private key and client secret, so that hosted Cloud does not. Cloud asks it for installation tokens and gets only `contents`, `metadata`, `pull_requests` and `checks` at `read`. Everything else Cloud does in GitHub is a narrow operation on the build workflow or the Ployz check. No route returns a write token, takes a GitHub path from the caller, or returns Actions jobs, logs or artifacts.
+The minter holds the Ployz GitHub App's private key and client secret, so that hosted Cloud does not. Cloud asks it for installation tokens and gets only `contents`, `metadata`, `pull_requests` and `checks` at `read`. Everything else Cloud does in GitHub is a narrow operation on the build workflow, the Ployz check or the App's one comment on a pull request. No route returns a write token, takes a GitHub path from the caller, or returns Actions jobs, logs or artifacts.
 
 The minter authenticates Cloud but does not trust it. Every response is one a compromised Cloud may hold.
 
@@ -18,6 +18,7 @@ Every route is `POST` with a JSON body. A body with an unknown field is refused.
 | `/v1/dispatch` | Dispatches `ployz-build.yml` on a branch, only when the file at the branch head is canonical |
 | `/v1/cancel` | Cancels a build workflow run |
 | `/v1/check` | Creates or updates the Ployz check on a commit |
+| `/v1/comment` | Writes the App's one comment on a pull request, a single line after a marker the minter adds, or deletes it |
 | `/v1/connect` | Exchanges a connect code and returns the person's login and installations, never their token |
 
 `src/policy.ts` and `src/routes.ts` are the whole security argument. Read them before you change either.

@@ -34,7 +34,7 @@ export interface MintedToken {
   permissions: Record<string, string>;
 }
 
-type Method = "GET" | "POST" | "PATCH";
+type Method = "GET" | "POST" | "PATCH" | "DELETE";
 
 /** The App's view of GitHub: JWTs from the signer, installation tokens, and the calls routes make with them. */
 export class Github {

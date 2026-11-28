@@ -14,7 +14,7 @@ import { AppConfig, type GithubMinterAuth } from "#/server/config.server";
 
 /**
  * Everything Cloud does in GitHub with the App's own authority: the App JWT, installation tokens, the build workflow's
- * runs, the Ployz check and the connect code. Nothing else in Cloud reads the App's key or client secret, mints a
+ * runs, the Ployz check, the App's one comment on a pull request and the connect code. Nothing else in Cloud reads the App's key or client secret, mints a
  * token, or calls an Actions path, so one layer decides who holds that authority. The local layer holds it in Cloud,
  * as a Self-hosted Cloud does. The minter layer asks the minter, which holds the key outside Cloud and grants Cloud
  * only read tokens and the narrow operations below.
@@ -46,6 +46,7 @@ const OWN_PERMISSIONS = {
   dispatch: { contents: "read", actions: "write" },
   act: { actions: "write" },
   check: { checks: "write" },
+  comment: { pull_requests: "write" },
 } as const satisfies Record<string, Readonly<Record<string, "read" | "write">>>;
 type OwnNeed = keyof typeof OWN_PERMISSIONS;
 
@@ -124,6 +125,15 @@ export type GithubCheck = GithubRepositoryRef & {
   readonly summary: string;
 };
 
+/**
+ * The first line of the App's one comment on a pull request. Whoever holds the authority writes it, so the comment is
+ * found again and no other is touched. `minter/src/policy.ts` keeps a copy.
+ */
+export const PREVIEW_COMMENT_MARKER = "<!-- ployz-preview -->";
+
+/** The App's one comment on a pull request: `line` after the marker, or deleted when `line` is null. */
+export type GithubComment = GithubRepositoryRef & { readonly number: number; readonly line: string | null };
+
 /** Who authorized the App, and the installations they reach. Their user token never leaves the authority. */
 export type GithubConnectedUser = {
   readonly login: string;
@@ -164,6 +174,8 @@ export interface GithubAuthorityService {
   /** Run a completed build run again, as the push that started it. The minter has no such route: it is refused there. */
   readonly rerunBuild: (input: GithubBuildRunRef) => Effect.Effect<void, Failure>;
   readonly postCheck: (input: GithubCheck) => Effect.Effect<{ checkRunId: number }, Failure>;
+  /** Refused, as `githubLacksPermission` reads it, by an installation that hasn't accepted Pull requests: write. */
+  readonly postComment: (input: GithubComment) => Effect.Effect<{ commentId: number | null }, Failure>;
   readonly connect: (code: string) => Effect.Effect<GithubConnectedUser, Failure>;
 }
 
@@ -191,6 +203,17 @@ export const postInstallationCheckRun = Effect.fn(
   }
   const installationId = yield* (yield* GithubApi).installationOf(access);
   return yield* (yield* GithubAuthority).postCheck({ installationId, repositoryId, ...input });
+});
+
+/** The App's one comment on a pull request: `line` after the marker, written in place, or deleted when `line` is null. */
+export const postInstallationComment = Effect.fn(
+  "Github.postInstallationComment",
+)(function* (access: GithubAccess, repositoryId: number, input: { number: number; line: string | null }) {
+  if (!isValidGithubId(repositoryId) || !isValidGithubId(input.number)) {
+    return yield* failure({ code: "invalid_argument", operation: "create_comment", retriable: false });
+  }
+  const installationId = yield* (yield* GithubApi).installationOf(access);
+  return yield* (yield* GithubAuthority).postComment({ installationId, repositoryId, ...input });
 });
 
 const failure = (args: {
@@ -253,6 +276,12 @@ const checkRunsSchema = Schema.Struct({
   })),
 });
 const checkRunSchema = Schema.Struct({ id: githubIdSchema });
+const commentsSchema = Schema.Array(Schema.Struct({
+  id: githubIdSchema,
+  body: Schema.optional(Schema.NullOr(Schema.String)),
+  performed_via_github_app: Schema.optional(Schema.NullOr(Schema.Struct({ id: Schema.Number }))),
+}));
+const commentSchema = Schema.Struct({ id: githubIdSchema });
 const userAccessTokenSchema = Schema.Struct({ access_token: githubNonEmptyStringSchema });
 const userSchema = Schema.Struct({ login: githubNonEmptyStringSchema });
 const userInstallationsSchema = Schema.Struct({
@@ -265,6 +294,7 @@ const userInstallationsSchema = Schema.Struct({
 const membershipSchema = Schema.Struct({ state: Schema.String, role: Schema.String });
 
 const CHECK_PAGES = 10;
+const COMMENT_PAGES = 10;
 const INSTALLATION_PAGES = 10;
 
 const runOf = (run: typeof runSchema.Type): GithubBuildRun =>
@@ -295,13 +325,14 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
 
   /** GitHub's answer when it succeeded. */
   const respond = Effect.fn("GithubAuthority.respond")(function* (input: {
-    operation: GithubObservationOperation; token: string | null; path: `/${string}`; method?: "POST" | "PATCH"; body?: unknown; origin?: string; accept?: string;
+    operation: GithubObservationOperation; token: string | null; path: `/${string}`; method?: "POST" | "PATCH" | "DELETE"; body?: unknown; origin?: string; accept?: string;
     abort?: AbortSignal;
   }) {
     const headers = new Headers({ Accept: input.accept ?? "application/vnd.github+json", "X-GitHub-Api-Version": GITHUB_API_VERSION });
     if (input.token !== null) headers.set("Authorization", `Bearer ${input.token}`);
     const init: RequestInit = { headers };
-    if (input.method !== undefined) {
+    if (input.method === "DELETE") init.method = input.method;
+    else if (input.method !== undefined) {
       headers.set("Content-Type", "application/json");
       init.method = input.method;
       init.body = JSON.stringify(input.body ?? {});
@@ -503,6 +534,34 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
     return { checkRunId: posted.id };
   });
 
+  const postComment: GithubAuthorityService["postComment"] = Effect.fn("GithubAuthority.local.postComment")(function* (input) {
+    const token = yield* own(input, "comment");
+    const repository = `/repositories/${input.repositoryId}` as const;
+    let existing: { id: number; body: string | null } | undefined;
+    for (let page = 1; existing === undefined && page <= COMMENT_PAGES; page++) {
+      const comments = yield* call(commentsSchema, {
+        operation: "list_comments", token, path: `${repository}/issues/${input.number}/comments?per_page=100&page=${page}`,
+      });
+      const found = comments.find((comment) => String(comment.performed_via_github_app?.id) === appId && comment.body?.startsWith(`${PREVIEW_COMMENT_MARKER}\n`));
+      if (found) existing = { id: found.id, body: found.body ?? null };
+      if (comments.length < 100) break;
+    }
+    if (input.line === null) {
+      if (existing) {
+        yield* send({ operation: "delete_comment", token, method: "DELETE", path: `${repository}/issues/comments/${existing.id}` }).pipe(
+          Effect.catchIf((error) => error.code === "not_found", () => Effect.void),
+        );
+      }
+      return { commentId: null };
+    }
+    const body = `${PREVIEW_COMMENT_MARKER}\n${input.line}`;
+    if (existing?.body === body) return { commentId: existing.id };
+    const posted = existing === undefined
+      ? yield* call(commentSchema, { operation: "create_comment", token, method: "POST", path: `${repository}/issues/${input.number}/comments`, body: { body } })
+      : yield* call(commentSchema, { operation: "update_comment", token, method: "PATCH", path: `${repository}/issues/comments/${existing.id}`, body: { body } });
+    return { commentId: posted.id };
+  });
+
   const connect: GithubAuthorityService["connect"] = Effect.fn("GithubAuthority.local.connect")(function* (code) {
     const exchanged = yield* call(userAccessTokenSchema, {
       // The OAuth endpoint answers form-encoded unless asked for exactly this.
@@ -534,7 +593,8 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
   });
 
   return {
-    readToken, installation, buildWorkflow, buildRuns, buildRun, dispatchBuild, dispatchApprovedBuild, cancelBuild, rerunBuild, postCheck, connect,
+    readToken, installation, buildWorkflow, buildRuns, buildRun, dispatchBuild, dispatchApprovedBuild, cancelBuild, rerunBuild, postCheck, postComment,
+    connect,
   } satisfies GithubAuthorityService;
 });
 
@@ -559,6 +619,7 @@ const minterRunsSchema = Schema.Struct({ runs: Schema.Array(minterListedRunSchem
 const minterRunSchema = Schema.Struct({ ...minterListedRunSchema.fields, conclusion: Schema.NullOr(Schema.String) });
 const minterDispatchSchema = Schema.Struct({ run_id: githubIdSchema, run_url: Schema.String, head_sha: Schema.String, workflow_ref: Schema.String });
 const minterCheckSchema = Schema.Struct({ check_run_id: githubIdSchema });
+const minterCommentSchema = Schema.Struct({ comment_id: Schema.NullOr(githubIdSchema) });
 const minterConnectSchema = Schema.Struct({
   login: githubNonEmptyStringSchema,
   installations: Schema.Array(Schema.Struct({
@@ -687,6 +748,9 @@ export function makeGithubAuthorityMinter(minter: { readonly url: URL; readonly 
       details_url: input.detailsUrl,
       output: { title: input.title, summary: input.summary },
     }, minterCheckSchema).pipe(Effect.map((posted) => ({ checkRunId: posted.check_run_id }))),
+    postComment: (input) => post("/v1/comment", input.line === null ? "delete_comment" : "create_comment", {
+      installation_id: input.installationId, repository_id: input.repositoryId, number: input.number, body: input.line ?? undefined,
+    }, minterCommentSchema).pipe(Effect.map((posted) => ({ commentId: posted.comment_id }))),
     connect: (code) => post("/v1/connect", "exchange_user_code", { code }, minterConnectSchema).pipe(Effect.map((found) => ({
       login: found.login,
       installations: found.installations.map((installation) => ({

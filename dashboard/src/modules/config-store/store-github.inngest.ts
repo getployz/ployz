@@ -61,7 +61,7 @@ export const createStoreGithubCheckSuite = (inngest: PloyzInngest, runEffect: Ef
 
 /**
  * A pull request reaches the Config Store, which makes, retracks or closes its PR Environments; then Cloud publishes
- * its check. One pull request at a time, so facts apply in the order Cloud reads them.
+ * its comment and check. One pull request at a time, so facts apply in the order Cloud reads them.
  */
 export const createStorePullRequest = (inngest: PloyzInngest, runEffect: EffectRunner<StoreServices> = runInngestEffect) =>
   inngest.createFunction(
@@ -74,13 +74,14 @@ export const createStorePullRequest = (inngest: PloyzInngest, runEffect: EffectR
     async ({ event, step }) => {
       const done = await step.run("observe-pull-request", () => runEffect(observeStorePullRequest(event.data)));
       const followed = await followUp(step, done, runEffect);
-      const check = done.check ? await step.run("publish-check", () => runEffect(publishStorePrCheck(event.data))) : "skipped";
-      return { ...followed, check };
+      // Its comment speaks on every event; its check only when the Store moved it.
+      const published = await step.run("publish-check", () => runEffect(publishStorePrCheck(event.data, { check: done.check })));
+      return { ...followed, ...published };
     },
   );
 
 /**
- * A Store write or a Deployment may have moved a pull request's check: publish it again, one post per pull request at
+ * A Store write or a Deployment may have moved a pull request's check or preview: publish them again, one post per pull request at
  * a time, once its writes settle for a few seconds.
  */
 export const createStorePrCheck = (inngest: PloyzInngest) =>
@@ -92,9 +93,7 @@ export const createStorePrCheck = (inngest: PloyzInngest) =>
       concurrency: [{ key: "event.data.pullRequestKey", limit: 1 }],
       debounce: { key: "event.data.pullRequestKey", period: "10s" },
     },
-    async ({ event, step }) => ({
-      check: await step.run("publish-check", () => runInngestEffect(publishRequestedStorePrCheck(event.data))),
-    }),
+    async ({ event, step }) => step.run("publish-check", () => runInngestEffect(publishRequestedStorePrCheck(event.data))),
   );
 
 /** Hourly: every Store closes idle Branches and deletes closing ones that left the Servers. */
