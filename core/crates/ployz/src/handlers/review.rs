@@ -508,7 +508,7 @@ pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
                 revision
                     .saved_at
                     .and_then(|at| chrono::DateTime::from_timestamp(at, 0))
-                    .map_or_else(|| "-".to_owned(), |at| crate::checkin::ago(at, now)),
+                    .map_or_else(|| "-".to_owned(), |at| crate::ui::ago(at, now)),
                 revision
                     .saved_by
                     .as_ref()

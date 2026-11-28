@@ -31,7 +31,6 @@ use super::{Error, leaf_matches, route, string_values, with_client};
 use crate::enrollment::output::{ingress_incomplete, server_json};
 
 mod add;
-pub(super) mod checkin;
 pub(super) mod clean;
 pub(super) mod drain;
 mod endpoint;
@@ -40,14 +39,11 @@ pub(super) mod forget;
 mod helpers;
 pub(crate) mod init;
 pub(crate) mod provision;
-pub(super) mod reject;
 mod remove;
 mod show;
-pub(super) mod token;
 mod upgrade;
 pub(super) mod upgrade_policy;
 pub(super) mod volumes;
-mod waiting;
 
 use add::add;
 pub(super) use enroll::founding_cluster_name;
@@ -796,9 +792,9 @@ pub(super) fn drain_command(command: Command) -> Command {
 pub(super) fn show_command(command: Command) -> Command {
     base(
         command,
-        "Show a Server: telemetry, round-trip times and its latest upgrade attempt, or a server waiting to join",
+        "Show a Server: telemetry, round-trip times and its latest upgrade attempt",
     )
-    .arg(positional("server", true).help("Server name or ID, or a server waiting to join"))
+    .arg(positional("server", true).help("Server name or ID"))
 }
 
 pub(super) fn machine_logs_command(command: Command) -> Command {
@@ -812,11 +808,6 @@ pub(super) fn machine_logs_command(command: Command) -> Command {
 
 pub(super) fn list_command(command: Command) -> Command {
     base(command, "List Servers")
-        .long_about(
-            "List the Cluster's Servers. With --waiting, list the servers waiting to join \
-             your Organization in Ployz Cloud instead: name, provider, IP, status and age.",
-        )
-        .arg(switch("waiting", None).help("List servers waiting to join instead"))
 }
 
 pub(super) fn remove_command(command: Command) -> Command {

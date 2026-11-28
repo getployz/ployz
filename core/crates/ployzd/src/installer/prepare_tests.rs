@@ -1200,8 +1200,8 @@ fn the_lock_outlives_its_holder_in_a_child() {
 }
 
 /// Whether `root` is on a filesystem that keeps flocks and record locks local and apart, the
-/// premise of [`marked`]. The list is check-in's (`keeps_locks_local` in the `ployz` crate's
-/// `checkin/mod.rs`) until one definition is shared. Off it a test that asks `marked` is skipped.
+/// premise of [`marked`], as the check-in loop of releases before Fleet Tokens were removed reads
+/// the mark. Off it a test that asks `marked` is skipped.
 fn locks_stay_local(root: &Path) -> bool {
     use nix::sys::statfs::{
         BTRFS_SUPER_MAGIC, EXT4_SUPER_MAGIC, FsType, OVERLAYFS_SUPER_MAGIC, TMPFS_MAGIC,

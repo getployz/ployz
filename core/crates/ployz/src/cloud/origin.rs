@@ -148,10 +148,6 @@ impl CloudOrigin {
     pub(crate) fn report_url(&self) -> String {
         format!("{}/report", self.enroll_url())
     }
-
-    pub(crate) fn checkin_url(&self) -> String {
-        format!("{}/api/checkin", self.0)
-    }
 }
 
 #[cfg(test)]
@@ -176,10 +172,6 @@ mod tests {
         assert_eq!(
             url("ployz.dev").report_url(),
             "https://ployz.dev/api/enroll/report"
-        );
-        assert_eq!(
-            url(" ployz.dev ").checkin_url(),
-            "https://ployz.dev/api/checkin"
         );
         assert_eq!(CloudOrigin::default_cloud(), url("https://ployz.dev"));
     }

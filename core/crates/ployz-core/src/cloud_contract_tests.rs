@@ -13,16 +13,6 @@ fn every_value_is_frozen_by_release() {
     assert_eq!(ERROR_CODE_HEADER, "Ployz-Error-Code");
     assert_eq!(CLIENT_ID, "ployz-cli");
     assert_eq!(MANIFEST_FORMAT, 1);
-    assert_eq!(CHECKIN_PROTOCOL_VERSION, 1);
-    assert_eq!(MAX_SKEW_SECONDS, 300);
-    assert_eq!(CHECKIN_WAIT_SECONDS, 10);
-    assert_eq!(ENROLL_OPTIONS, ["ingressClosed"]);
-    assert_eq!(PROBE_WINDOW_MS, 10_000);
-    assert_eq!(PROBE_FIRST_ATTEMPT_MS, 1_000);
-    assert_eq!(PROBE_ATTEMPT_EVERY_MS, 1_500);
-    assert_eq!(PROBE_ATTEMPT_TIMEOUT_MS, 3_000);
-    assert_eq!(PROBE_GREETING_READ_MS, 500);
-    assert_eq!(PROBE_GREETING_LENGTH, 22);
     assert_eq!(MIN_MANAGED_VOLUME_BYTES, 100_000_000);
 }
 

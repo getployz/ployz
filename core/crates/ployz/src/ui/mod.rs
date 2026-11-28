@@ -33,9 +33,7 @@ pub(crate) use stream::{
     stderr_is_terminal, stdout, stdout_bytes, stdout_is_terminal,
 };
 pub use table::{Cell, Fields, Table};
-pub(crate) use table::{
-    REPLACED, escaped, escaped_lines, pasteable, printable, short_id, unprintable,
-};
+pub(crate) use table::{ago, escaped, escaped_lines, pasteable, printable, short_id, unprintable};
 pub use tone::{Painted, Tone, clap_styles};
 pub(crate) use tree::Tree;
 pub(crate) use userinfo::mask;

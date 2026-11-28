@@ -172,7 +172,7 @@ EOF
     rm -f "$INSTALL_BIN_DIR/ployzd"
 
     rm -rf "$PLOYZ_DATA_DIR"
-    # The check-in key is this host's identity in Cloud. Kept, a reinstall checks in as the Server it was.
+    # Left by a host that waited to join with a Fleet Token, before releases dropped them.
     rm -rf "$PLOYZ_CHECKIN_DIR"
     rm -f "$PLOYZ_FLEET_TOKEN_FILE"
     # Preserve the locked inode until reboot; replacing it would bypass exclusion.

@@ -56,8 +56,8 @@ mod tests {
         ];
     }
 
-    /// Units other code writes and the script removes: the CLI's check-in loop
-    /// (`ployz/src/checkin/unit.rs`) and the per-attempt Upgrade workers
+    /// Units other code writes and the script removes: the check-in loop that releases before
+    /// Fleet Tokens were removed left on waiting hosts, and the per-attempt Upgrade workers
     /// (`installer/upgrade.rs`, `unit_name`).
     const OTHER_WRITERS: [&str; 2] = ["ployz-checkin.service", "ployz-upgrade-*.service"];
 

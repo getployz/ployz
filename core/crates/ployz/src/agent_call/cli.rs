@@ -112,14 +112,13 @@ impl Run {
     }
 }
 
-/// Commands that need no reason: version, help, shell completion, `ployz mcp`, whose
-/// calls each carry their own, and `server checkin`, which the install script runs.
+/// Commands that need no reason: version, help, shell completion, and `ployz mcp`, whose
+/// calls each carry their own.
 fn exempt(matches: &ArgMatches, command: &Command, path: &str) -> bool {
     if matches.get_flag("version") || matches.subcommand().is_none() {
         return true;
     }
-    // `install.sh` runs `server checkin`, where no agent can add a reason.
-    if matches!(path, "mcp" | "server checkin") || path.split(' ').next() == Some("completion") {
+    if path == "mcp" || path.split(' ').next() == Some("completion") {
         return true;
     }
     // A group without its subcommand prints its help.
