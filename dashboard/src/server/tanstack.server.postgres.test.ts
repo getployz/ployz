@@ -310,7 +310,7 @@ it("renders the Environment page on the server inside the dashboard shell", asyn
 it("sends an anonymous request to sign in, and refuses a revoked session on its next request", async () => {
   const anonymous = await cloud.page(pages.environment.path);
   expect(anonymous.status).toBe(307);
-  expect(anonymous.headers.get("location")).toBe("/auth");
+  expect(anonymous.headers.get("location")).toBe(`/auth?callbackURL=${encodeURIComponent(`/cloud/boundary/${pages.environment.path}`)}`);
 
   expect((await cloud.page(pages.environment.path, { cookie: cloud.laterRevoked })).status).toBe(200);
   const token = decodeURIComponent(cloud.laterRevoked.slice(cloud.laterRevoked.indexOf("=") + 1)).split(".", 1)[0];
@@ -323,7 +323,7 @@ it("sends an anonymous request to sign in, and refuses a revoked session on its 
   }
   const afterRevocation = await cloud.page(pages.environment.path, { cookie: cloud.laterRevoked });
   expect(afterRevocation.status).toBe(307);
-  expect(afterRevocation.headers.get("location")).toBe("/auth");
+  expect(afterRevocation.headers.get("location")).toBe(`/auth?callbackURL=${encodeURIComponent(`/cloud/boundary/${pages.environment.path}`)}`);
 });
 
 it("round-trips strict validation, the Actor, and redacted errors through TanStack", async () => {
