@@ -64,7 +64,9 @@ async fn custom_https_hostname_obtains_a_certificate_from_a_fake_ca() {
     wait_https(&cluster, 0, "app.example.com").await;
 
     // A stopped Container keeps its site (answering 503 NOT_RUNNING); removal drops the hostname.
-    containers::remove(&client, first.id, custom).await.unwrap();
+    containers::remove_routed(&client, first.id, custom)
+        .await
+        .unwrap();
     wait_config(&cluster, 0, |config| {
         !config.contains("https://app.example.com")
     })
@@ -770,7 +772,7 @@ async fn create_and_start(
     machine: &Machine,
     spec: ResolvedServiceSpec,
 ) -> ployz_core::ContainerId {
-    containers::run(
+    containers::run_routed(
         client,
         machine.id,
         ContainerKind::ServiceContainer,

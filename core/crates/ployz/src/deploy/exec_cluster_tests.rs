@@ -18,9 +18,28 @@ use ployz_core::{
 use ployz_testkit::{Cluster, ClusterPlan};
 use tokio_util::sync::CancellationToken;
 
-#[tokio::test]
+/// The Deploy executes in-process here, and a debug build's Deploy outgrows a test
+/// thread's 2 MiB, so it runs on 16 MiB as the CLI runner's thread does.
+#[test]
 #[ignore = "informing: requires the privileged Ployz testkit image"]
-async fn deploy_execution_preserves_partial_effects_and_never_repairs_them() {
+fn deploy_execution_preserves_partial_effects_and_never_repairs_them() {
+    let ran = std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(preserves_partial_effects_and_never_repairs_them());
+        })
+        .unwrap()
+        .join();
+    if let Err(panic) = ran {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+async fn preserves_partial_effects_and_never_repairs_them() {
     let plan = ClusterPlan::new(&format!("l3-deploy-{}", process::id()), 2).unwrap();
     let cluster = Cluster::create(plan).unwrap();
     let machines = cluster.initialize_two().await.unwrap();
@@ -159,10 +178,10 @@ async fn assert_target_local_volume(cluster: &Cluster, client: &mut Client, mach
 
     let outcome = client.confirm(&plan, &CancellationToken::new(), None).await;
 
-    assert!(matches!(
-        outcome,
-        crate::deploy::DeployOutcome::Success { .. }
-    ));
+    assert!(
+        matches!(outcome, crate::deploy::DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
     assert!(
         cluster
             .machine_shell(1, "docker volume inspect app_ployz-l3-deploy-data")

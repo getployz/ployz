@@ -6,6 +6,9 @@
     reason = "Fixed JSON results use indexing; missing entries must fail the test."
 )]
 
+#[path = "support/big_stack.rs"]
+mod big_stack;
+
 use ployz::connect::Call;
 use ployz_store::testing::backend::PinAs;
 use std::{path::Path, process::Command, sync::Arc, time::Duration};
@@ -356,9 +359,13 @@ async fn a_directory_without_git_builds_on_a_server_through_the_hidden_store() {
 /// Cloud's runner builds each Git Service from its checkout at its pinned commit, all
 /// at once, before preparing. A failed build fails the Deployment but keeps the others'
 /// receipts, so a retry rebuilds only what failed.
-#[tokio::test]
+#[test]
 #[ignore = "informing: requires the privileged Ployz testkit image with Buildx"]
-async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_failed() {
+fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_failed() {
+    big_stack::run(builds_git_services_then_retries);
+}
+
+async fn builds_git_services_then_retries() {
     use std::collections::BTreeMap;
 
     use ployz_core::ServiceName;
@@ -574,18 +581,18 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
 /// one Dockerfile into one image, one digest under four repositories, and the fifth builds
 /// a Dockerfile of its own. Cloud's runner builds each once, a redeploy of the same commit
 /// reuses every image, and only a changed build variable or commit builds again.
-#[tokio::test]
+#[test]
 #[ignore = "informing: requires the privileged Ployz testkit image with Buildx"]
-async fn a_same_commit_redeploy_of_services_sharing_a_dockerfile_reuses_every_build() {
-    redeploys_sharing_a_dockerfile(false).await;
+fn a_same_commit_redeploy_of_services_sharing_a_dockerfile_reuses_every_build() {
+    big_stack::run(|| redeploys_sharing_a_dockerfile(false));
 }
 
 /// The same, each Service reaching a Volume, so each builds a Full Build: its image loads
 /// under its own name, not under no name as a free Build's does.
-#[tokio::test]
+#[test]
 #[ignore = "informing: requires the privileged Ployz testkit image with Buildx"]
-async fn a_same_commit_redeploy_of_data_services_sharing_a_dockerfile_reuses_every_build() {
-    redeploys_sharing_a_dockerfile(true).await;
+fn a_same_commit_redeploy_of_data_services_sharing_a_dockerfile_reuses_every_build() {
+    big_stack::run(|| redeploys_sharing_a_dockerfile(true));
 }
 
 async fn redeploys_sharing_a_dockerfile(reaches_data: bool) {
@@ -1009,9 +1016,13 @@ async fn counting_builds(
 /// Cloud's runner builds an uploaded Service on a Server, never GitHub. Once Cloud no
 /// longer holds the upload, a later Deployment reuses the image while its build inputs
 /// hold, and otherwise records that it needs a new upload.
-#[tokio::test]
+#[test]
 #[ignore = "informing: requires the privileged Ployz testkit image with Buildx"]
-async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() {
+fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() {
+    big_stack::run(builds_an_upload_then_reuses_it);
+}
+
+async fn builds_an_upload_then_reuses_it() {
     use ployz_core::ServiceName;
     use ployz_store::{
         Actor, Admit, BuildStatus, Change, ConfigStore, CreateProject, CreateService, Deploy,
@@ -1210,12 +1221,14 @@ fn attempt(address: std::net::SocketAddr, store: &Path, args: &[&str]) -> (Optio
     (output.status.code(), json)
 }
 
-/// Run `ployz --json ARGS` against `store` and the Cluster at `address`.
+/// Run `ployz --json ARGS` against `store` and the Cluster at `address`, with a Ployz
+/// config beside `store`, so no device key of this computer's signs.
 fn run(address: std::net::SocketAddr, store: &Path, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_ployz"))
         .arg("--why=test")
         .args(args)
         .args(["--json", "--connect", &format!("tcp://{address}")])
+        .env("PLOYZ_CONFIG", store.with_file_name("config.yaml"))
         .env("PLOYZ_STORE", format!("sqlite:{}", store.display()))
         .env_remove("PLOYZ_PROJECT")
         .env_remove("PLOYZ_ENV")

@@ -4,22 +4,27 @@ use std::{
     time::Duration,
 };
 
+#[path = "support/big_stack.rs"]
+mod big_stack;
 #[path = "support/containers.rs"]
 mod containers;
 
 use ployz::deploy::plan_deploy;
 use ployz_core::{
-    CORROSION_API_PORT, ContainerAction, ContainerId, ContainerKind, ContainerLocator,
-    ContainerWant, Drain, HOSTNAME_VERIFY_PATH, INGRESS_VERIFY_PATH, ListMachinesRequest, Machine,
-    MachineId, MembershipObservation, Namespace, RequestedServiceSpec, ResolvedServiceSpec,
-    ServiceId, StopOptions, op,
+    CORROSION_API_PORT, ContainerAction, ContainerId, ContainerKind, HOSTNAME_VERIFY_PATH,
+    INGRESS_VERIFY_PATH, ListMachinesRequest, Machine, MachineId, MembershipObservation, Namespace,
+    RequestedServiceSpec, ResolvedServiceSpec, ServiceId, StopOptions, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan, poll_until};
 use tokio_util::sync::CancellationToken;
 
-#[tokio::test]
+#[test]
 #[ignore = "informing: requires the privileged Ployz testkit image"]
-async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
+fn caddy_projects_and_loads_cluster_services_on_three_machines() {
+    big_stack::run(caddy_projects_and_loads_on_three_machines);
+}
+
+async fn caddy_projects_and_loads_on_three_machines() {
     let plan = ClusterPlan::new(&format!("l3-caddy-{}", process::id()), 3).unwrap();
     let cluster = Cluster::create(plan).unwrap();
     let machines = cluster.initialize_three().await.unwrap();
@@ -758,7 +763,7 @@ async fn create_and_start(
     machine: &Machine,
     spec: ResolvedServiceSpec,
 ) -> ployz_core::ContainerId {
-    containers::run(
+    containers::run_routed(
         client,
         machine.id,
         ContainerKind::ServiceContainer,
@@ -774,7 +779,7 @@ async fn start_container(
     machine_id: MachineId,
     container_id: ContainerId,
 ) {
-    containers::start(client, machine_id, container_id)
+    containers::start_routed(client, machine_id, container_id)
         .await
         .unwrap();
 }
@@ -789,16 +794,13 @@ async fn change_container(
     match action {
         ContainerAction::Start => start_container(client, machine_id, container_id).await,
         ContainerAction::Stop => {
-            containers::ensure(
+            containers::stop_routed(
                 client,
                 machine_id,
-                ContainerWant::Stopped {
-                    container: ContainerLocator::Id(container_id),
-                    drain: Drain::DEFAULT,
-                    stop: StopOptions {
-                        signal: None,
-                        grace_period_seconds,
-                    },
+                container_id,
+                StopOptions {
+                    signal: None,
+                    grace_period_seconds,
                 },
             )
             .await

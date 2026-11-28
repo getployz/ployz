@@ -30,7 +30,7 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
     let service_id = ServiceId::random();
     let first = spec(&service_id, "shared", "v1");
     let second = spec(&service_id, "shared", "v2");
-    containers::run(
+    containers::run_routed(
         &client,
         machines[0].id,
         ContainerKind::ServiceContainer,
@@ -39,7 +39,7 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
     )
     .await
     .unwrap();
-    containers::run(
+    containers::run_routed(
         &client,
         machines[1].id,
         ContainerKind::ServiceContainer,
