@@ -1,7 +1,9 @@
 //! Previews: a PR plan's preview rule, which a Device or a passkey signed, lets a member
 //! deploy a pull request as a preview of the plan's start-from Environment, its Parent, in
 //! a preview Namespace naming the one Server it runs on. Nothing opens until someone asks
-//! ([`DeployPullRequestPreview`]). The Store keeps the rule only for a Parent that can't be
+//! ([`DeployPullRequestPreview`]). Any other pull request, from a fork or by someone
+//! outside the Organization, deploys only with a person's [`CommitApproval`] of its head
+//! for that preview's own Namespace, and each later commit waits for its own. The Store keeps the rule only for a Parent that can't be
 //! production, refuses a deploy past the plan's cap, and opens a preview again on another
 //! Server once its own leaves. A preview closes when its pull request closes or someone
 //! closes it ([`ClosePreview`]), never for sitting idle. Every Server checks the rule and
@@ -9,8 +11,8 @@
 
 use std::num::NonZeroU8;
 
-use ployz_core::authority::{AutoDeployRule, Signed};
-use ployz_core::{Namespace, PreviewNamespace, RpcError};
+use ployz_core::authority::{AutoDeployRule, ChargedAuthority, CommitApproval, RuleId, Signed};
+use ployz_core::{MachineId, Namespace, PreviewNamespace, RpcError};
 
 use super::*;
 
@@ -21,7 +23,8 @@ pub(crate) const DEFAULT_CAP: NonZeroU8 = NonZeroU8::new(5).expect("5 is not 0")
 pub(crate) const OFF: &str = "Previews are off for this repository";
 
 /// Deploy a pull request as a preview now, in each Project whose plan keeps a preview rule
-/// for its repository: only a member's, from the repository itself.
+/// for its repository. A member's, from the repository itself, deploys as it is; any
+/// other only with `approval`, in the one Project whose rule it names.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct DeployPullRequestPreview {
@@ -29,6 +32,11 @@ pub struct DeployPullRequestPreview {
     pub number: PullRequestNumber,
     /// The head the person saw: refused once the pull request moved on.
     pub head: CommitSha,
+    /// A person's approval of `head` for the preview Namespace its row named. Kept with
+    /// the preview's build, so its check-in relays it and every Server checks it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub approval: Option<Signed<CommitApproval>>,
 }
 
 /// Close one live preview, freeing its place under the cap. Its pull request can deploy
@@ -203,14 +211,16 @@ pub(super) fn fit(
     Ok(terms)
 }
 
-/// The preview `event` opens under the rule `terms`, on the Server with the fewest of
-/// the `live` previews among the ones `trusted` says can hold one. Refused while it
-/// merges into the plan's Parent or no Server can hold it.
+/// The preview `event` opens under the rule `terms`: `asked`, the one a person approved,
+/// while `trusted` says its Server can hold one and no Environment ever took it, else a
+/// new one on the Server with the fewest of the `live` previews among those. Refused
+/// while it merges into the plan's Parent or no Server can hold it.
 fn slot(
     tx: &mut dyn Tx,
     (project, plan, terms): (&crate::id::ProjectId, &Stored, &AutoDeployRule),
     event: &PullRequest,
     (live, trusted): (&[Live], &Trusted),
+    asked: Option<&Namespace>,
 ) -> Result<PreviewNamespace, RpcError> {
     let destinations = destinations_of(tx, project, event.repository_id, &event.target_branch)?;
     if plan
@@ -229,24 +239,80 @@ fn slot(
             json!({}),
         ));
     };
-    let home = homes
-        .iter()
-        .min_by_key(|home| {
-            let held = live
-                .iter()
-                .filter(|open| open.preview.homed_on(home))
-                .count();
-            (held, *home)
-        })
-        .ok_or_else(|| {
-            error::conflict(
-                "No Server can hold a preview: upgrade one, or let one take Services",
-                json!({}),
-            )
-        })?;
+    if let Some(asked) = asked {
+        let fresh = tx
+            .query(
+                "SELECT environment_id FROM config_namespace WHERE namespace = ?1",
+                &[asked.as_str().into()],
+            )?
+            .is_empty();
+        return PreviewNamespace::of(asked)
+            .filter(|preview| fresh && homes.iter().any(|home| preview.homed_on(home)))
+            .ok_or_else(stale_approval);
+    }
+    fresh(&terms.rule, homes, live).ok_or_else(|| {
+        error::conflict(
+            "No Server can hold a preview: upgrade one, or let one take Services",
+            json!({}),
+        )
+    })
+}
+
+/// A new preview of `rule` on whichever of `homes` holds the fewest of the `live`
+/// previews: where a preview opening now goes, and the Namespace a person's approval of a
+/// commit names before it does. None while no Server can hold one.
+pub(super) fn fresh(rule: &RuleId, homes: &[MachineId], live: &[Live]) -> Option<PreviewNamespace> {
+    let home = homes.iter().min_by_key(|home| {
+        let held = live
+            .iter()
+            .filter(|open| open.preview.homed_on(home))
+            .count();
+        (held, *home)
+    })?;
     let nonce = uuid::Uuid::new_v4().into_bytes();
     let nonce = [nonce[0], nonce[1], nonce[2], nonce[3]];
-    Ok(PreviewNamespace::mint(&terms.rule, home, nonce))
+    Some(PreviewNamespace::mint(rule, home, nonce))
+}
+
+/// Refuse `approval` of `head` unless a Server would take it for a build under the rule
+/// `terms`, by the check a Server runs, with the keys Cloud read off a Server and the
+/// Cluster identity Cloud recorded. Returns the preview Namespace it approves.
+fn approved(
+    terms: &AutoDeployRule,
+    approval: &Signed<CommitApproval>,
+    head: &CommitSha,
+    trusted: &Trusted,
+) -> Result<Namespace, RpcError> {
+    let (Some(signers), Some(cluster)) = (&trusted.signers, &trusted.sealing) else {
+        return Err(error::unavailable(
+            "Ployz Cloud couldn't read which keys your Servers trust: try again",
+        ));
+    };
+    let keys = signers.keys();
+    let commit = ployz_core::authority::CommitSha::parse(head.as_str())
+        .map_err(|_| error::corrupt("pull request head"))?;
+    let checked = ployz_core::authority::version::Budget::default()
+        .charge(approval, &keys)
+        .and_then(|charged| {
+            terms.verify_authority(
+                ChargedAuthority::Approved(charged),
+                cluster.public_key,
+                commit,
+                None,
+            )
+        });
+    match (checked, approval.open()) {
+        (Ok(()), Ok(approved)) => Ok(approved.namespace),
+        _ => Err(stale_approval()),
+    }
+}
+
+/// Why an approval that no longer fits, or never did, deploys nothing.
+fn stale_approval() -> RpcError {
+    error::conflict(
+        "This approval is out of date. Reload and deploy again.",
+        json!({}),
+    )
 }
 
 /// Fix `preview`'s Namespace as PR Environment `environment`'s, before anything deploys it.
@@ -408,12 +474,13 @@ pub(super) fn reconcile(
             let Some(event) = record(tx, who, repository_id, pr.number)?.map(|r| r.facts()) else {
                 continue;
             };
+            // One a person approved commit by commit needs a new approval for its new home.
             let opened = match trusts(&event, trusted.members.as_deref()) {
                 true => {
                     let at = (&project, repository_id, &plan);
-                    open_one(tx, who, at, (&mut live, &event), trusted, automated)
+                    open_one(tx, who, at, (&mut live, &event, None), trusted, automated)
                 }
-                false => Err(not_member(&event.author)),
+                false => Err(needs_approval(&event.author)),
             };
             let Err(refused) = opened else {
                 continue;
@@ -449,52 +516,79 @@ fn held(
 }
 
 /// Open `event`'s preview now in each Project whose plan `locked` holds keeps a preview
-/// rule, as a member asked. Refused, opening none, while previews are off, it isn't a
-/// member's pull request from the repository itself, or a plan's cap is full.
+/// rule, as a member asked. A pull request that isn't a member's own from the repository
+/// opens only with `approval`, in the one Project whose rule it names, and an open
+/// preview of it deploys the approved head again. Refused, opening none, while previews
+/// are off, it needs an approval it lacks, or a plan's cap is full.
 pub(super) fn deploy(
     tx: &mut dyn Tx,
     who: &Actor,
     locked: &Locked,
-    event: &PullRequest,
+    (event, approval): (&PullRequest, Option<&Signed<CommitApproval>>),
     trusted: &Trusted,
     automated: &mut Automated,
 ) -> Result<(), RpcError> {
-    let planned: Vec<_> = held(tx, who, locked)?
+    let mut planned: Vec<_> = held(tx, who, locked)?
         .into_iter()
         .filter(|(_, _, plan)| plan.preview.is_some())
         .collect();
     if planned.is_empty() {
         return Err(error::conflict(OFF, json!({})));
     }
-    if !trusts(event, trusted.members.as_deref()) {
-        return Err(not_member(&event.author));
+    let approval = match trusts(event, trusted.members.as_deref()) {
+        true => None,
+        false => Some(approval.ok_or_else(|| needs_approval(&event.author))?),
+    };
+    if let Some(approval) = approval {
+        let named = approval.open().map_err(|_| stale_approval())?.rule;
+        planned.retain(|(_, _, plan)| {
+            (plan.preview.as_ref())
+                .and_then(|preview| preview.rule.open().ok())
+                .is_some_and(|terms| terms.rule == named)
+        });
+        if planned.is_empty() {
+            return Err(stale_approval());
+        }
     }
     let mut live = live(tx, who)?;
     for (project, repository_id, plan) in &planned {
         let at = (project, *repository_id, plan);
-        open_one(tx, who, at, (&mut live, event), trusted, automated)?;
+        open_one(
+            tx,
+            who,
+            at,
+            (&mut live, event, approval),
+            trusted,
+            automated,
+        )?;
     }
     Ok(())
 }
 
-/// Why a pull request by `author` gets no preview: a member's, from the repository
-/// itself, deploys.
-fn not_member(author: &str) -> RpcError {
+/// Why a pull request by `author` that isn't a member's own from the repository doesn't
+/// deploy: it needs a person's approval of its commit.
+fn needs_approval(author: &str) -> RpcError {
     error::conflict(
-        format!("Not deployed: {author} isn't in your organization on Ployz"),
+        format!("Not deployed: approve {author}'s commit with your passkey"),
         json!({ "author": author }),
     )
 }
 
 /// Open `event`'s preview under `plan` and admit its first Deployment, unless one is open
 /// there. One whose last deploy failed with nothing live closes, and a new one opens in
-/// its place. Refused while previews are off, the cap is full counting the `live`
-/// previews that hold a place, or no Server can hold it.
+/// its place. With `approval`, it opens in the Namespace the approval names, and an open
+/// one, which must be that one, deploys the approved head unless it already does.
+/// Refused while previews are off, the cap is full counting the `live` previews that hold
+/// a place, or no Server can hold it.
 fn open_one(
     tx: &mut dyn Tx,
     who: &Actor,
     (project, repository_id, plan): (&crate::id::ProjectId, RepositoryId, &Stored),
-    (live, event): (&mut Vec<Live>, &PullRequest),
+    (live, event, approval): (
+        &mut Vec<Live>,
+        &PullRequest,
+        Option<&Signed<CommitApproval>>,
+    ),
     trusted: &Trusted,
     automated: &mut Automated,
 ) -> Result<(), RpcError> {
@@ -506,6 +600,9 @@ fn open_one(
     if terms.ended {
         return Err(off());
     }
+    let asked = approval
+        .map(|approval| approved(&terms, approval, &event.head, trusted))
+        .transpose()?;
     let Some(start) = plan
         .start_from
         .as_ref()
@@ -528,7 +625,24 @@ fn open_one(
                 let because = crate::removal::mark::Closed::Person;
                 crate::removal::close(tx, who, &open.environment, because, automated)?;
             }
-            (true, Shown::Deploying(..) | Shown::Live) => return Ok(()),
+            (true, Shown::Deploying(..) | Shown::Live) => {
+                let (Some(approval), Some(asked)) = (approval, &asked) else {
+                    return Ok(());
+                };
+                if open.preview.namespace() != asked {
+                    return Err(stale_approval());
+                }
+                if deploys(tx, &open.environment, &event.head)? {
+                    return Ok(());
+                }
+                trusted.runnable()?;
+                let environment = open.environment.clone();
+                let deployed = crate::storage::attempt(tx, |tx| {
+                    redeploy(tx, who, &environment, (event, approval), trusted)
+                })?;
+                automation::record(&environment, Ok(Some(deployed)), automated)?;
+                return Ok(());
+            }
             (false, Shown::Failed(_)) => {}
             (false, Shown::Deploying(..) | Shown::Live) => holding += 1,
         }
@@ -542,12 +656,43 @@ fn open_one(
     }
     trusted.runnable()?;
     let deployed = crate::storage::attempt(tx, |tx| {
-        let namespace = slot(tx, (project, plan, &terms), event, (live, trusted))?;
-        create(tx, who, &start, plan, (event, trusted, Some(&namespace)))
+        let namespace = slot(
+            tx,
+            (project, plan, &terms),
+            event,
+            (live, trusted),
+            asked.as_ref(),
+        )?;
+        create(
+            tx,
+            who,
+            &start,
+            plan,
+            (event, trusted, Some(&namespace)),
+            approval,
+        )
     })?;
     *live = self::live(tx, who)?;
     automation::record(&start.summary.id, Ok(deployed), automated)?;
     Ok(())
+}
+
+/// Whether preview `environment`'s latest Deployment deploys `head` and hasn't failed or
+/// been cancelled.
+fn deploys(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    head: &CommitSha,
+) -> Result<bool, RpcError> {
+    Ok(deployment::history(tx, environment, 1)?
+        .first()
+        .is_some_and(|latest| {
+            latest.push.as_ref().is_some_and(|push| push.head == *head)
+                && !matches!(
+                    latest.status,
+                    deployment::DeploymentStatus::Failed | deployment::DeploymentStatus::Cancelled
+                )
+        }))
 }
 
 /// What a preview shows: what its Deployments came to.

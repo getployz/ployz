@@ -4,7 +4,9 @@
 //! pull request's preview shows.
 
 use ployz_core::authority::rule::{Builder, GithubSource, RuleEvent, RuleSource, Runner};
-use ployz_core::authority::{AutoDeployRule, PreviewTerms, RuleId, Signed, Signer, SignerKey};
+use ployz_core::authority::{
+    AutoDeployRule, CommitApproval, PreviewTerms, RuleId, Signed, Signer, SignerKey,
+};
 use ployz_core::config::ServiceGitAccess;
 use ployz_core::{
     DeployOutcome, DeployPreview, MachineId, Namespace, PreviewNamespace, RpcErrorCode, ServiceName,
@@ -13,11 +15,11 @@ use ployz_store::testing::backend;
 use ployz_store::{
     Actor, Admit, AdmitRemoval, AuthorizedRepository, Automated, BranchHead, ClosePreview,
     ConfigStore, CreateBranch, CreateGitService, CreateProject, DeployPullRequestPreview,
-    DeploymentId, EnvironmentId, EnvironmentName, EnvironmentRef, NotDeployed, OpenPreviewsQuery,
-    OrganizationId, PrPlansQuery, PreviewOutcome, PreviewsQuery, ProjectId, ProjectName,
-    PullRequest, PullRequestQuery, RuleQuery, RunEvidence, RunnerId, SealingRecipient,
-    ServiceLineageId, SetEnvironmentProtected, SetPrPlan, ShutDown, Signers, Sweep, SystemEvent,
-    Trusted, Written,
+    DeploymentId, EnvironmentId, EnvironmentName, EnvironmentRef, GithubBuildId, GithubRule,
+    NotDeployed, OpenPreviewsQuery, OrganizationId, PrPlansQuery, PreviewOutcome, PreviewsQuery,
+    ProjectId, ProjectName, PullRequest, PullRequestQuery, RuleQuery, RunEvidence, RunnerId,
+    SealingRecipient, ServiceLineageId, SetEnvironmentProtected, SetPrPlan, ShutDown, Signers,
+    Sweep, SystemEvent, Trusted, Written,
 };
 
 const HEAD: &str = "1111111111111111111111111111111111111111";
@@ -336,6 +338,7 @@ fn deploy(
         repository_id: backend::repo_id(11),
         number: backend::pr_number(number),
         head: backend::sha(HEAD),
+        approval: None,
     };
     store.write_trusted(who, &asked, trusted)
 }
@@ -1086,7 +1089,7 @@ fn a_preview_rule_naming_another_signer_than_the_one_who_signed_it_is_refused() 
 }
 
 #[test]
-fn only_a_member_s_pull_request_from_the_repository_deploys_as_a_preview() {
+fn only_a_member_s_pull_request_from_the_repository_deploys_as_a_preview_without_an_approval() {
     let (store, who) = shop();
     previews(&store, &who, 2);
     let trusted = homes(&['a']);
@@ -1098,13 +1101,9 @@ fn only_a_member_s_pull_request_from_the_repository_deploys_as_a_preview() {
     fork.head_repository_id = Some(backend::repo_id(12));
     pull(&store, &who, fork, &trusted);
 
-    for (number, author) in [(5, "mallory"), (6, "ada")] {
+    for number in [5, 6] {
         let refused = deploy(&store, &who, number, &trusted).unwrap_err();
         assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
-        assert_eq!(
-            refused.message,
-            format!("Not deployed: {author} isn't in your organization on Ployz")
-        );
     }
     let approve = ployz_store::ApprovePullRequest {
         repository_id: backend::repo_id(11),
@@ -1838,13 +1837,11 @@ fn each_pull_request_shows_its_preview_or_why_it_has_none() {
     ));
     let why = |number| why_not(&view, number);
     assert_eq!(why(7), Some(NotDeployed::MergesIntoStartFrom));
-    assert_eq!(
-        why(6),
-        Some(NotDeployed::NotMember {
-            author: "mallory".into()
-        })
-    );
+    assert_eq!(why(6), Some(NotDeployed::Full { live: 2, limit: 2 }));
     assert!(!row(&view, 6).member && row(&view, 5).member);
+    // Only the stranger's needs an approval, which names where it would open.
+    assert!(row(&view, 6).namespace.is_some());
+    assert_eq!(row(&view, 9).namespace, None);
     assert_eq!(why(9), Some(NotDeployed::Full { live: 2, limit: 2 }));
 
     let pr = PullRequestQuery {
@@ -1898,4 +1895,230 @@ fn a_preview_whose_deploy_failed_deploys_again_as_a_new_one() {
     };
     assert!(store.read(&who, &closed).unwrap().open.is_empty());
     assert!(previewing(&store, &who, 5));
+}
+
+/// [`homes`] `homes`, with Cloud's evidence that the Servers trust [`device`].
+fn trusting_homes(homes: &[char]) -> Trusted {
+    Trusted {
+        signers: trusting().signers,
+        sealing: trusting().sealing,
+        ..self::homes(homes)
+    }
+}
+
+/// News of a pull request `number` from a fork into `main`, at `head`, as of `updated`.
+fn fork(number: u64, head: &str, updated: &str) -> PullRequest {
+    PullRequest {
+        head_repository_id: Some(backend::repo_id(12)),
+        head: backend::sha(head),
+        ..facts(number, true, "main", updated)
+    }
+}
+
+/// `signer`'s approval of `commit` for the preview in `namespace`, under the rule
+/// [`previews`] keeps.
+fn approval(signer: &Signer, commit: &str, namespace: &Namespace) -> Signed<CommitApproval> {
+    let approval = CommitApproval {
+        cluster: cluster(),
+        rule: RuleId::from_bytes([9; 16]),
+        generation: 1,
+        repository_id: 11,
+        commit: ployz_core::authority::CommitSha::parse(commit).unwrap(),
+        namespace: namespace.clone(),
+        issued_at: ployz_core::authority::Timestamp::from_millis(1_800_000_000_000).unwrap(),
+        signer: SignerKey::Device(ployz_core::DeviceKey::from_bytes(
+            *signer.public().as_bytes(),
+        )),
+    };
+    Signed::sign(&approval, signer).unwrap()
+}
+
+/// Deploy pull request `number`'s `head` as a preview with `approval`.
+fn deploy_approved(
+    store: &ConfigStore,
+    who: &Actor,
+    (number, head): (u64, &str),
+    approval: Option<Signed<CommitApproval>>,
+    trusted: &Trusted,
+) -> Result<Automated, ployz_core::RpcError> {
+    let asked = DeployPullRequestPreview {
+        repository_id: backend::repo_id(11),
+        number: backend::pr_number(number),
+        head: backend::sha(head),
+        approval,
+    };
+    store.write_trusted(who, &asked, trusted)
+}
+
+/// [`approval_namespace_of`], which must name one.
+fn approval_namespace(
+    store: &ConfigStore,
+    who: &Actor,
+    number: u64,
+    trusted: &Trusted,
+) -> Namespace {
+    approval_namespace_of(store, who, number, trusted).unwrap()
+}
+
+/// What `web`'s build in Deployment `id` keeps and builds under.
+fn web_build(
+    store: &ConfigStore,
+    id: &DeploymentId,
+) -> (Option<Signed<CommitApproval>>, Option<GithubRule>) {
+    let build = GithubBuildId {
+        deployment: id.clone(),
+        service: ServiceName::parse("web").unwrap(),
+    };
+    (
+        store.github_input(&build).unwrap().approval,
+        store.github_rule(&build).unwrap(),
+    )
+}
+
+#[test]
+fn a_fork_deploys_only_with_an_approval_of_its_head_in_the_namespace_its_row_named() {
+    let (store, who) = shop();
+    previews(&store, &who, 2);
+    let trusted = trusting_homes(&['a', 'b']);
+    pull(
+        &store,
+        &who,
+        fork(6, HEAD, "2026-01-01T00:00:00Z"),
+        &trusted,
+    );
+
+    let unapproved = deploy_approved(&store, &who, (6, HEAD), None, &trusted).unwrap_err();
+    assert_eq!(unapproved.code, RpcErrorCode::Conflict, "{unapproved:?}");
+    let named = approval_namespace(&store, &who, 6, &trusted);
+    let other = "2222222222222222222222222222222222222222";
+    let stranger = Signer::from_seed(&[8; 32]);
+    let elsewhere = PreviewNamespace::mint(&RuleId::from_bytes([9; 16]), &machine('c'), [1; 4]);
+    for refused in [
+        approval(&device(), other, &named),
+        approval(&stranger, HEAD, &named),
+        approval(&device(), HEAD, elsewhere.namespace()),
+    ] {
+        let refused = deploy_approved(&store, &who, (6, HEAD), Some(refused), &trusted);
+        assert_eq!(refused.unwrap_err().code, RpcErrorCode::Conflict);
+        assert_eq!(preview_of(&store, &who, 6), None);
+    }
+
+    let approved = approval(&device(), HEAD, &named);
+    let deployed =
+        deploy_approved(&store, &who, (6, HEAD), Some(approved.clone()), &trusted).unwrap();
+
+    assert_eq!(
+        preview_of(&store, &who, 6).map(|preview| preview.namespace().clone()),
+        Some(named)
+    );
+    let deployment = &deployed.admitted.first().unwrap().deployment.id;
+    let (kept, rule) = web_build(&store, deployment);
+    assert_eq!(
+        kept,
+        Some(approved),
+        "the check-in relays what the build keeps"
+    );
+    assert!(matches!(rule, Some(GithubRule::Dispatch(_))), "{rule:?}");
+
+    // A member's own pull request still deploys as it is, building on its push.
+    let member = opened(&store, &who, (5, "main"), &trusted);
+    assert_eq!(approval_namespace_of(&store, &who, 5, &trusted), None);
+    let (kept, rule) = web_build(&store, &member.admitted.first().unwrap().deployment.id);
+    assert_eq!(kept, None);
+    assert!(matches!(rule, Some(GithubRule::Push(_))), "{rule:?}");
+}
+
+/// The Namespace pull request `number`'s row says an approval of its head names, if it
+/// needs one.
+fn approval_namespace_of(
+    store: &ConfigStore,
+    who: &Actor,
+    number: u64,
+    trusted: &Trusted,
+) -> Option<Namespace> {
+    let query = PreviewsQuery {
+        project: None,
+        repository: backend::repo_name("acme/web"),
+        number: None,
+    };
+    row(&store.read_trusted(who, &query, trusted).unwrap(), number)
+        .namespace
+        .clone()
+}
+
+#[test]
+fn a_later_commit_of_an_approved_preview_waits_for_its_own_approval() {
+    let (store, who) = shop();
+    previews(&store, &who, 2);
+    let trusted = trusting_homes(&['a']);
+    pull(
+        &store,
+        &who,
+        fork(6, HEAD, "2026-01-01T00:00:00Z"),
+        &trusted,
+    );
+    let named = approval_namespace(&store, &who, 6, &trusted);
+    let first = approval(&device(), HEAD, &named);
+    let opened = deploy_approved(&store, &who, (6, HEAD), Some(first.clone()), &trusted).unwrap();
+    run(&store, &opened.admitted.first().unwrap().deployment.id);
+
+    let next = "2222222222222222222222222222222222222222";
+    let synced = pull(
+        &store,
+        &who,
+        fork(6, next, "2026-01-02T00:00:00Z"),
+        &trusted,
+    );
+    let pushed = observe(
+        &store,
+        &who,
+        SystemEvent::BranchHead(BranchHead {
+            repository_id: backend::repo_id(11),
+            branch: backend::git_branch("search-6"),
+            base: None,
+            head: Some(backend::sha(next)),
+            changed: None,
+        }),
+        &trusted,
+    );
+
+    assert!(
+        synced.admitted.is_empty() && pushed.admitted.is_empty(),
+        "{synced:?} {pushed:?}"
+    );
+    let query = PreviewsQuery {
+        project: None,
+        repository: backend::repo_name("acme/web"),
+        number: None,
+    };
+    let view = store.read_trusted(&who, &query, &trusted).unwrap();
+    let PreviewOutcome::Live { head, newer, .. } = &row(&view, 6).preview else {
+        panic!("{:?}", row(&view, 6));
+    };
+    assert_eq!(
+        (head.as_str(), newer.as_ref().map(|newer| newer.as_str())),
+        (HEAD, Some(next))
+    );
+    assert_eq!(
+        row(&view, 6).namespace.as_ref(),
+        Some(&named),
+        "its own preview again"
+    );
+
+    let stale = deploy_approved(&store, &who, (6, next), Some(first), &trusted);
+    assert_eq!(stale.unwrap_err().code, RpcErrorCode::Conflict);
+    let again = approval(&device(), next, &named);
+    let redeployed =
+        deploy_approved(&store, &who, (6, next), Some(again.clone()), &trusted).unwrap();
+
+    let deployment = &redeployed.admitted.first().unwrap().deployment;
+    assert_eq!(
+        deployment.push.as_ref().map(|push| push.head.as_str()),
+        Some(next)
+    );
+    assert_eq!(
+        preview_of(&store, &who, 6).map(|preview| preview.namespace().clone()),
+        Some(named)
+    );
+    assert_eq!(web_build(&store, &deployment.id).0, Some(again));
 }

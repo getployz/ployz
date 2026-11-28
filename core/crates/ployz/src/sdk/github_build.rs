@@ -8,6 +8,7 @@
 //! A run that never checked in, or that GitHub failed for its own reasons, is
 //! skipped: the next Builder of the build's walk takes it. A failed build step fails it.
 
+use ployz_core::authority::{AutoDeployRule, GithubSource};
 use ployz_core::error_chain;
 pub use ployz_decide::github_build::GithubLook;
 use ployz_decide::github_build::{self, EndedRun, Ending, First, GrantRead};
@@ -54,11 +55,14 @@ pub enum GithubStart {
     },
     /// It builds under an automatic deploy rule for a person's Deploy: dispatch
     /// `workflow` on `branch` with `commit` as its input. Its builder job's OIDC token
-    /// names `workflow_ref`.
+    /// names `workflow_ref`. No `branch` under a preview rule, which names none: the commit
+    /// a person approved builds on the repository's default branch, which holds the
+    /// workflow, and the builder checks out the commit itself.
     Approved {
         workflow: String,
         workflow_ref: String,
-        branch: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
         commit: String,
     },
 }
@@ -158,12 +162,7 @@ pub async fn github_start(
         match unbuildable(&signed, &id.service, &outside) {
             None => {
                 return Ok(Dialed {
-                    outcome: GithubStart::Approved {
-                        workflow: github.workflow.clone(),
-                        workflow_ref: github.builder.r#ref.clone(),
-                        branch: github.branch.clone(),
-                        commit: commit.to_string(),
-                    },
+                    outcome: approved_start(&rule, github, commit.to_string()),
                     foreign,
                 });
             }
@@ -220,6 +219,17 @@ pub async fn github_start(
         outcome: start,
         foreign,
     })
+}
+
+/// How a person's build of `commit` under `rule`, whose source is `github`, starts: on
+/// the rule's branch, or under a preview rule on the repository's default branch.
+fn approved_start(rule: &AutoDeployRule, github: &GithubSource, commit: String) -> GithubStart {
+    GithubStart::Approved {
+        workflow: github.workflow.clone(),
+        workflow_ref: github.builder.r#ref.clone(),
+        branch: rule.preview.is_none().then(|| github.branch.clone()),
+        commit,
+    }
 }
 
 /// Why GitHub can't build `service` under its automatic deploy rule, which signed the
@@ -429,6 +439,10 @@ pub struct RuleCheckIn {
     pub service: ServiceName,
     /// The Deployment's lowering input narrowed to the Service, its Sealed values sealed.
     pub deployment: Value,
+    /// A person's approval of the commit for one preview, which the runner claims in place
+    /// of the branch head and every Server checks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval: Option<ployz_core::authority::Signed<ployz_core::authority::CommitApproval>>,
 }
 
 /// A rule build's runner checks in, on the run of the push it builds, with the OIDC
@@ -467,6 +481,7 @@ pub async fn github_rule_check_in(
             cluster: public_key,
             attest,
             service: id.service,
+            approval: built.approval,
         },
         foreign,
     })

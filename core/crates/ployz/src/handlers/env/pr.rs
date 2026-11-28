@@ -150,7 +150,9 @@ pub(crate) fn pr(root: &ArgMatches) -> Result<(), Error> {
     crate::ui::list(&json, &table)
 }
 
-/// Let a pull request's current head deploy: only that head, so a push waits again.
+/// Let a pull request's current head deploy: only that head, so a push waits again. A
+/// repository with previews deploys none this way: a preview's commit deploys only with a
+/// person's passkey approval of it, on the pull request's page in Ployz Cloud.
 pub(crate) fn approve(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let number = matches
@@ -167,7 +169,7 @@ pub(crate) fn approve(root: &ArgMatches) -> Result<(), Error> {
         project: project(matches)?,
     };
     let find =
-        |view: &ployz_store::PrPlansView| -> Vec<(ployz_store::RepositoryId, OpenPullRequest)> {
+        |view: &ployz_store::PrPlansView| -> Vec<(ployz_store::RepositoryId, bool, OpenPullRequest)> {
             view.plans
                 .iter()
                 .filter(|plan| {
@@ -179,11 +181,11 @@ pub(crate) fn approve(root: &ArgMatches) -> Result<(), Error> {
                     plan.open
                         .iter()
                         .filter(|open| open.number == number)
-                        .map(|open| (plan.repository_id, open.clone()))
+                        .map(|open| (plan.repository_id, plan.preview.is_some(), open.clone()))
                 })
                 .collect()
         };
-    let (repository_id, open) = match find(&store.read(&query)?).as_slice() {
+    let (repository_id, previews, open) = match find(&store.read(&query)?).as_slice() {
         [only] => only.clone(),
         [] => {
             return Err(Error::not_found(format!(
@@ -196,6 +198,11 @@ pub(crate) fn approve(root: &ArgMatches) -> Result<(), Error> {
             ));
         }
     };
+    if previews {
+        return Err(Error::conflict(format!(
+            "#{number} deploys as a preview: deploy it from Pull requests in Ployz Cloud"
+        )));
+    }
     let Some(head) = open.head.clone() else {
         return Err(Error::conflict(format!(
             "GitHub hasn't reported #{number}'s commit yet: try again shortly"
@@ -208,7 +215,7 @@ pub(crate) fn approve(root: &ArgMatches) -> Result<(), Error> {
     })?;
     let approved = find(&store.read(&query)?)
         .into_iter()
-        .map(|(_, open)| open)
+        .map(|(_, _, open)| open)
         .next()
         .unwrap_or(open);
     let short = head.short();
