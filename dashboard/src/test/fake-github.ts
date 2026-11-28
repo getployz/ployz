@@ -72,6 +72,10 @@ export function fakeGithubAuthority(answers: Partial<GithubAuthorityService> = {
       calls.push({ operation: "postCheck", input });
       return answers.postCheck?.(input) ?? unanswered("postCheck");
     },
+    postComment: (input) => {
+      calls.push({ operation: "postComment", input });
+      return answers.postComment?.(input) ?? unanswered("postComment");
+    },
     connect: (input) => {
       calls.push({ operation: "connect", input });
       return answers.connect?.(input) ?? unanswered("connect");
