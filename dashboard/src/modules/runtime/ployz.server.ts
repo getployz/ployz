@@ -20,7 +20,6 @@ import type {
   DrainScope,
   ExecutionError,
   IngressCheck,
-  LocalMachineRemoved,
   MachineDetails,
   MachineTarget,
   MachineUpdate,
@@ -79,20 +78,10 @@ export class PloyzProviderError extends Data.TaggedError(
   readonly cause: unknown;
 }> {}
 
-/**
- * The Server answered its Leave, so it reset, but the entry couldn't Forget its row. The removal finishes with Forget
- * alone, keeping the Leave's warning: once reset, the Server can't be read to send the whole removal again.
- */
-export class LeftNotForgotten extends Data.TaggedError("LeftNotForgotten")<{
-  readonly resetWarning: string | null;
-  readonly cause: unknown;
-}> {}
-
 export type PloyzSdkError =
   | PloyzProviderError
   | MissingDataLossIdentities
-  | ServerLacks
-  | LeftNotForgotten;
+  | ServerLacks;
 
 export interface PloyzSession {
   readonly logs: (options: LogOptions) => Effect.Effect<AsyncIterable<LogEvent>, PloyzSdkError>;
@@ -113,12 +102,7 @@ export interface PloyzSession {
   readonly approveJoin: (approval: Signed) => Effect.Effect<void, PloyzSdkError>;
   readonly observeEnrollment: () => Effect.Effect<EnrollmentSnapshot, PloyzProviderError>;
   readonly register: (assignment: EnrollmentAssignment) => Effect.Effect<JsonValue, PloyzProviderError>;
-  /** Resolves to why the reset didn't finish, if it didn't: the Server left the Cluster, but may keep its state. */
-  readonly removeMachine: (
-    machine: MachineTarget,
-    confirmDataLoss: DataLossConfirmation,
-  ) => Effect.Effect<LocalMachineRemoved, PloyzSdkError>;
-  /** Take a Server out of the Cluster without resetting it: it keeps its state and keys. */
+  /** Take a Server out of the Cluster: its row goes and every Member refuses its key. Nothing reaches the Server. */
   readonly removeMachineMembership: (machine: MachineTarget) => Effect.Effect<void, PloyzSdkError>;
   readonly dataLossIfMachineRemoved: (
     machine: MachineTarget,
@@ -272,25 +256,12 @@ function serverLacksFromSdkError(cause: unknown) {
   return Option.isSome(decoded) ? new ServerLacks({ machineId: decoded.value.details.target, capability: decoded.value.details.capability }) : null;
 }
 
-const LeftNotForgottenError = Schema.Struct({
-  code: Schema.String,
-  message: Schema.String,
-  details: Schema.Struct({ left: Schema.Literal(true), reset_warning: Schema.NullOr(Schema.String) }),
-});
-
-function leftNotForgottenFromSdkError(cause: unknown) {
-  const decoded = Schema.decodeUnknownOption(LeftNotForgottenError)(cause);
-  return Option.isSome(decoded) ? new LeftNotForgotten({ resetWarning: decoded.value.details.reset_warning, cause }) : null;
-}
-
 export function asSdkFailure(operation: string, cause: unknown): PloyzSdkError {
   const missingDataLoss = missingDataLossFromSdkError(cause);
   if (missingDataLoss !== null) return missingDataLoss;
   const lack = serverLacksFromSdkError(cause);
   if (lack !== null) return lack;
-  const left = leftNotForgottenFromSdkError(cause);
-  if (left !== null) return left;
-  if (cause instanceof MissingDataLossIdentities || cause instanceof ServerLacks || cause instanceof LeftNotForgotten) return cause;
+  if (cause instanceof MissingDataLossIdentities || cause instanceof ServerLacks) return cause;
   if (cause instanceof PloyzProviderError) return cause;
   return new PloyzProviderError({ operation, cause });
 }
@@ -395,10 +366,6 @@ function wrapClient(client: Client): PloyzSession {
       },
       catch: (cause) => new PloyzProviderError({ operation: "register", cause }),
     }),
-    removeMachine: (machine, confirmDataLoss) =>
-      sdkPromise("remove machine", () =>
-        client.removeMachine(machine, confirmDataLoss),
-      ),
     removeMachineMembership: (machine) =>
       sdkPromise("remove machine membership", () => client.removeMachineMembership(machine)),
     dataLossIfMachineRemoved: (machine) =>

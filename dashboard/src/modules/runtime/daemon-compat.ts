@@ -18,7 +18,6 @@ export const requirements = {
   volumeShrink: { capability: "ployz.volume.size.shrink.v1", feature: "Volume shrink" },
   pruneImages: { capability: "ployz.image.prune.v1", feature: "Image cleanup" },
   buildGrantInspect: { capability: "ployz.build.grant.inspect.v1", feature: "GitHub builds", plural: true },
-  leave: { capability: "ployz.machine.leave.v1", feature: "Server removal" },
   forget: { capability: "ployz.machine.forget.v1", feature: "Server removal" },
   ensureContainer: { capability: "ployz.container.ensure.v1", feature: "Deploys", plural: true },
 } as const satisfies Record<string, Requirement>;

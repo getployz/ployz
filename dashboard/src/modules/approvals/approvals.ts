@@ -1,7 +1,7 @@
 import type { ConfigCommand, DestructiveEffect, EnvironmentRef, JsonValue } from "@ployz/sdk";
 import { Schema } from "effect";
 import { asRecord, asString } from "#/lib/json";
-import { destroyedLine as storeDestroyedLine, droppedLine, type Guarded, prunes, type StoreReview } from "#/modules/deploy-approval/review";
+import { destroyedLine, droppedLine, type Guarded, prunes, type StoreReview } from "#/modules/deploy-approval/review";
 import { type OperationVerb, operationWords } from "#/modules/operations/asked";
 
 export const APPROVAL_STATUSES = ["pending", "approved", "denied", "superseded"] as const;
@@ -75,7 +75,7 @@ export const rollsBack = (review: ApprovalReview) => "diff" in review && (review
  */
 export function destroyedLines(command: string, review: ApprovalReview) {
   const lines = review.effects.map((effect) => {
-    const { verb, name, after } = destroyedLine(effect, command, review);
+    const { verb, name, after } = destroyedLine(effect, command);
     return `${verb}${name === null ? "" : ` ${name}`}${after}`;
   });
   if (!prunes(review)) return lines;
@@ -113,10 +113,6 @@ export function switchedAddresses(review: ApprovalReview) {
 export const asksForAuthKey = (review: ApprovalReview) => "operation" in review
   && review.operation.verb === "set_private_access" && review.operation.name === "on";
 
-/** A Server removal: its Volumes' data stays on the disk, so the card lists effects rather than destruction. */
-export const losesVolumeAccess = (review?: ApprovalReview) => review !== undefined && "operation" in review
-  && review.operation.verb === "remove" && review.operation.subject?.startsWith("server:") === true;
-
 /** `POST /api/cli/approvals/:id`: approve exactly the digest the human saw, or deny with a reason the agent gets back. */
 export const ApprovalDecision = Schema.Union([
   Schema.Struct({ approve: Schema.Struct({ digest: Schema.String.check(Schema.isNonEmpty()) }) }),
@@ -124,19 +120,8 @@ export const ApprovalDecision = Schema.Union([
 ]);
 export type ApprovalDecision = typeof ApprovalDecision.Type;
 
-export { droppedLine, prunes };
+export { destroyedLine, droppedLine, prunes };
 
-/** One thing the plan destroys, as `destroyedLine` in the Deploy review words it, but a Server removal's Volumes stay on its disk. */
-export function destroyedLine(effect: DestructiveEffect, command = "admit", review?: ApprovalReview) {
-  if (effect.kind === "deletes_volume" && losesVolumeAccess(review)) {
-    return {
-      verb: effect.name === undefined ? "Loses access to a volume" : "Loses access to volume",
-      name: effect.name ?? null,
-      after: ". Its data stays on the Server's disk until wiped. Wipe or reinstall the disk to erase it; sudo ployz-uninstall keeps the data.",
-    };
-  }
-  return storeDestroyedLine(effect, command);
-}
 
 /** A Store write as an approval names it: a retry apart from the Deploy it ships again. */
 export function approvalCommand(command: ConfigCommand) {

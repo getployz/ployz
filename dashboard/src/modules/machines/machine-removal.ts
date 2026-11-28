@@ -1,4 +1,4 @@
-import type { Departed, MachineId } from "@ployz/sdk";
+import type { MachineId } from "@ployz/sdk";
 import { Schema } from "effect";
 import {
   dataLossIdentitySchema,
@@ -23,7 +23,6 @@ export const EnqueueMachineRemoveInput = Schema.Struct({
 
 export type EnqueueMachineRemoveInput = typeof EnqueueMachineRemoveInput.Type;
 
-/** Forget one offline Server: no reset, so its Volumes are lost. `requestId` keys the request. */
 /** Forget Servers: the Organization whose every Server is gone. */
 export const ForgetServersInput = Schema.Struct({ organizationSlug: Schema.String });
 
@@ -32,6 +31,7 @@ export const ForgetServerInput = Schema.Struct({
   machineId: rustMachineIdSchema,
   requestId: Schema.String.check(Schema.isUUID()),
 });
+/** Forget one Server, as a removal does. `requestId` keys the request. */
 export type ForgetServerInput = typeof ForgetServerInput.Type;
 
 export const GetMachineRemoveAttemptInput = Schema.Struct({
@@ -64,20 +64,8 @@ export type MachineRemoveAttemptView =
       id: string;
       machineId: string;
       state: "failed" | "cancelled";
-      /**
-       * A reset sent to the Server whose run then ran out of retries. Any later step may be the one that ran out, so
-       * the Server may have reset, or not, and Cloud may or may not still list it.
-       */
-      unfinished: boolean;
       failureMessage: string;
     };
-
-/** What a failed removal tells the person who asked for it. A Server that is gone and still listed is forgotten. */
-export function removalFailureMessage(name: string, attempt: { unfinished: boolean; failureMessage: string }) {
-  return attempt.unfinished
-    ? `Removing ${name} didn't finish: Ployz Cloud ran out of retries. If ${name} is gone but still listed, forget it with Forget server.`
-    : attempt.failureMessage;
-}
 
 export function toMachineRemoveAttemptView(attempt: {
   id: string;
@@ -86,8 +74,6 @@ export function toMachineRemoveAttemptView(attempt: {
   missingIdentities: DataLossIdentity[] | null;
   failureCode: string | null;
   failureMessage: string | null;
-  removeSentAt: Date | null;
-  noReset: boolean;
   result: MachineRemoveResult | null;
 }): MachineRemoveAttemptView {
   switch (attempt.state) {
@@ -129,9 +115,6 @@ export function toMachineRemoveAttemptView(attempt: {
         id: attempt.id,
         machineId: attempt.machineId,
         state: attempt.state,
-        // Retries run out for any step, and the row doesn't say which; one before the reset was sent changed nothing.
-        unfinished: attempt.state === "failed" && attempt.failureCode === "retry_exhausted"
-          && attempt.removeSentAt !== null && !attempt.noReset,
         failureMessage: attempt.failureMessage,
       };
     }
@@ -149,8 +132,6 @@ export type MachineRemoveAttemptContext = {
   state: MachineRemoveAttemptState;
   inngestRunId: string | null;
   confirmDataLoss: DataLossIdentity[];
-  /** Take the Server out without resetting it: it keeps its state, and Cloud never lets go of the Cluster for it. */
-  noReset: boolean;
 };
 
 export type MachineRemoveCompletion =
@@ -163,32 +144,26 @@ export type MachineRemoveCompletion =
   | { state: "missing_identities"; identities: DataLossIdentity[] };
 
 export type RemoveMachineOutcome =
-  | { kind: "removed"; resetWarning: string | null; departed?: Departed }
-  /** The Server reset, and its row is still listed: Forget alone finishes the removal, with the Leave's warning. */
-  | { kind: "left"; resetWarning: string | null }
+  /** Taken out of the Cluster; `last` when it was the last Server, which no other forgets, so the Cluster goes. */
+  | { kind: "removed"; last: boolean }
   | { kind: "refused"; failureCode: "conflict" | "forbidden" | "server_lacks"; message: string }
   | { kind: "missing_identities"; identities: DataLossIdentity[] };
 
 type RemovalServer = { readonly id: string; readonly capabilities: readonly string[] };
 
 /**
- * The Server whose record lacks its removal step. The target leaves unless `noReset`; the entry forgets the target's
- * row, and Cloud can't tell ahead which Server it dials, so each one counts.
+ * The Server whose record lacks its removal step. Nothing is sent to the target; the entry forgets the target's row,
+ * and Cloud can't tell ahead which Server it dials, so each one counts.
  */
 export function removalLack(
   servers: readonly RemovalServer[],
-  removal: { readonly target: string; readonly entries: readonly string[]; readonly noReset: boolean },
+  removal: { readonly target: string; readonly entries: readonly string[] },
 ): ServerLacks | null {
-  const steps = [
-    ...(removal.noReset ? [] : [{ machineId: removal.target, requirement: requirements.leave }]),
-    ...removal.entries
-      .filter((entry) => entry !== removal.target)
-      .map((machineId) => ({ machineId, requirement: requirements.forget })),
-  ];
-  for (const { machineId, requirement } of steps) {
+  for (const machineId of removal.entries) {
+    if (machineId === removal.target) continue;
     const server = servers.find((candidate) => candidate.id === machineId);
-    if (server !== undefined && serverSupports(server, requirement) === false) {
-      return new ServerLacks({ machineId, capability: requirement.capability });
+    if (server !== undefined && serverSupports(server, requirements.forget) === false) {
+      return new ServerLacks({ machineId, capability: requirements.forget.capability });
     }
   }
   return null;

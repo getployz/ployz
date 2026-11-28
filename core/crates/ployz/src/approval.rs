@@ -226,7 +226,6 @@ impl Asked {
             Some(organization) => format!(" in Organization {organization}"),
             None => String::new(),
         };
-        let loses_volume_access = matches!(&self.required.subject, Subject::Operation(operation) if operation.loses_volume_access());
         let changes_only = self
             .required
             .effects
@@ -244,7 +243,7 @@ impl Asked {
                 "The next deploy{within} after this save destroys {}:",
                 things(self.required.effects.len())
             )
-        } else if changes_only || loses_volume_access {
+        } else if changes_only {
             format!("This {}{within}:", verb.noun())
         } else {
             format!(
@@ -255,16 +254,7 @@ impl Asked {
         }];
         for effect in &self.required.effects {
             let mark = if destroys(effect.kind) { "✕" } else { "~" };
-            let line = if loses_volume_access && effect.kind == DestructiveKind::DeletesVolume {
-                format!(
-                    "loses access to Volume {}; its data stays on the Server's disk until wiped. \
-                     Wipe or reinstall the disk to erase it; sudo ployz-uninstall keeps the data.",
-                    effect.name
-                )
-            } else {
-                line(effect)
-            };
-            lines.push(format!("  {mark} {line}"));
+            lines.push(format!("  {mark} {}", line(effect)));
             if let Some(lost) = &effect.lost_after {
                 lines.push(format!(
                     "    Changes after {} are not in {}",
@@ -508,36 +498,12 @@ mod tests {
     }
 
     #[test]
-    fn server_removal_approval_keeps_volume_data_on_disk() {
-        let asked: Asked = serde_json::from_value(serde_json::json!({
-            "approval": "d1",
-            "effects": [{ "kind": "deletes_volume", "name": "pgdata", "node": "v1", "path": "volumes/v1" }],
-            "operation": { "subject": "server:box", "verb": "remove", "name": "box" },
-        })).unwrap();
-        let review = asked.review(asked.verb(None)).join("\n");
-        assert!(review.contains("loses access to Volume pgdata"), "{review}");
-        assert!(
-            review.contains("its data stays on the Server's disk until wiped"),
-            "{review}"
-        );
-        assert!(
-            review.contains("Wipe or reinstall the disk to erase it"),
-            "{review}"
-        );
-        assert!(
-            review.contains("sudo ployz-uninstall keeps the data"),
-            "{review}"
-        );
-        assert!(!review.contains("deletes Volume"), "{review}");
-        assert!(!review.contains("destroys"), "{review}");
-    }
-
-    #[test]
     fn volume_deletion_approval_still_says_it_deletes_data() {
         for (subject, verb) in [
             (Some("project:shop"), "remove"),
             (Some("namespace:shop"), "clean"),
             (Some("server:box"), "clean"),
+            (Some("server:box"), "remove"),
             (Some("server:box"), "forget"),
             (Some("servers:acme"), "forget"),
             (None, "remove"),
@@ -942,8 +908,8 @@ mod tests {
         assert_eq!(
             asked.review_in(asked.verb(None), &chrono::Utc),
             [
-                "This removal in Organization ada:",
-                "  ✕ loses access to Volume pg-data; its data stays on the Server's disk until wiped. Wipe or reinstall the disk to erase it; sudo ployz-uninstall keeps the data.",
+                "This removal in Organization ada destroys 1 thing:",
+                "  ✕ deletes Volume pg-data and its data",
             ]
         );
 

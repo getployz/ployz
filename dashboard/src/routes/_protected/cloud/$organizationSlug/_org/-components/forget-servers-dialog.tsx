@@ -54,9 +54,7 @@ export function ForgetServersDialog({ organizationSlug, open, onOpenChange }: {
       confirmLabel="Forget servers" pendingLabel="Forgetting"
       sentence={<>Use this when your servers were deleted. Your projects and settings stay. Volume data on these servers is
         lost: no server is left to hold a mirror of it. Your enrollment tokens are deleted too, so make a new one for each
-        server you add. A forgotten server won't know it was forgotten. If one runs again as
-        it is, its services keep writing to its own copies, and Ployz never brings that back: run sudo ployz-uninstall on
-        it as soon as it boots.</>}
+        server you add.</>}
       callbacks={{ load, confirm }} />
   );
 }

@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 
-import type { Departed, LocalMachineRemoved, MachineId } from "@ployz/sdk";
+import type { MachineId } from "@ployz/sdk";
 import { Data, Effect, Option } from "effect";
 import { machineRemoveRequested } from "#/modules/machines/machines.events";
 import type { Actor } from "#/modules/identity/actor";
@@ -11,7 +11,6 @@ import { type PloyzSdkError, rpcErrorCode, rpcErrorMessage, sdkFailureMessage } 
 import { requireAccess } from "#/modules/organization/access.server";
 import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
 import type { EnqueueMachineRemoveInput, GetMachineRemoveAttemptInput, LoadMachineDataLossInput, MachineRemoveAttemptContext, RemoveMachineOutcome } from "#/modules/machines/machine-removal";
-import type { ServerRelease } from "#/modules/machines/machine-removal-states";
 import { removalLack } from "#/modules/machines/machine-removal";
 import {
   claimMachineRemoveAttempt,
@@ -41,17 +40,11 @@ export class MachineRemovalProviderFailure extends Data.TaggedError(
 }
 
 export function asRemoveMachineOutcome<R>(
-  run: Effect.Effect<Pick<LocalMachineRemoved, "reset_warning"> & { readonly departed?: Departed }, PloyzSdkError, R>,
+  run: Effect.Effect<void, PloyzSdkError, R>,
   servers: readonly { readonly id: string; readonly name: string }[] = [],
 ) {
   return run.pipe(
-    Effect.map((removed): RemoveMachineOutcome => ({
-      kind: "removed", resetWarning: removed.reset_warning, departed: removed.departed,
-    })),
-    // The Leave's reply is the only proof the Server reset; the step's result keeps it for the Forget after it.
-    Effect.catchTag("LeftNotForgotten", (left) =>
-      Effect.succeed({ kind: "left" as const, resetWarning: left.resetWarning } satisfies RemoveMachineOutcome),
-    ),
+    Effect.as<RemoveMachineOutcome>({ kind: "removed", last: false }),
     Effect.catchTag("ServerLacks", (lack) =>
       Effect.succeed({
         kind: "refused" as const,
@@ -94,22 +87,20 @@ function carriedOnlyBy(name: string, others: readonly string[]) {
 }
 
 /**
- * Resets the Server under Cloud's own connection. A step retry sends the same removal again, and the SDK runs every
- * guard again while the Server is listed; one already gone by its Machine ID answers removed, its reset unconfirmed,
- * so Cloud keeps its row with that reason. A Server that answered its Leave but whose row the entry couldn't Forget
- * answers left; given that reply as `left`, this sends Forget alone and answers removed with the Leave's warning.
- * A run whose attempt is no longer its running attempt asks nothing and answers superseded. The pairing generation
- * Cloud reached it through comes back with the outcome, as the witness `releaseServerActivity` checks before it lets
- * go of anything.
+ * Takes the Server out of the Cluster under Cloud's own connection: another Server forgets it, so its row goes and every
+ * Member refuses its key. Nothing is sent to the Server itself. The last Server has no other to forget it: the Cluster
+ * goes with it, and `releaseServerActivity` lets go of it. A step retry sends the same Forget again, which is
+ * idempotent. A run whose attempt is no longer its running attempt asks nothing and answers superseded. The pairing
+ * generation Cloud reached the Cluster through comes back with the outcome, as the witness `releaseServerActivity`
+ * checks before it lets go of anything.
  */
 export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
-  function* (attempt: Pick<MachineRemoveAttemptContext, "id" | "organizationId" | "machineId" | "confirmDataLoss" | "noReset"> & {
+  function* (attempt: Pick<MachineRemoveAttemptContext, "id" | "organizationId" | "machineId"> & {
     readonly inngestRunId: string;
-  }, left: { readonly resetWarning: string | null } | null = null) {
-    const forgetOnly = attempt.noReset || left !== null;
+  }) {
     const access = yield* loadOrganizationConnections(attempt.organizationId);
     const runtime = yield* OrganizationRuntime;
-    // The Engine refuses to remove the Server it was entered by while another is listed, so Cloud enters by another.
+    // The Engine refuses to forget the Server it was entered by while another is listed, so Cloud enters by another.
     const avoiding = yield* runtime.open(attempt.organizationId, { avoiding: attempt.machineId });
     const session = avoiding.status === "connected" ? avoiding : yield* runtime.open(attempt.organizationId, { only: attempt.machineId });
     if (access.kind !== "ready" || session.status !== "connected") {
@@ -121,31 +112,28 @@ export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
     // Without a frame every Server's capabilities are unknown, and an unknown capability attempts.
     const frame = yield* Effect.option(session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS));
     const servers = frameServers(Option.getOrNull(frame));
-    const lack = removalLack(servers, {
-      target: attempt.machineId,
-      entries: access.connections.flatMap((connection) => connection.machine_id ?? []),
-      noReset: forgetOnly,
-    });
-    if (lack !== null) {
-      return { kind: "refused", failureCode: "server_lacks", message: sdkFailureMessage(lack, servers), generation: access.generation } as const;
-    }
     const machine = attempt.machineId;
-    // Entered by the target itself. Without a frame, the other paired Servers stand in for the ones the Engine lists.
+    // Without a frame, the other paired Servers stand in for the ones the Engine lists.
     const others = Option.isSome(frame)
       ? servers.flatMap((server) => server.id === machine ? [] : [server.name])
       : access.connections.flatMap((connection) =>
         connection.machine_id === undefined || connection.machine_id === machine ? [] : [connection.name ?? connection.machine_id]);
-    if (!forgetOnly && avoiding.status !== "connected" && others.length > 0) {
+    const last = others.length === 0;
+    const lack = last ? null : removalLack(servers, {
+      target: machine,
+      entries: access.connections.flatMap((connection) => connection.machine_id ?? []),
+    });
+    if (lack !== null) {
+      return { kind: "refused", failureCode: "server_lacks", message: sdkFailureMessage(lack, servers), generation: access.generation } as const;
+    }
+    if (!last && avoiding.status !== "connected") {
       const name = servers.find((server) => server.id === machine)?.name ?? machine;
       return { kind: "refused", failureCode: "conflict", message: carriedOnlyBy(name, others), generation: access.generation } as const;
     }
     const owned = yield* markOwnedMachineRemoveSent({ attemptId: attempt.id, inngestRunId: attempt.inngestRunId });
     if (!owned) return { kind: "superseded" } as const;
-    const outcome = yield* asRemoveMachineOutcome(forgetOnly
-      ? session.connected.removeMachineMembership(machine).pipe(Effect.as(left === null
-        ? { reset_warning: null }
-        : { reset_warning: left.resetWarning, departed: { kind: "reset", row_warning: left.resetWarning } as const }))
-      : session.connected.removeMachine(machine, { confirmed: [...attempt.confirmDataLoss] }), servers);
+    if (last) return { kind: "removed", last: true, generation: access.generation } as const;
+    const outcome = yield* asRemoveMachineOutcome(session.connected.removeMachineMembership(machine), servers);
     return { ...outcome, generation: access.generation };
   },
 );
@@ -183,34 +171,15 @@ export const releaseLeavingLanesActivity = (input: {
 }) => releaseLanesOff(input.organizationId, { id: input.machineId, name: input.name }, input.writes);
 
 /**
- * The SDK's reset warning for a Server the Cluster had already forgotten (ployz `RESET_UNCONFIRMED`). Only a removal
- * step result that predates `departed` needs it.
- */
-const RESET_UNCONFIRMED = "its reset couldn't be confirmed: it was already gone from the Cluster";
-
-/**
- * What a removed Server leaves of Cloud's hold. A Server whose Leave was unreachable may not have reset, a partial
- * outcome: it may keep Cloud's key, so Cloud keeps its row and its pairing. Otherwise `dropRemovedServer` drops the
- * Server's row of the witnessed pairing, as after a reset whose own row removal on the Server failed. When a reset took
- * that pairing's last Server, the Store lets go of everything that ran, and then Cloud forgets the pairing. A Server
- * taken out without a reset loses its row but never lets go of the Cluster. A Server the Cluster had already forgotten
- * is listed nowhere else, so its row goes while other Servers keep the pairing; as the last, Cloud keeps its hold.
+ * What a removed Server leaves of Cloud's hold. `dropRemovedServer` drops the Server's row of the witnessed pairing, its
+ * device keys and enrollment tokens with it. When that was the pairing's last Server, the Store lets go of everything
+ * that ran, and then Cloud forgets the pairing: the Server itself is never told, and keeps running what it ran.
  */
 export const releaseServerActivity = Effect.fn("MachineRemoval.release")(function* (input: {
-  organizationId: string; machineId: MachineId; generation: string; resetWarning: string | null; departed?: Departed;
-  noReset: boolean;
+  organizationId: string; machineId: MachineId; generation: string;
 }) {
-  const kept = {
-    kind: "kept",
-    reason: `its reset didn't finish (${input.resetWarning}), so it may still hold Cloud's key.`,
-  } satisfies ServerRelease;
-  // A step result older than `departed` reads its prose as before: any warning but RESET_UNCONFIRMED keeps the hold.
-  const departed = input.departed?.kind
-    ?? (input.resetWarning === null ? "reset" : input.resetWarning === RESET_UNCONFIRMED ? "already_forgotten" : "unreachable");
-  if (departed === "unreachable") return kept;
-  const removal = input.noReset ? "membership" : departed === "already_forgotten" ? "unconfirmed" : "reset";
-  const dropped = yield* dropRemovedServer({ ...input, removal });
-  if (dropped.kind === "unconfirmed_last") return kept;
+  const dropped = yield* dropRemovedServer({ ...input, removal: "removed" });
+  if (dropped.kind === "unconfirmed_last") return yield* Effect.die(new Error("A removal Cloud ran is never unconfirmed."));
   if (dropped.kind !== "last") return dropped;
   // The Store lets go first, while the pairing still fences a replacement: if this fails, nothing more is deleted and
   // the step retries; a replay finding the pairing gone skips it.

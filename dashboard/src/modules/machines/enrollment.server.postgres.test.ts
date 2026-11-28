@@ -2070,7 +2070,7 @@ describe("organization enrollment coordinator", () => {
     const unfinished = await joinedServer(fake, founder, 2);
     const generation = hashEnrollmentToken(founder.pairingCredential);
     for (const [attempt, index] of [[founder, 0], [unfinished, 2]] as const) {
-      expect(await fake.coordinator.dropRemoved({ organizationId, machineId: attempt.machineId, generation, removal: "reset" }))
+      expect(await fake.coordinator.dropRemoved({ organizationId, machineId: attempt.machineId, generation, removal: "removed" }))
         .toEqual({ kind: "others_remain" });
       expect(await fake.coordinator.enroll({ token: attempt.token, identity: identity(index) }))
         .toMatchObject({ failure: { _tag: "Unauthorized" } });
