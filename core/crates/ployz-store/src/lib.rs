@@ -106,8 +106,8 @@ pub use ployz_core::config::RowId;
 pub use pull_request::{
     ApprovePullRequest, MergeRow, OnMerge, OnMergeCheck, OnMergeConclusion, OnMergeQuery,
     OpenPreviewsQuery, OpenPreviewsView, OpenPullRequest, PrPlansQuery, PrPlansView, PreviewPlan,
-    PullRequest, PullRequestQuery, PullRequestRef, PullRequestView, Ride, SetMergeValue, SetPrPlan,
-    Standing, Sweep,
+    PreviewRuleQuery, PreviewRuleView, PreviewServer, PullRequest, PullRequestQuery,
+    PullRequestRef, PullRequestView, Ride, SetMergeValue, SetPrPlan, Standing, Sweep,
 };
 pub use query::*;
 pub use region::{

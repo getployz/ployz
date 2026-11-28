@@ -6,7 +6,7 @@
 
 use ployz_core::authority::{
     AutoDeployRule, Births, BuildPolicy, PlannedVolumes, RuleBasis, RuleId, RuleSource, Signed,
-    rule::template,
+    rule::{preview_template, template},
     rule_draft::{RuleImageView, RuleSourceView},
 };
 use ployz_core::config::{SavedEnvironmentIntent, ServiceSource, canonicalize_environment_intent};
@@ -126,7 +126,7 @@ impl RuleView {
     }
 }
 
-/// The rule an Environment holds, ended or not.
+/// The rule an Environment holds, ended or not. A preview holds its plan's preview rule.
 pub(crate) fn stored(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -135,9 +135,10 @@ pub(crate) fn stored(
         "SELECT rule FROM config_auto_deploy_rule WHERE environment_id = ?1",
         &[environment.as_str().into()],
     )?;
-    rows.first()
-        .map(|row| row.json(0, "Automatic deploy rule"))
-        .transpose()
+    match rows.first() {
+        Some(row) => row.json(0, "Automatic deploy rule").map(Some),
+        None => crate::pull_request::preview::rule(tx, environment),
+    }
 }
 
 /// `rule`'s terms. A kept rule that won't open counts as no rule: nothing it would
@@ -447,6 +448,42 @@ pub(crate) fn approved(
     saved: &SavedEnvironmentIntent,
     target: &[RequestedServiceSpec],
 ) -> Vec<ServiceName> {
+    if let Some(preview) = &rule.preview {
+        if ployz_core::PreviewNamespace::of(namespace).is_none() {
+            return Vec::new();
+        }
+        let sources = sources(saved);
+        let approves = |spec: &RequestedServiceSpec| {
+            if let Some(pinned) = preview
+                .pinned
+                .iter()
+                .find(|pinned| pinned.name == spec.name)
+            {
+                return preview_template(spec, namespace, true).ok() == Some(pinned.template);
+            }
+            let Some(approved) = rule.service(&spec.name) else {
+                return false;
+            };
+            let (Some(policy), Some(source)) = (
+                &approved.policy,
+                sources.iter().find(|source| source.service == spec.name),
+            ) else {
+                return false;
+            };
+            preview_template(spec, namespace, false).ok() == Some(approved.template)
+                && BuildPolicy::derive(
+                    &source.root_dir,
+                    &source.build,
+                    spec,
+                    policy.platforms.clone(),
+                    policy.cache,
+                ) == *policy
+        };
+        return (target.iter())
+            .filter(|spec| approves(spec))
+            .map(|spec| spec.name.clone())
+            .collect();
+    }
     if let RuleSource::Registry(source) = &rule.source {
         let changed = changed(rule, namespace, target, &[], &[]);
         let basis = RuleBasis {

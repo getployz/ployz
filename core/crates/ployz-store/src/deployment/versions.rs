@@ -1097,12 +1097,18 @@ pub(crate) fn unsigned(
     Ok(unsigned)
 }
 
-/// Each Service a rule names. A rule names each Service it ever deployed, so one that
-/// ended still says which ran signed.
+/// Each Service a rule names, with each image a preview rule pins. A rule names each
+/// Service it ever deployed, so one that ended still says which ran signed.
 fn ruled(rule: Option<&ployz_core::authority::AutoDeployRule>) -> Vec<ServiceName> {
+    let pinned = (rule.iter())
+        .filter_map(|rule| rule.preview.as_ref())
+        .flat_map(|preview| &preview.pinned)
+        .map(|pinned| &pinned.name);
     rule.iter()
         .flat_map(|rule| &rule.services)
-        .map(|service| service.name.clone())
+        .map(|service| &service.name)
+        .chain(pinned)
+        .cloned()
         .collect()
 }
 

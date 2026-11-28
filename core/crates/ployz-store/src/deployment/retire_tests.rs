@@ -917,6 +917,7 @@ fn a_narrowed_deployment_never_tears_down_a_service_saved_state_runs() {
                     },
                     ployz_core::Namespace::parse("shop-production").unwrap(),
                     None,
+                    None,
                 )
                 .map(|_| ())
             })

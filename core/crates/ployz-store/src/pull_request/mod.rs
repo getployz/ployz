@@ -22,6 +22,7 @@ mod checks;
 pub(crate) mod on_merge;
 mod plan;
 pub(crate) mod preview;
+mod preview_rule;
 pub use crate::pr_environment::PullRequestRef;
 pub(crate) use checks::*;
 pub(crate) use on_merge::view as on_merge;
@@ -30,6 +31,8 @@ pub(crate) use on_merge::{forget_edits, set_merge_value};
 pub(crate) use plan::*;
 pub(crate) use preview::open_previews;
 pub use preview::{OpenPreviewsQuery, OpenPreviewsView, PreviewPlan};
+pub(crate) use preview_rule::view as preview_rule;
+pub use preview_rule::{PreviewRuleQuery, PreviewRuleView, PreviewServer};
 
 use crate::id::{
     BranchName, CommitSha, GithubUserId, PullRequestNumber, RepositoryId, RepositoryName,
@@ -1491,7 +1494,26 @@ fn make(
     if copy.is_empty() {
         return Ok(None);
     }
-    for lineage in &plan.copy {
+    // A preview copies all of it, so nothing it runs reads the start-from's own data,
+    // and seeds nothing: its databases start empty.
+    let lineages: Vec<&String> = match preview {
+        Some(_) => (working.services.iter().map(|service| &service.lineage_id))
+            .chain(
+                working
+                    .volumes
+                    .iter()
+                    .map(|volume| &volume.resource_lineage_id),
+            )
+            .chain(
+                working
+                    .configs
+                    .iter()
+                    .map(|config| &config.resource_lineage_id),
+            )
+            .collect(),
+        None => plan.copy.iter().collect(),
+    };
+    for lineage in lineages {
         if let Some(name) = branch::node_of(working, lineage)
             && !copy.contains(&name)
         {
@@ -1501,6 +1523,7 @@ fn make(
     let setup = plan
         .setup
         .iter()
+        .filter(|_| preview.is_none())
         .filter_map(|setup| {
             // Setup Commands for Services it doesn't copy are left out.
             let Some(NodeName::Service(service)) = branch::node_of(working, &setup.lineage) else {

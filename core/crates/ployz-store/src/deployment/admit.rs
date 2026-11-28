@@ -527,6 +527,7 @@ fn deploy(
         trusted,
     )?;
     let landing = deployment::Landing::of(&review.head);
+    let opening = deployment::Opening::of(tx, id, &namespace)?;
     // A narrowed one freezes now, so only the Services it hands the runner decide
     // Shared Writes before anything asks for approval. A full one hands every one.
     let narrowed = match admit.services.is_empty() {
@@ -539,6 +540,7 @@ fn deploy(
             deployment::Scope::of(&admit.services, &[]),
             namespace.clone(),
             cluster_domain,
+            opening.as_ref(),
         )?),
     };
     refuse_shared_writes(
@@ -597,6 +599,7 @@ fn deploy(
                 },
                 namespace,
                 cluster_domain,
+                opening.as_ref(),
             )?
         }
     };
@@ -781,6 +784,7 @@ fn unchanged(
     (services, landing): (&[ServiceName], &deployment::Landing<'_>),
     (namespace, cluster_domain): (&Namespace, Option<&Hostname>),
 ) -> Result<Option<(Revision, SavedEnvironmentIntent, deployment::Frozen)>, RpcError> {
+    let opening = deployment::Opening::of(tx, environment, namespace)?;
     for revision in revisions(tx, environment)? {
         let saved = deployment::saved_at(tx, environment, revision)?;
         if !running
@@ -797,6 +801,7 @@ fn unchanged(
             deployment::Scope::of(services, &[]),
             namespace.clone(),
             cluster_domain,
+            opening.as_ref(),
         )?;
         let ships_as_it_runs = frozen.nodes.iter().all(|node| {
             saved

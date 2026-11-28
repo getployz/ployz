@@ -531,6 +531,7 @@ fn admit_taking_everything_off(
         },
         namespace,
         None,
+        None,
     )?;
     let admitted = deployment::admit(
         tx,

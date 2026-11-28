@@ -148,7 +148,7 @@ pub struct LowerDeploymentSnapshot {
 
 impl LowerDeploymentSnapshot {
     /// Whether this snapshot's config names Service `service`.
-    fn serves(&self, service: &ServiceName) -> bool {
+    pub fn serves(&self, service: &ServiceName) -> bool {
         self.config.pointer("/privateDns").and_then(Value::as_str) == Some(service.as_str())
     }
 

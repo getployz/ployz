@@ -1036,6 +1036,7 @@ pub(crate) fn auto_admit(
         true => deployment::dropped(tx, id, &saved.intent, &landing)?,
         false => Vec::new(),
     };
+    let opening = deployment::Opening::of(tx, id, &namespace)?;
     let frozen = deployment::freeze(
         id,
         &who.organization,
@@ -1059,6 +1060,7 @@ pub(crate) fn auto_admit(
         },
         namespace,
         cluster_domain,
+        opening.as_ref(),
     )?;
     let pins: BTreeMap<ServiceName, CommitSha> = pins
         .iter()

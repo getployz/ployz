@@ -173,6 +173,8 @@ fn typescript_declarations() -> String {
     declarations.add::<super::PreviewHomes>();
     declarations.add::<ployz_store::OpenPreviewsQuery>();
     declarations.add::<ployz_store::OpenPreviewsView>();
+    declarations.add::<ployz_store::PreviewRuleQuery>();
+    declarations.add::<ployz_store::PreviewRuleView>();
     declarations.add::<ployz_store::PreviewPlan>();
     declarations.add::<ployz_core::InspectVolumeCopyRequest>();
     declarations.add::<ployz_core::SeedVolumeRequest>();

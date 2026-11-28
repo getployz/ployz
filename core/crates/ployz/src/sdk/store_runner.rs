@@ -2306,7 +2306,8 @@ async fn rule_proofs(
 /// The proof each image Service `claimed`'s registry rule covers creates with: the signed
 /// rule alone, for a spec that names an image of the rule's repository by digest. Each
 /// Server pulls that digest from the registry itself and checks the rule's settings, so
-/// one the rule no longer approves is refused there.
+/// one the rule no longer approves is refused there. Under a preview rule, each Service it
+/// pins creates with the rule alone, whose template names the image.
 fn registry_proofs(claimed: &Claimed, proofs: &mut crate::deploy::RuleProofs) {
     use ployz_core::authority::{KeptRule, RuleEvidence, RuleProof};
     let Some(signed) = &claimed.rule else {
@@ -2315,6 +2316,25 @@ fn registry_proofs(claimed: &Claimed, proofs: &mut crate::deploy::RuleProofs) {
     let Some(rule) = signed.open().ok().filter(|rule| !rule.ended) else {
         return;
     };
+    let kept = |evidence, service: &ServiceName| KeptRule {
+        proof: Box::new(RuleProof {
+            rule: signed.clone(),
+            evidence,
+            claim: None,
+            reader: None,
+        }),
+        // The logins this Deploy's own Deployment froze become what's applied.
+        login: claimed.intent.registry_logins.get(service).cloned(),
+    };
+    if let Some(preview) = &rule.preview {
+        for pinned in &preview.pinned {
+            let runs = (claimed.intent.target.iter()).any(|spec| spec.name == pinned.name);
+            if runs && !proofs.contains(&pinned.name) {
+                proofs.insert(pinned.name.clone(), kept(RuleEvidence::Pinned, &pinned.name));
+            }
+        }
+        return;
+    }
     let Some(source) = rule.source.registry() else {
         return;
     };
@@ -2328,19 +2348,7 @@ fn registry_proofs(claimed: &Claimed, proofs: &mut crate::deploy::RuleProofs) {
                 && named.digest.is_some()
         });
         if ours {
-            // The logins this Deploy's own Deployment froze become what's applied.
-            proofs.insert(
-                spec.name.clone(),
-                KeptRule {
-                    proof: Box::new(RuleProof {
-                        rule: signed.clone(),
-                        evidence: RuleEvidence::Registry,
-                        claim: None,
-                        reader: None,
-                    }),
-                    login: claimed.intent.registry_logins.get(&spec.name).cloned(),
-                },
-            );
+            proofs.insert(spec.name.clone(), kept(RuleEvidence::Registry, &spec.name));
         }
     }
 }

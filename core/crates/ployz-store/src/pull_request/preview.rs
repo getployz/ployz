@@ -579,6 +579,31 @@ pub(crate) fn of(
     ))
 }
 
+/// The rule preview `environment` deploys under: its plan's preview rule, whichever
+/// Parent and generation it names now. None for any other Environment. Every Server checks
+/// the rule against the preview's Namespace and Parent itself.
+pub(crate) fn rule(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<Option<Signed<AutoDeployRule>>, RpcError> {
+    if of(tx, environment)?.is_none() {
+        return Ok(None);
+    }
+    let rows = tx.query(
+        "SELECT e.project_id, p.repository_id FROM config_pr_environment p \
+         JOIN config_environment e ON e.id = p.environment_id WHERE p.environment_id = ?1",
+        &[environment.as_str().into()],
+    )?;
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    let project: crate::id::ProjectId = row.parse(0, "Project ID")?;
+    let plan = load(tx, &project, row.number(1, "repository")?)?;
+    Ok(plan
+        .and_then(|plan| plan.preview)
+        .map(|preview| preview.rule))
+}
+
 /// Whether `environment` is a preview its own removal closes. A Close of it may have
 /// reached its Server, which then never opens that Namespace again, so nothing makes it
 /// live again.
