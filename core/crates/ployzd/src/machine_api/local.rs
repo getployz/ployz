@@ -598,21 +598,15 @@ impl MachineRpc for MachineService {
     }
 
     async fn restore_trash(&self, request: Request<OpaquePayload>) -> Answer {
+        let local = self.at(&request);
         let request = expect::<op::RestoreTrash>(request)?;
-        finish(self.local.restore_trash(&request).await)
+        finish(local.restore_trash(&request).await)
     }
 
     async fn empty_trash(&self, request: Request<OpaquePayload>) -> Answer {
+        let local = self.at(&request);
         let request = expect::<op::EmptyTrash>(request)?;
-        finish(
-            self.local
-                .volume_verb::<ployz_core::TrashEmptied>(
-                    "EmptyTrash",
-                    crate::volume_copy::TRASH_EMPTY_ROUTE,
-                    &request,
-                )
-                .await,
-        )
+        finish(local.empty_trash(&request).await)
     }
 
     async fn close_preview(&self, request: Request<OpaquePayload>) -> Answer {
@@ -1143,6 +1137,13 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             &error,
             &Gate::new(ployz_core::PRIVATE_ACCESS_APPROVAL_CAPABILITY).next(
                 "ployz private-access on from an approved device, or Connect in the dashboard with your passkey",
+            ),
+        )),
+        LocalMachineError::TrashRefused(_) => Err(gated(
+            tonic::Code::PermissionDenied,
+            &error,
+            &Gate::new(ployz_core::TRASH_APPROVAL_CAPABILITY).next(
+                "ployz volume trash on the Server, or the Server's Trash in the dashboard with your passkey",
             ),
         )),
         LocalMachineError::RuleGrantRefused(_)

@@ -158,6 +158,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "falls back: an older daemon ignores `approval` on SetPrivateAccess; one not enforcing turns Private Access on as before, and one enforcing refuses an Operator's SetPrivateAccess as it did, naming the route",
     ),
     (
+        "ployz.volume.trash.approval.v1",
+        "gated: Ployz Cloud shows a Server's Trash only where it advertises it, and says to upgrade the Server elsewhere; `ployz volume trash` reaches the Server's own socket as before",
+    ),
+    (
         "ployz.volume.size.set.v1",
         "gated: a caller checks the contract first and refuses the resize, naming the Server whose daemon lacks it",
     ),
@@ -295,15 +299,15 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     ),
     (
         "ployz.volume.trash.v1",
-        "refused legibly: Trash calls go only to the Server the caller connects to, and an older daemon's refusal names the capability",
+        "gated: Ployz Cloud lists a Server's Trash only where it advertises ployz.volume.trash.approval.v1; an older daemon refuses an Operator's list, naming the capability",
     ),
     (
         "ployz.volume.trash-restore.v1",
-        "refused legibly: Trash calls go only to the Server the caller connects to, and an older daemon's refusal names the capability",
+        "gated: Ployz Cloud asks for a passkey and sends it only to a Server advertising ployz.volume.trash.approval.v1; an older daemon refuses an Operator's call as before, naming the capability",
     ),
     (
         "ployz.volume.trash-empty.v1",
-        "refused legibly: Trash calls go only to the Server the caller connects to, and an older daemon's refusal names the capability",
+        "gated: Ployz Cloud asks for a passkey and sends it only to a Server advertising ployz.volume.trash.approval.v1; an older daemon refuses an Operator's call as before, naming the capability",
     ),
     (
         "ployz.machine.join.device-approval.v1",

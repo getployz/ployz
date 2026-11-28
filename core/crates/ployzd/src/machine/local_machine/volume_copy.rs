@@ -12,10 +12,11 @@ use ployz_core::{
 };
 
 use ployz_core::authority::{
-    AuthorityRefusal, CopyFacts, CopyVerified, CopyWindow, Purpose, Timestamp, copy,
+    AuthorityRefusal, CopyFacts, CopyVerified, CopyWindow, Purpose, Signed, Timestamp,
+    TrashApproval, TrashAsk, TrashFacts, copy, trash,
 };
 
-use super::{AdmittedSpec, CutRefusal, Error, LocalMachine, PlacedHolder, SwitchGuard};
+use super::{AdmittedSpec, CutRefusal, Error, LocalMachine, PlacedHolder, Scope, SwitchGuard};
 use crate::{
     docker::FloorTurn,
     faults::{Identity, Point, Want},
@@ -287,16 +288,19 @@ impl LocalMachine {
     }
 
     /// Put Trash entry `request.id` back, refused before the plugin changes anything when
-    /// it holds the data of a preview whose home is another Server, or when the Trash lists
-    /// no readable entry by that ID, whose data could be anyone's.
+    /// an Operator asks without a person's approval of that entry here, when it holds the
+    /// data of a preview whose home is another Server, or when the Trash lists no readable
+    /// entry by that ID, whose data could be anyone's.
     ///
     /// # Errors
-    /// Returns [`Error::PreviewRefused`] for another Server's preview or an entry not
+    /// Returns [`Error::TrashRefused`] for an Operator's restore its approval doesn't
+    /// admit, [`Error::PreviewRefused`] for another Server's preview or an entry not
     /// listed, and the plugin's error otherwise.
     pub(crate) async fn restore_trash(
         &self,
         request: &ployz_core::RestoreTrashRequest,
     ) -> Result<ployz_core::TrashRestored, Error> {
+        self.admit_trash(request.approval.as_ref(), request.into())?;
         let _switch = self.lock_switch().await?;
         let trash: ployz_core::TrashList = self
             .volume_verb(
@@ -321,6 +325,49 @@ impl LocalMachine {
             request,
         )
         .await
+    }
+
+    /// Destroy the Trash entries `request` names, refused before the plugin changes
+    /// anything when an Operator asks without a person's approval of exactly those entries
+    /// here.
+    ///
+    /// # Errors
+    /// Returns [`Error::TrashRefused`] for an Operator's empty its approval doesn't admit,
+    /// and the plugin's error otherwise.
+    pub(crate) async fn empty_trash(
+        &self,
+        request: &ployz_core::EmptyTrashRequest,
+    ) -> Result<ployz_core::TrashEmptied, Error> {
+        self.admit_trash(request.approval.as_ref(), request.into())?;
+        self.volume_verb("EmptyTrash", crate::volume_copy::TRASH_EMPTY_ROUTE, request)
+            .await
+    }
+
+    /// Whether this caller may restore or empty what `ask` names: a Full caller always,
+    /// an Operator only with a person's approval of it on this Machine, read against this
+    /// Machine's floored clock and the keys it trusts now.
+    fn admit_trash(
+        &self,
+        approval: Option<&Signed<TrashApproval>>,
+        ask: TrashAsk<'_>,
+    ) -> Result<(), Error> {
+        if let Scope::Full(_) = self.scope_now()? {
+            return Ok(());
+        }
+        let approval = approval.ok_or(Error::TrashRefused(AuthorityRefusal::Unsigned {
+            purpose: Purpose::Workflow,
+        }))?;
+        let record = self.record();
+        let trusted = record.trusted_keys();
+        let facts = TrashFacts {
+            trusted: &trusted,
+            cluster: self.cluster_key(record.phase()),
+            machine: record.id(),
+            now: self.approvals.observed_now(Timestamp::now())?,
+        };
+        let approver = trash::verify(approval, ask, &facts).map_err(Error::TrashRefused)?;
+        tracing::info!(%approver, "Trash change approved");
+        Ok(())
     }
 
     fn require_joined(&self) -> Result<(), Error> {

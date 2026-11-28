@@ -24,9 +24,9 @@ use crate::cli::{base, positional, switch, value};
 use crate::ui::{Cell, Fields, Table, Tone};
 
 pub(super) mod leftovers;
-mod restore;
+pub(crate) mod restore;
 pub(super) mod run;
-pub(super) mod trash;
+pub(crate) mod trash;
 
 pub(super) fn group(command: Command) -> Command {
     base(command, "Manage Volumes")

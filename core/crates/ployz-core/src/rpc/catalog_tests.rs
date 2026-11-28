@@ -347,7 +347,7 @@ const ROWS: &[(&str, &str, &str, &str, &str, &str)] = &[
         "list_trash",
         "ployz.volume.trash.v1",
         "Container",
-        "Full",
+        "Operator",
         "Unary",
     ),
     (
@@ -355,7 +355,7 @@ const ROWS: &[(&str, &str, &str, &str, &str, &str)] = &[
         "restore_trash",
         "ployz.volume.trash-restore.v1",
         "Container",
-        "Full",
+        "Operator",
         "Unary",
     ),
     (
@@ -363,7 +363,7 @@ const ROWS: &[(&str, &str, &str, &str, &str, &str)] = &[
         "empty_trash",
         "ployz.volume.trash-empty.v1",
         "Container",
-        "Full",
+        "Operator",
         "Unary",
     ),
     (
@@ -582,6 +582,7 @@ const EXTRAS: &[(&str, &str)] = &[
     ("ployz.build.grant.rule.v1", "Always"),
     ("ployz.ingress.tunnel.v1", "Cluster"),
     ("ployz.private-access.approval.v1", "Cluster"),
+    ("ployz.volume.trash.approval.v1", "Container"),
     ("ployz.container.signed-version.v1", "Always"),
     ("ployz.container.signed-version.proposal.v1", "Always"),
     ("ployz.container.free-receipt.v1", "Always"),

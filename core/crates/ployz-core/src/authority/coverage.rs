@@ -32,9 +32,9 @@ use crate::{
     SET_INGRESS_DOORS_CAPABILITY, SET_KEY_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY,
     SET_PRIVATE_ACCESS_CAPABILITY, SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY,
     SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY, SIGNED_VERSION_CAPABILITY,
-    SIGNED_VERSION_PROPOSAL_CAPABILITY, TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY,
-    UPDATE_CONTAINER_PLACEMENT_CAPABILITY, UPDATE_MACHINE_CAPABILITY, UPGRADE_EXACT_CAPABILITY,
-    WRAP_SEALING_KEY_CAPABILITY,
+    SIGNED_VERSION_PROPOSAL_CAPABILITY, TAIL_LOGS_CAPABILITY, TRASH_APPROVAL_CAPABILITY,
+    UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_CONTAINER_PLACEMENT_CAPABILITY,
+    UPDATE_MACHINE_CAPABILITY, UPGRADE_EXACT_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY,
 };
 
 /// A statement a trusted key signs that admits an Operator's call.
@@ -48,6 +48,7 @@ pub enum Statement {
     Rule,
     PrivateAccess,
     Copy,
+    Trash,
 }
 
 impl Statement {
@@ -63,6 +64,7 @@ impl Statement {
             Self::Rule => &[DEPLOY_RULE_CAPABILITY, BUILD_GRANT_RULE_CAPABILITY],
             Self::PrivateAccess => &[PRIVATE_ACCESS_APPROVAL_CAPABILITY],
             Self::Copy => &[SEED_COPY_CAPABILITY],
+            Self::Trash => &[TRASH_APPROVAL_CAPABILITY],
         }
     }
 }
@@ -201,9 +203,9 @@ pub const AUTHORIZATION: &[(&str, Authorization)] = &[
         SET_VOLUME_SIZE_CAPABILITY,
         Bound("residual: a bound can refuse writes, a drop"),
     ),
-    (LIST_TRASH_CAPABILITY, Full),
-    (RESTORE_TRASH_CAPABILITY, Full),
-    (EMPTY_TRASH_CAPABILITY, Full),
+    (LIST_TRASH_CAPABILITY, Read),
+    (RESTORE_TRASH_CAPABILITY, Signed(&[Statement::Trash])),
+    (EMPTY_TRASH_CAPABILITY, Signed(&[Statement::Trash])),
     (LIST_IMAGES_CAPABILITY, Read),
     (
         PRUNE_IMAGES_CAPABILITY,
@@ -657,22 +659,16 @@ pub const CASES: &[Case] = &[
         Expected::Served,
     ),
     case(
-        LIST_TRASH_CAPABILITY,
-        "from the mesh",
-        "a ListTrash of the deleted Volumes' names and sizes, from Cloud",
-        Expected::Refused(&[LIST_TRASH_CAPABILITY]),
-    ),
-    case(
         RESTORE_TRASH_CAPABILITY,
-        "from the mesh",
-        "a RestoreTrash of a deleted Volume, from Cloud",
-        Expected::Refused(&[RESTORE_TRASH_CAPABILITY]),
+        "no approval",
+        "a RestoreTrash of a deleted Volume with no person's approval, from Cloud",
+        Expected::Refused(&[TRASH_APPROVAL_CAPABILITY]),
     ),
     case(
         EMPTY_TRASH_CAPABILITY,
-        "from the mesh",
-        "an EmptyTrash of a deleted Volume, from Cloud",
-        Expected::Refused(&[EMPTY_TRASH_CAPABILITY]),
+        "no approval",
+        "an EmptyTrash of a deleted Volume with no person's approval, from Cloud",
+        Expected::Refused(&[TRASH_APPROVAL_CAPABILITY]),
     ),
     case(
         CLOSE_PREVIEW_CAPABILITY,

@@ -30,6 +30,9 @@ export type {
   SourceSummary,
   StepDigest,
   StepKind,
+  TrashAction,
+  TrashApproval,
+  TrashTerms,
   VersionsDraft,
   VersionStep,
 } from "./generated/payloads";
@@ -52,6 +55,7 @@ import type {
   RuleView,
   Signed,
   SourceNeed,
+  TrashTerms,
   VersionsDraft,
 } from "./generated/payloads";
 
@@ -63,6 +67,12 @@ export function autoDeployRuleEndBody(view: RuleView, terms: Pick<RuleTerms, "is
  * this browser, bound by its digest, which ployz-core takes here as the Servers do. Throws an Error for malformed terms.
  */
 export function privateAccessApprovalBody(terms: PrivateAccessTerms): string;
+
+/**
+ * The Trash approval a passkey answers for `terms`, in canonical form: the one Server and the exact entries it restores or
+ * empties, sorted and each once, by the ployz-core code the Servers run. Throws an Error for malformed terms.
+ */
+export function trashApprovalBody(terms: TrashTerms): string;
 
 /**
  * The waiting `join` as the one step of a bundle a passkey answers under `operation`, open from `issuedAt` to `expiresAt`

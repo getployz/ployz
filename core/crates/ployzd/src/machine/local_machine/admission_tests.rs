@@ -753,6 +753,7 @@ async fn a_trash_restore_of_another_servers_preview_changes_nothing() {
     let request = ployz_core::RestoreTrashRequest {
         id: ployz_core::TrashId::parse(&id).unwrap(),
         promote: false,
+        approval: None,
     };
     let refused = machine.restore_trash(&request).await;
     assert!(
@@ -791,6 +792,7 @@ async fn a_trash_restore_of_an_entry_not_listed_readable_changes_nothing() {
     let request = ployz_core::RestoreTrashRequest {
         id: ployz_core::TrashId::parse(&id).unwrap(),
         promote: false,
+        approval: None,
     };
     let refused = machine.restore_trash(&request).await;
     assert!(
@@ -809,4 +811,82 @@ async fn a_trash_restore_of_an_entry_not_listed_readable_changes_nothing() {
             .all(|(route, _)| route != crate::volume_copy::TRASH_RESTORE_ROUTE),
         "{calls:?}"
     );
+}
+
+/// A Device's approval to empty `ids` in the Trash of `machine`, signed just now.
+fn trash_approval(
+    fixture: &Fixture,
+    machine: ployz_core::MachineId,
+    ids: &[ployz_core::TrashId],
+) -> Signed<ployz_core::authority::TrashApproval> {
+    let body = ployz_core::authority::TrashApproval::drafted(&ployz_core::authority::TrashTerms {
+        cluster: fixture.cluster,
+        machine,
+        action: ployz_core::authority::TrashAction::Empty,
+        ids: ids.to_vec(),
+        issued_at: Timestamp::now(),
+        signer: SignerKey::Device(fixture.signer.public().into()),
+    });
+    Signed::sign(&body, &fixture.signer).unwrap()
+}
+
+/// An Operator empties only the entries a person approved on this Server: no approval, an
+/// approval of other entries or of another Server reaches no plugin, and the approved one does.
+#[tokio::test]
+async fn an_operators_trash_empty_takes_only_an_approval_of_those_entries_here() {
+    let fixture = fixture().await;
+    let dir = crate::test_dir::TestDir::new("trash-approval");
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let plugin = crate::storage::test_support::FakePlugin::default();
+    let picked = ployz_core::TrashId::parse("a".repeat(26)).unwrap();
+    let other = ployz_core::TrashId::parse("b".repeat(26)).unwrap();
+    plugin.reply(
+        crate::volume_copy::TRASH_EMPTY_ROUTE,
+        json!({"Ok": {"emptied": [picked.to_string()]}}),
+    );
+    let (served, _server) = plugin.serve(&dir.0);
+    let machine = fixture
+        .machine
+        .clone()
+        .with_plugin(served)
+        .at_operator_scope();
+    let here = fixture.machine.record().id();
+    let elsewhere = ployz_core::MachineId::parse("5".repeat(32)).unwrap();
+    let empty = |approval| ployz_core::EmptyTrashRequest {
+        ids: vec![picked],
+        bulk: false,
+        approval,
+    };
+    for (approval, field) in [
+        (None, None),
+        (
+            Some(trash_approval(&fixture, here, &[picked, other])),
+            Some(ployz_core::authority::MismatchField::TrashEntries),
+        ),
+        (
+            Some(trash_approval(&fixture, elsewhere, &[picked])),
+            Some(ployz_core::authority::MismatchField::ThisMachine),
+        ),
+    ] {
+        let refused = machine.empty_trash(&empty(approval)).await;
+        match field {
+            None => assert!(
+                matches!(
+                    refused,
+                    Err(Error::TrashRefused(AuthorityRefusal::Unsigned { .. }))
+                ),
+                "{refused:?}"
+            ),
+            Some(field) => assert!(
+                matches!(refused, Err(Error::TrashRefused(AuthorityRefusal::Mismatch { field: got })) if got == field),
+                "{refused:?}"
+            ),
+        }
+    }
+    assert!(plugin.calls.lock().unwrap().is_empty());
+    let emptied = machine
+        .empty_trash(&empty(Some(trash_approval(&fixture, here, &[picked]))))
+        .await
+        .unwrap();
+    assert_eq!(emptied.emptied, vec![picked]);
 }

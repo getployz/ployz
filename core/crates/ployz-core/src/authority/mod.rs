@@ -3,7 +3,8 @@
 //! Cloud carries these but cannot mint them: a Machine checks the signature against the
 //! keys it trusts, checks every bound field against the request in hand, and keeps
 //! its own record of what it already acted on. Joins, key changes, signed versions,
-//! automatic deploy rules and copies of a Volume each have a statement type here, and
+//! automatic deploy rules, copies of a Volume and a Trash's restores and empties each have a
+//! statement type here, and
 //! [`TrustedKeys::covers`] says which trusted key may sign each. A proposal signs an ordered plan
 //! of steps once, and each step travels unsigned with the bundle in its envelope.
 
@@ -24,6 +25,7 @@ pub mod rule;
 pub mod rule_draft;
 pub mod scope;
 pub mod shown;
+pub mod trash;
 pub mod trusted_key;
 pub mod validity;
 pub mod version;
@@ -65,6 +67,7 @@ pub use scope::{
     Ask, Cap, CapSet, Grant, GrantKind, GrantVolume, KeyKind, KeyName, KeyPlace, KeyPlaces,
     KeyScope, PlaceService, Reach, TrustedGrant, ValueReach,
 };
+pub use trash::{TrashAction, TrashApproval, TrashAsk, TrashFacts, TrashTerms};
 pub use trusted_key::{
     Passkey, PasskeyAccount, PasskeyApprover, PasskeyAssertion, PasskeyPublicKey, TrustedKey,
     TrustedKeys, TrustedPasskey,
