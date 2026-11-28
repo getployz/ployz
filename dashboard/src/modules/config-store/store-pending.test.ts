@@ -66,9 +66,7 @@ it("names a pending Unicode domain in punycode, as the Store names it", () => {
     .toEqual([{ mark: "domain", environment, service: "web", name: "xn--bcher-kva.example.com" }]);
 });
 
-it("marks an On merge write by its row and a PR plan write by the fields it sets", () => {
-  expect(marksOf({ command: "set_merge_value", environment, row: "w:env.A" }))
-    .toEqual([{ mark: "merge_value", environment, row: "w:env.A" }]);
+it("marks a PR plan write by the fields it sets", () => {
   expect(marksOf({ command: "set_pr_plan", project: "shop", repository: "acme/web", enabled: true, start_from: null, copy: null,
     setup: null, remove_on_close: false, include_bots: null }))
     .toEqual([{ mark: "pr_plan", project: "shop", repository: "acme/web", change: { enabled: true, remove_on_close: false } }]);

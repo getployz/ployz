@@ -48,7 +48,7 @@ const delivery = (id: string) => ({
 });
 
 it.live(
-  "pull requests reach the Store: a PR Environment deploys on open, its check is published, a late open never reopens it",
+  "pull requests reach the Store: a PR Environment deploys on open and a late open never reopens it",
   () =>
     Effect.gen(function* () {
       const pull: PullState = { state: "open", updated_at: "2026-09-29T10:00:00Z" };
@@ -93,19 +93,19 @@ it.live(
         return view.environments.map((listing) => listing.name);
       });
 
-      // Opened: the PR Environment deploys, and the check says its merge lands no config changes.
+      // Opened: the PR Environment deploys. Nothing lands on its merge, so no check says so.
       const opened = yield* run("open");
       expect(opened.admitted).toHaveLength(1);
-      expect(opened.check).toBe("posted");
+      expect(opened.check).toBe("skipped");
       expect(dispatched).toEqual(["open"]);
       // Cloud reads the pull request as itself, once for all linked Organizations.
       expect(githubApi.calls.filter((call) => call.path.endsWith("/pulls/5")).map((call) => call.access))
         .toEqual([{ type: "installation", installationId: 7 }]);
       expect(sent).toEqual([[expect.objectContaining({ data: expect.objectContaining({ deploymentId: opened.admitted[0], trigger: "github" }) })]]);
       expect(yield* environments()).toEqual(["pr-5", "production"]);
-      expect(posted).toMatchObject([{ installationId: 7, repositoryId: 42, headSha: HEAD, conclusion: "success", title: "No config changes" }]);
+      expect(posted).toEqual([]);
 
-      // A later write in its Project may move the check: the Store names it, and Cloud asks for it again.
+      // A later write in its Project may move what Ployz says on it: the Store names it, and Cloud asks for it again.
       yield* callStore(ORGANIZATION, null, { operation: "write", command: {
         command: "edit", environment: here, expect: null, changes: [{ op: "set", path: "web.replicas", value: 2 }],
       } }).pipe(Effect.provide(services));
@@ -113,7 +113,7 @@ it.live(
         organizationId: ORGANIZATION, repositoryId: 42, number: 5, pullRequestKey: "42:5",
       } }]]);
 
-      // Closed: never deployed, so it goes at once; no check for a closed pull request.
+      // Closed: never deployed, so it goes at once.
       Object.assign(pull, { state: "closed", updated_at: "2026-09-29T11:00:00Z" });
       expect((yield* run("close")).check).toBe("skipped");
       expect(yield* environments()).toEqual(["production"]);

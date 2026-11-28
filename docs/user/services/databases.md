@@ -39,9 +39,7 @@ starts with the password **Not set**. Its first **Deploy** from the dashboard ma
 your browser, seals it and deploys, all in the same click, so its new, empty volume sets up with
 a password of its own. A `ployz deploy` of that copy before then is refused with
 `postgres.POSTGRES_PASSWORD has no value yet. Deploy from the dashboard to make it.`, and so is a preview's
-automatic deploy. A pull request merge keeps the password the database already has. A database
-the pull request adds arrives in production without one, so production needs one dashboard
-**Deploy** before it runs.
+automatic deploy.
 
 A branch that shares production's database doesn't get production's password, so variables
 that read it, such as your app's `DATABASE_URL`, are left out of its deploys. The **New branch**

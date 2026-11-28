@@ -7,28 +7,22 @@
 //! each pull request and passes its current facts in as a system event; the Store
 //! decides. An older read never replaces a newer one: facts are ordered by GitHub's
 //! `updated_at`. Opening makes the PR Environment and deploys it; renaming the head
-//! branch retracks it; the merge lands its On merge list, once; closing closes it,
-//! unless the plan keeps it, it holds what its merge didn't land, or the event that
-//! first reports the merge didn't land it in every Destination, or found none.
+//! branch retracks it; closing or merging closes it, unless the plan keeps it.
+//! Nothing it changed lands anywhere when it merges.
 //!
 //! Closing a Branch, for its pull request or for sitting idle a week, removes it
 //! as the Store ([`crate::removal::close`]): Cloud admits its removal from the
 //! Servers under the mark (`Admit::Remove`) and the sweep deletes it once that
 //! applied. Cancelling that removal leaves the Branch be until it is reopened or
-//! pushed to. An idle PR Environment whose merge would land something only comes
-//! off the Servers (`Admit::ShutDown`).
+//! pushed to.
 
-mod checks;
-pub(crate) mod on_merge;
+mod page;
 mod plan;
 pub(crate) mod preview;
 mod preview_rule;
 mod preview_view;
 pub use crate::pr_environment::PullRequestRef;
-pub(crate) use checks::*;
-pub(crate) use on_merge::view as on_merge;
-pub use on_merge::{MergeRow, OnMerge, OnMergeInto, OnMergeQuery, Ride, SetMergeValue};
-pub(crate) use on_merge::{forget_edits, set_merge_value};
+pub(crate) use page::*;
 pub(crate) use plan::*;
 pub use preview::{
     ClosePreview, DeployPullRequestPreview, OpenPreviewsQuery, OpenPreviewsView, PreviewPlan,
@@ -56,7 +50,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-use crate::automation::{self, Automated, Skipped};
+use crate::automation::{self, Automated};
 use crate::branch::idle::Deadline;
 use crate::branch::{self, CreateBranch, Setup, SetupCommand};
 use crate::deployment::{self, DeploymentSummary};
@@ -272,9 +266,6 @@ enum Phase {
         into: BranchName,
         head: CommitSha,
         standing: OpenStanding,
-        /// What each Destination didn't take. None until it landed, and for good for
-        /// a merge a Store from before `0012_on_merge` landed.
-        landed: Option<Vec<on_merge::Unlanded>>,
     },
 }
 
@@ -294,12 +285,7 @@ enum OpenStanding {
 impl Phase {
     /// The phase the columns of a Store from before `0040_pull_request_phase` mean.
     /// An approval of any head but the latest never admits that head, so it needs one.
-    fn of_columns(
-        facts: &PullRequest,
-        merged: Option<Merged>,
-        landed: Option<Vec<on_merge::Unlanded>>,
-        standing: Option<Standing>,
-    ) -> Self {
+    fn of_columns(facts: &PullRequest, merged: Option<Merged>, standing: Option<Standing>) -> Self {
         let head = facts.head.clone();
         let standing = match standing {
             Some(Standing::Trusted) => OpenStanding::Trusted,
@@ -320,7 +306,6 @@ impl Phase {
                 into,
                 head,
                 standing,
-                landed,
             },
             None if facts.open => Self::Open { head, standing },
             None => Self::Closed { head, standing },
@@ -393,7 +378,7 @@ struct Record {
 }
 
 /// The columns [`Record::read`] reads, in its order.
-const RECORD: &str = "facts, merged, unlanded, standing, phase";
+const RECORD: &str = "facts, merged, standing, phase";
 
 impl Record {
     /// [`RECORD`]'s columns, from `at` in `row`. A row a Store from before
@@ -405,10 +390,9 @@ impl Record {
         let derived = Phase::of_columns(
             &facts,
             row.optional_json(at + 1, "pull request merge")?,
-            row.optional_json(at + 2, "unlanded")?,
-            row.optional_json(at + 3, "pull request standing")?,
+            row.optional_json(at + 2, "pull request standing")?,
         );
-        let stored: Option<Phase> = row.optional_json(at + 4, "pull request phase")?;
+        let stored: Option<Phase> = row.optional_json(at + 3, "pull request phase")?;
         let agrees = |stored: &Phase| {
             std::mem::discriminant(stored) == std::mem::discriminant(&derived)
                 && stored.head() == derived.head()
@@ -447,7 +431,7 @@ pub struct ApprovePullRequest {
     pub head: CommitSha,
 }
 
-/// A pull request's PR Environments and whether it is ready to merge.
+/// A pull request's PR Environments and previews.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct PullRequestQuery {
@@ -455,16 +439,13 @@ pub struct PullRequestQuery {
     pub number: PullRequestNumber,
 }
 
-/// What Cloud publishes as the pull request's GitHub check.
+/// What Cloud publishes on the pull request.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct PullRequestView {
     /// The latest facts Cloud reported; none before the first.
     pub pull_request: Option<PullRequest>,
     /// Its PR Environments, one per Project, not being closed.
     pub environments: Vec<PrEnvironment>,
-    /// What its GitHub check says; none when it says nothing: closed, merged with
-    /// everything landed, or without PR Environments.
-    pub check: Option<OnMergeCheck>,
     /// Its preview in each Project whose plan keeps a preview rule for its repository.
     #[serde(default)]
     #[ts(as = "Option<Vec<PreviewLink>>", optional)]
@@ -477,33 +458,10 @@ pub struct PrEnvironment {
     pub environment: EnvironmentSummary,
     /// Its latest Deployment.
     pub deployment: Option<DeploymentSummary>,
-    /// What its merge lands in each Environment that deploys the target branch.
-    pub destinations: Vec<OnMergeInto>,
     /// Its sealed variables without a value, which its Deploys leave out.
     #[serde(default)]
     #[ts(as = "Option<Vec<NotSetVariable>>", optional)]
     pub not_set: Vec<NotSetVariable>,
-}
-
-/// A pull request's GitHub check: what its merge lands, never blocking it.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct OnMergeCheck {
-    pub conclusion: OnMergeConclusion,
-    pub title: String,
-    /// Markdown, one line per row.
-    pub summary: String,
-    /// Once merged, the Destination whose History it links to: the PR Environment
-    /// may be gone.
-    pub merged_into: Option<EnvironmentRef>,
-}
-
-/// How the check reads on GitHub: neutral when a secret lands Not set, a row lands
-/// over the Destination's own change, or the merge didn't land.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum OnMergeConclusion {
-    Success,
-    Neutral,
 }
 
 /// A plan as stored, by Environment ID and Service lineage.
@@ -622,7 +580,7 @@ pub(crate) fn admits(
     trusted: &Trusted,
 ) -> Result<bool, RpcError> {
     let rows = tx.query(
-        "SELECT p.facts, p.merged, p.unlanded, p.standing, p.phase \
+        "SELECT p.facts, p.merged, p.standing, p.phase \
          FROM config_pr_environment e \
          LEFT JOIN config_pull_request p ON p.organization_id = e.organization_id \
          AND p.repository_id = e.repository_id AND p.number = e.number \
@@ -778,7 +736,7 @@ pub(crate) fn destined(
     into: &EnvironmentId,
 ) -> Result<Option<PullRequestRef>, RpcError> {
     let rows = tx.query(
-        "SELECT e.repository_id, e.number, p.facts, p.merged, p.unlanded, p.standing, p.phase \
+        "SELECT e.repository_id, e.number, p.facts, p.merged, p.standing, p.phase \
          FROM config_pr_environment e \
          JOIN config_pull_request p ON p.organization_id = e.organization_id \
          AND p.repository_id = e.repository_id AND p.number = e.number \
@@ -951,23 +909,12 @@ fn record_facts(
             into: event.target_branch.clone(),
             head,
             standing,
-            landed: None,
         },
-        (
-            Some(Phase::Merged {
-                commit,
-                into,
-                landed,
-                ..
-            }),
-            false,
-            _,
-        ) => Phase::Merged {
+        (Some(Phase::Merged { commit, into, .. }), false, _) => Phase::Merged {
             commit: commit.clone(),
             into: into.clone(),
             head,
             standing,
-            landed: landed.clone(),
         },
         (_, false, Some(held)) => held.phase.clone().standing_as(standing),
         (_, false, None) if event.open => Phase::Open { head, standing },
@@ -994,7 +941,7 @@ pub(crate) fn pull_request(
         before,
         fresh,
         first_merge,
-        mut phase,
+        phase,
     } = record_facts(tx, who, event, trusted)?;
     let first_merge = event.merge_commit.as_ref().filter(|_| first_merge);
     let mut automated = Automated::default();
@@ -1015,54 +962,14 @@ pub(crate) fn pull_request(
     // read under them, so a sweep or other news of the repository that ran first left
     // everything it decided by.
     let plans = preview::lock_plans(tx, who, Some(repository_id))?;
-    // A merge lands from every PR Environment, one closing too: a close may come
-    // before the merge.
-    let landing = match first_merge {
-        Some(_) => current(tx, who, event.repository_id, event.number, true)?,
-        None => Vec::new(),
-    };
-    let current = current(tx, who, event.repository_id, event.number, false)?;
+    let current = current(tx, who, event.repository_id, event.number)?;
     // Everything this event may touch, locked then and in ID order: its PR
-    // Environments, where new ones start from, the repository's previews, and at the
-    // merge the Destinations it lands in.
+    // Environments, where new ones start from, and the repository's previews.
     let previews = preview::Locked::of(tx, who, plans)?;
     let mut touched: Vec<EnvironmentId> = current.iter().map(|(id, _)| id.clone()).collect();
-    touched.extend(landing.iter().map(|(id, _)| id.clone()));
     touched.extend(start_froms(tx, who, event.repository_id)?);
     touched.extend(previews.ids());
-    let target = facts(tx, who, repository_id, number)?.map(|facts| facts.target_branch);
-    if let Some(target) = &target {
-        for (_, project) in &landing {
-            touched.extend(destinations_of(tx, project, repository_id, target)?);
-        }
-    }
     scope::lock_all(tx, touched)?;
-    // A land that fails leaves its PR Environment open, so nothing it held is lost.
-    let mut kept = BTreeSet::new();
-    if let (Some(commit), Some(target)) = (first_merge, &target) {
-        let mut unlanded = Vec::new();
-        for (environment, _) in &landing {
-            let at = on_merge::Merging {
-                commit,
-                target,
-                target_head: event.target_head.as_ref(),
-                trusted,
-            };
-            let merged =
-                on_merge::land(tx, who, environment, &at, (&mut automated, &mut unlanded))?;
-            // A close that came before the merge is undone, so it stays open. Not a
-            // preview's: a Close may have reached its Server, which never opens it again.
-            if !merged.all && !preview::closing(tx, environment)? {
-                kept.insert(environment.clone());
-                mark::drop_live(tx, environment)?;
-            }
-        }
-        on_merge::record_unlanded(tx, who, &reported, &unlanded)?;
-        if let Phase::Merged { landed, .. } = &mut phase {
-            *landed = Some(unlanded);
-        }
-        write_phase(tx, who, &reported, &phase)?;
-    }
     if fresh {
         let renamed = before
             .as_ref()
@@ -1076,27 +983,19 @@ pub(crate) fn pull_request(
             .as_ref()
             .is_some_and(|before| before.target_branch != event.target_branch);
         if retargeted {
-            for (environment, _) in &current {
-                forget_edits(tx, environment)?;
-            }
             automated.checks.push(PullRequestRef {
                 repository_id,
                 number,
             });
         }
     }
-    // Closed or merged, it closes, whichever event told of the merge first, unless
-    // this event's merge kept it or what the merge recorded holds it (`holds_open`).
-    // Only newer facts reopen it, and never once merged.
+    // Closed or merged, it closes, whichever event told of the merge first. Only
+    // newer facts reopen it, and never once merged.
     if !matches!(phase, Phase::Open { .. }) {
         for (environment, project) in &current {
             let plan = load(tx, project, event.repository_id)?.unwrap_or_else(off);
             // A preview closes in `preview::reconcile`, by what it opened as.
-            if plan.remove_on_close
-                && preview::of(tx, environment)?.is_none()
-                && !kept.contains(environment)
-                && !on_merge::holds_open(tx, who, environment)?
-            {
+            if plan.remove_on_close && preview::of(tx, environment)?.is_none() {
                 let because = crate::removal::mark::Closed::PullRequest;
                 crate::removal::close(tx, who, environment, because, &mut automated)?;
             }
@@ -1128,8 +1027,7 @@ pub(crate) fn pull_request(
         }
     }
     preview::reconcile(tx, who, &previews, trusted, &mut automated)?;
-    let has_environments =
-        !current.is_empty() || !landing.is_empty() || !automated.admitted.is_empty();
+    let has_environments = !current.is_empty() || !automated.admitted.is_empty();
     if has_environments && !automated.checks.contains(&reported) {
         automated.checks.push(reported);
     }
@@ -1163,7 +1061,7 @@ pub(crate) fn approve(
     }
     let event = record.facts();
     let plans = preview::lock_plans(tx, who, Some(repository_id))?;
-    let current = current(tx, who, repository_id, number, false)?;
+    let current = current(tx, who, repository_id, number)?;
     let previews = preview::Locked::of(tx, who, plans)?;
     let mut touched: Vec<EnvironmentId> = current.iter().map(|(id, _)| id.clone()).collect();
     touched.extend(start_froms(tx, who, repository_id)?);
@@ -1236,7 +1134,7 @@ pub(crate) fn deploy_preview(
     }
     let event = record.facts();
     let plans = preview::lock_plans(tx, who, Some(repository_id))?;
-    let current = current(tx, who, repository_id, number, false)?;
+    let current = current(tx, who, repository_id, number)?;
     let previews = preview::Locked::of(tx, who, plans)?;
     let mut touched: Vec<EnvironmentId> = current.iter().map(|(id, _)| id.clone()).collect();
     touched.extend(start_froms(tx, who, repository_id)?);
@@ -1304,20 +1202,15 @@ fn current(
     who: &Actor,
     repository_id: RepositoryId,
     pr: PullRequestNumber,
-    closing: bool,
 ) -> Result<Vec<(EnvironmentId, crate::id::ProjectId)>, RpcError> {
-    let open = if closing {
-        String::new()
-    } else {
-        format!("AND {}", mark::unmarked("b.environment_id"))
-    };
     let rows = tx.query(
         &format!(
             "SELECT p.environment_id, e.project_id FROM config_pr_environment p \
              JOIN config_environment e ON e.id = p.environment_id \
              JOIN config_environment_branch b ON b.environment_id = p.environment_id \
              WHERE p.organization_id = ?1 AND p.repository_id = ?2 AND p.number = ?3 \
-             {open} ORDER BY p.environment_id"
+             AND {} ORDER BY p.environment_id",
+            mark::unmarked("b.environment_id")
         ),
         &[
             who.organization.as_str().into(),
@@ -1355,7 +1248,7 @@ fn open(
         admits,
         trusted,
     } = *at;
-    let current = current(tx, who, event.repository_id, event.number, false)?;
+    let current = current(tx, who, event.repository_id, event.number)?;
     let rows = tx.query(
         "SELECT project_id, plan FROM config_pr_plan \
          WHERE organization_id = ?1 AND repository_id = ?2 ORDER BY project_id",
@@ -1696,21 +1589,6 @@ fn retrack(
     Ok(())
 }
 
-/// Take PR Environment `id` off the Servers, keeping it: its next push deploys it
-/// again.
-fn shut_down(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    id: &EnvironmentId,
-    automated: &mut Automated,
-) -> Result<(), RpcError> {
-    let environment = scope::lock_id(tx, who, id)?;
-    if deployment::in_flight(tx, id)?.is_none() && deployment::on_servers(tx, id)?.is_some() {
-        automated.shutting_down.push(environment.summary);
-    }
-    Ok(())
-}
-
 /// Move every removal on, then close each Branch idle past its deadline.
 pub(crate) fn sweep(
     tx: &mut dyn Tx,
@@ -1726,23 +1604,16 @@ pub(crate) fn sweep(
         scope::lock_project(tx, project)?;
     }
     let plans = preview::lock_plans(tx, who, None)?;
-    // Read under the plans. Closing would lose what it holds for its merge: an idle PR
-    // Environment that holds something only comes off the Servers. A preview never
-    // comes due.
+    // Read under the plans. A preview never comes due.
     let mut idle = Vec::new();
-    let mut held = Vec::new();
     for deadline in branch::idle::deadlines(tx, &who.organization)? {
         let Deadline {
             environment: id,
             closes_at,
         } = deadline?;
-        if due(closes_at) && on_merge::holds_open(tx, who, &id)? {
-            held.push(id);
-            continue;
-        }
         idle.push((id, closes_at));
     }
-    // What it closes, settles, shuts down and moves previews under, locked then and in
+    // What it closes, settles and moves previews under, locked then and in
     // ID order, as news of a pull request locks it.
     let previews = preview::Locked::of(tx, who, plans)?;
     let closing = idle
@@ -1750,12 +1621,8 @@ pub(crate) fn sweep(
         .filter(|(_, closes_at)| due(*closes_at))
         .map(|(id, _)| id.clone());
     let settled = settling.members(tx, who)?;
-    let locks = previews.ids().chain(closing).chain(held.iter().cloned());
-    scope::lock_all(tx, locks.chain(settled))?;
+    scope::lock_all(tx, previews.ids().chain(closing).chain(settled))?;
     let mut automated = crate::removal::sweep(tx, who, sweep.now, &settling, &idle)?;
-    for id in &held {
-        shut_down(tx, who, id, &mut automated)?;
-    }
     preview::reconcile(tx, who, &previews, trusted, &mut automated)?;
     Ok(automated)
 }
@@ -1796,7 +1663,7 @@ pub(crate) fn awaiting_merge(
 ) -> Result<Vec<PullRequestNumber>, RpcError> {
     let rows = tx.query(
         &format!(
-            "SELECT DISTINCT p.number, r.facts, r.merged, r.unlanded, r.standing, r.phase \
+            "SELECT DISTINCT p.number, r.facts, r.merged, r.standing, r.phase \
              FROM config_pr_environment p \
              JOIN config_environment_branch b ON b.environment_id = p.environment_id \
              JOIN config_pull_request r ON r.organization_id = p.organization_id \

@@ -46,19 +46,9 @@ describe("previewComment", () => {
 
 describe("previewInCheck", () => {
   const calls = say([link({ state: "not_deployed" })])?.calls ?? [];
-  const run = {
-    headSha: HEAD, name: PR_CHECK_NAME, conclusion: "success" as const, detailsUrl: "https://cloud.ployz.test/cloud/acme/shop/pr-3",
-    title: "No config changes", summary: "web 1.2",
-  };
 
-  it("puts the link in the check's title and Details, keeping what the merge lands", () => {
-    expect(Effect.runSync(previewInCheck(7, run, calls, HEAD))).toEqual({
-      ...run, title: "Deploy as a preview", detailsUrl: CONFIRM, summary: `[Deploy as a preview](${CONFIRM})\n\nweb 1.2`,
-    });
-  });
-
-  it("posts a neutral check of its own for a pull request with none", () => {
-    expect(Effect.runSync(previewInCheck(7, null, calls, HEAD))).toEqual({
+  it("posts the link as a neutral check, its title and Details", () => {
+    expect(Effect.runSync(previewInCheck(7, calls, HEAD))).toEqual({
       headSha: HEAD, name: PR_CHECK_NAME, conclusion: "neutral", title: "Deploy as a preview", detailsUrl: CONFIRM,
       summary: `[Deploy as a preview](${CONFIRM})`,
     });

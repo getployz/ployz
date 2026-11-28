@@ -314,16 +314,3 @@ pub(crate) fn clear_tombstone(tx: &mut dyn Tx, target: &Target) -> Result<(), Rp
     )?;
     Ok(())
 }
-
-/// Delete `environment`'s live mark, leaving no tombstone, so a close that came before a
-/// merge is undone.
-pub(crate) fn drop_live(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<(), RpcError> {
-    tx.execute(
-        &format!(
-            "DELETE FROM config_removal_mark WHERE environment_id = ?1 AND state = '{}'",
-            state_text(State::Removing)
-        ),
-        &[environment.as_str().into()],
-    )?;
-    Ok(())
-}

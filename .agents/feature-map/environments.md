@@ -286,29 +286,11 @@ Most entries are Config Store behavior, so a verify-dashboard run without Server
 ### ENV-32 What each pull request's preview gets
 - **Surface:** dashboard
 - **Reach:** open `/cloud/ada/shop/pr-142` after a pull request opens; environment switcher under production
-- **Proof:** the preview is a Branch named `pr-142` listed under its start-from Environment and **Open now**; every service plans one replica (in the region with the most for per-region counts); a generated address reads `web-pr-142.<cluster domain>`; custom domains aren't copied; sealed variables read **Not set** and the **Ployz · ready to merge** check lists them under **Not set in pr-142**; a copied database refuses the automatic deploy until a dashboard Deploy makes its password
+- **Proof:** the preview is a Branch named `pr-142` listed under its start-from Environment and **Open now**; every service plans one replica (in the region with the most for per-region counts); a generated address reads `web-pr-142.<cluster domain>`; custom domains aren't copied; sealed variables read **Not set**; a copied database refuses the automatic deploy until a dashboard Deploy makes its password
 - **Needs:** 1 Machine · Volumes: Managed (ZFS) · Cloud: local Cloud · External: GitHub (FAKE_GITHUB=1 if it can open a pull request)
 - **Drive:** verify-dashboard (SERVERS=1, FAKE_GITHUB=1)
 - **Compat:** none
 - **Docs:** environments/preview-environments.md#what-each-pull-request-gets
-
-### ENV-33 Review and edit what a pull request's merge lands
-- **Surface:** dashboard
-- **Reach:** preview canvas → **On merge · 3** → row ⋯ → **Edit**, **Reset**, **Exclude**, **Include**; also CLI `ployz env on-merge --env pr-142` (exclude a row with `ployz env never-sync <row> --env pr-142`)
-- **Proof:** rows read `#142 → production` with `CACHE_TTL 30 → 60`; an edited row shows **Edited** and the preview's value under it; an excluded row stays greyed **Excluded**; a secret production lacks reads **Not set in production**; a removed service reads **Removes db**, a still-mounted config **In use**, a volume **Kept**; the GitHub check mirrors it, never fails, and is neutral when something is Not set or In use
-- **Needs:** 0 Machines · Volumes: none · Cloud: local Cloud · External: GitHub (FAKE_GITHUB=1 if it can open a pull request)
-- **Drive:** verify-dashboard (FAKE_GITHUB=1)
-- **Compat:** none
-- **Docs:** environments/preview-environments.md#config-changes-in-a-pull-request
-
-### ENV-34 A merge lands the preview's changes in production
-- **Surface:** dashboard
-- **Reach:** merge the pull request on GitHub; open production **Deployments → Versions**; ⋮ → **Undo these 3 changes**
-- **Proof:** production has one version **Merged #142** and the merge commit's deploy carries it, redeploying every service it changed (even with auto-deploy off); a removed service's containers stop while its volumes stay, with no approval asked; Undo brings it back with secrets **Not set**, and is refused with **api exists. Rename it first.** when the name was taken since; a failed landing reads **Didn't land in production** on the check and the preview stays open; the preview and its data are deleted after merge
-- **Needs:** 1 Machine · Volumes: Managed (ZFS) · Cloud: local Cloud · External: GitHub merges (FAKE_GITHUB=1 if it can merge)
-- **Drive:** verify-dashboard (SERVERS=1, FAKE_GITHUB=1)
-- **Compat:** none
-- **Docs:** environments/preview-environments.md#config-changes-in-a-pull-request
 
 ### ENV-35 Show an environment to an agent
 - **Surface:** MCP

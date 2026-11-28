@@ -367,20 +367,12 @@ _Avoid_: Saved Service config, copied consumer snapshot, second source of truth
 An Environment made from another, its Parent, and deployed to its own Namespace. Its nodes keep their Parent's lineage. It runs Own Copies of the nodes picked, and uses what those need from its Parent's Namespace as Live Nodes. Unless it is a Kept Branch, it may close once it syncs into its Parent, and closes on its own a week after its latest Deployment. Branching rules are pure authored-configuration rules, the same for every client.
 _Avoid_: Fork, clone, preview; "branch" alone for a Git branch
 
-**On merge list**:
-The changes a PR Environment made since it started that go to its Destination when the pull request merges on GitHub. Every change joins unless Excluded, removals included. Removing a whole Service or Config the PR Environment copied joins as one row; a removed Volume is Kept, never removed, and a node production never lent the PR Environment makes no row. Seals, Sizing and custom domains stay behind. A row can carry an Edit, the value the Destination gets instead of the preview's. A setting the Destination changed after the preview started still takes the preview's value. The list is derived from the PR Environment's Working State and the Destination's latest Saved State, never stored.
-_Avoid_: Offer, Conditional Sync, queue, approval
-
-**Merge landing**:
-The Saved revision "Merged #N" that a pull request's first merge writes into each Destination from its On merge list, and the deploy of what it changed. It happens once per pull request; Undo in History reverts it like any Saved revision. A Config removal that a Destination Service still mounts is refused alone: the Config stays and the rest lands. A reference never holds a removal; it becomes a Broken Reference. A removed Service's containers retire with the deploy; its Volumes and their data stay.
-_Avoid_: Conditional Save, auto-promote, Apply
-
 **Parent**:
 The Environment a Branch was made from, whose Namespace lends the Branch its Live Nodes. An Environment without one, such as production, is a root.
 _Avoid_: Base, upstream
 
 **Generated Value**:
-A plain variable value the Config Store makes from `${{ secret(LENGTH, "CHARSET") }}`, written as the whole value. Each Environment holds its own: an Own Copy, a Sync, a Follow or a merge carries only the generator, and the receiver makes its value when it saves. Deploys, History and Discard never make a new one; asking again for the same generator, or setting back the value reads show, keeps it. It is not sealed.
+A plain variable value the Config Store makes from `${{ secret(LENGTH, "CHARSET") }}`, written as the whole value. Each Environment holds its own: an Own Copy, a Sync or a Follow carries only the generator, and the receiver makes its value when it saves. Deploys, History and Discard never make a new one; asking again for the same generator, or setting back the value reads show, keeps it. It is not sealed.
 _Avoid_: Generated secret (that is a sealed value the Store makes), random variable
 
 **Own Copy**:

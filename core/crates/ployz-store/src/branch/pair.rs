@@ -188,44 +188,6 @@ impl Move {
         })
     }
 
-    /// What a pull request's merge lands from `from` into `into`: a Sync whose
-    /// removals move too and whose rows land even where `into` changed them since.
-    pub(crate) fn merge(
-        tx: &mut dyn Tx,
-        from: &Environment,
-        into: &Environment,
-    ) -> Result<Self, RpcError> {
-        let mut way = Self::sync(tx, from, into)?;
-        way.rules.way = Way::Merge;
-        way.nothing = format!("Nothing lands in {}", into.summary.name);
-        // The base holds every node `from` was made with, copied or not. Only a node
-        // `from` introduced and no longer has is one it removed.
-        let introduced = review::introductions(tx, from)?;
-        let stays: BTreeSet<&str> = [&way.from, &introduced]
-            .into_iter()
-            .flat_map(|intent| {
-                let services = intent.services.iter().map(|s| s.lineage_id.as_str());
-                let volumes = intent
-                    .volumes
-                    .iter()
-                    .map(|v| v.resource_lineage_id.as_str());
-                let configs = intent
-                    .configs
-                    .iter()
-                    .map(|c| c.resource_lineage_id.as_str());
-                services.chain(volumes).chain(configs)
-            })
-            .collect();
-        let base = &mut way.base;
-        base.services
-            .retain(|s| stays.contains(s.lineage_id.as_str()));
-        base.volumes
-            .retain(|v| stays.contains(v.resource_lineage_id.as_str()));
-        base.configs
-            .retain(|c| stays.contains(c.resource_lineage_id.as_str()));
-        Ok(way)
-    }
-
     /// A Sync now of `from` into `into` that includes it: the rows other proposals
     /// own there are held, and the rows `from`'s own proposal owns compare against
     /// what it accepted and count as its own.

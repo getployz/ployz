@@ -23,13 +23,6 @@ impl<N> Targeting<N> {
         matches!(self, Self::Full { prune: true })
     }
 
-    pub(crate) const fn as_ref(&self) -> Targeting<&N> {
-        match self {
-            Self::Full { prune } => Targeting::Full { prune: *prune },
-            Self::Named(services) => Targeting::Named(services),
-        }
-    }
-
     pub(crate) fn map<M>(self, named: impl FnOnce(N) -> M) -> Targeting<M> {
         match self {
             Self::Full { prune } => Targeting::Full { prune },

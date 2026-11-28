@@ -140,8 +140,6 @@ describe("everything support reads, with every switch off", () => {
   const changes = [{ name: "api", settings: [variable, unrowed, file] }];
   const diff = { changes, draft_changes: changes, follow_hints: [{ row: `${API}:variables.LOG_LEVEL`, value: VARIABLE }], version: "v9" };
   const historyPreview = { revision: 1, action: "restore", version: "v9", changes, total_count: 3, overwritten: ["api.env.LOG_LEVEL"] };
-  const merge = { row: `${API}:variables.LOG_LEVEL`, production: VARIABLE, lands: VARIABLE, preview: VARIABLE };
-  const destinations = [{ rows: [merge, { row: "8aa5:files.config.yml", production: { content: FILE }, lands: { content: FILE }, preview: null }] }];
   const cause = [`timed out; last check exited 1: ${CHECK}`, `container db failed health monitoring: running; last check exited 127: ${CHECK}`];
   const outcome = { type: "executed", summary: { deployed: 1 }, reason: "A Service failed", cause };
   const summary = { number: 3, outcome };
@@ -167,8 +165,7 @@ describe("everything support reads, with every switch off", () => {
     view({ view: "service", values: { env: { LOG_LEVEL: VARIABLE } }, changes: [variable, unrowed] }),
     view({ view: "config", files: ["config.yml"], contents: { "config.yml": FILE } }),
     view({ view: "sync", rows: [{ row: `${API}:variables.LOG_LEVEL`, from: VARIABLE, into: VARIABLE }, { row: file.row, from: { content: FILE }, into: null }] }),
-    view({ view: "pull_request", environments: [{ deployment: summary, destinations }], check: { summary: `LOG_LEVEL=${VARIABLE}` } }),
-    view({ view: "on_merge", destinations }),
+    view({ view: "pull_request", environments: [{ deployment: summary }] }),
     view({ view: "environments", environments: [{ removal: { kind: "deployment", ...summary } }, { removal: { kind: "pending", because: "synced", since: 1 } }] }),
   ];
   const refusals: ReadonlyArray<StoreRefusal> = [
@@ -178,7 +175,6 @@ describe("everything support reads, with every switch off", () => {
   ];
   const written: ReadonlyArray<ConfigWritten> = [
     asTestDouble<ConfigWritten>()({ written: "deployment", ...summary }),
-    asTestDouble<ConfigWritten>()({ written: "on_merge", destinations }),
     asTestDouble<ConfigWritten>()({ written: "batch", results: [{ written: "deployment", ...summary }] }),
     asTestDouble<ConfigWritten>()({ written: "default_environment", environments: [{ removal: { kind: "deployment", ...summary } }] }),
     asTestDouble<ConfigWritten>()({ written: "branch_setup", environments: [{ removal: { kind: "deployment", ...summary } }] }),

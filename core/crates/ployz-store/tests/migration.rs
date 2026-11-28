@@ -68,10 +68,6 @@ fn comparisons(store: &ConfigStore, who: &Actor) -> (SyncView, BranchView) {
 /// The schema as it was before `0008_proposal_offer`, with no Conditional Syncs.
 const BEFORE_OFFERS: &str = "
     ALTER TABLE config_pull_request DROP COLUMN merged;
-    DROP TABLE config_merge_value;
-    DROP TABLE config_merge_deploy;
-    ALTER TABLE config_branch DROP COLUMN recent;
-    ALTER TABLE config_pull_request DROP COLUMN unlanded;
     CREATE TABLE config_conditional_sync (
         id TEXT PRIMARY KEY,
         organization_id TEXT NOT NULL,
@@ -707,10 +703,6 @@ fn arrival_checks_refuse_each_illegal_row_and_allow_its_nearest_legal_one() {
 /// The schema as it was before `0011_retire_offers`, with an offered proposal and a
 /// plain one, each with a receipt.
 const BEFORE_RETIRE: &str = "
-    DROP TABLE config_merge_value;
-    DROP TABLE config_merge_deploy;
-    ALTER TABLE config_branch DROP COLUMN recent;
-    ALTER TABLE config_pull_request DROP COLUMN unlanded;
     ALTER TABLE config_proposal ADD COLUMN offered TEXT
         CHECK (offered IS NULL OR number IS NOT NULL);
     DELETE FROM config_migration

@@ -455,7 +455,7 @@ Staging changes, deploying them from the dashboard, the CLI, CI and agents, foll
 ### DEP-51 Choose the Git branch and protect who changes it
 - **Surface:** dashboard
 - **Reach:** **Settings → Source → Branch** pencil → pick `feature`; as a member in a Protected Environment try the same
-- **Proof:** the change stages and the next deploy builds the `feature` head commit; the member can't change it; a PR into the branch shows **Merging deploys to production, a Protected Environment.** on its **Ployz · ready to merge** check; a deleted branch fails with `The source branch no longer exists.`
+- **Proof:** the change stages and the next deploy builds the `feature` head commit; the member can't change it; a deleted branch fails with `The source branch no longer exists.`
 - **Needs:** 1 Machine · Volumes: none · Cloud: local Cloud · External: none (FAKE_GITHUB=1)
 - **Drive:** verify-dashboard SERVERS=1 FAKE_GITHUB=1
 - **Compat:** none

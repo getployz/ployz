@@ -433,8 +433,6 @@ A verifier reports each entry as PASS, ISSUES or BLOCKED with evidence, against 
 - [ENV-30](environments.md#env-30-approve-an-outside-pull-requests-preview) Approve an outside pull request's preview
 - [ENV-31](environments.md#env-31-a-previews-build-is-refused-in-this-version) A preview's build is refused in this version
 - [ENV-32](environments.md#env-32-what-each-pull-requests-preview-gets) What each pull request's preview gets
-- [ENV-33](environments.md#env-33-review-and-edit-what-a-pull-requests-merge-lands) Review and edit what a pull request's merge lands
-- [ENV-34](environments.md#env-34-a-merge-lands-the-previews-changes-in-production) A merge lands the preview's changes in production
 - [SVC-21](services.md#svc-21-deploy-on-push-settings-take-effect-at-once) Deploy-on-push settings take effect at once
 
 ## C7

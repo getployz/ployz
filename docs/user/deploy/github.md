@@ -79,10 +79,6 @@ deploys: Ployz doesn't decide who can merge. Use
 [GitHub branch protection](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches)
 on the branch to require reviews before a merge.
 
-The **Ployz · ready to merge** check on a pull request into that branch adds a line like
-**Merging deploys to production, a Protected Environment.** The line is informational: it never
-changes whether the check passes.
-
 ## Deploy on push
 
 **Auto-deploy** is on for every new service. Each push to the service's Git branch deploys it, in
@@ -391,10 +387,9 @@ instead of printing it. Pass `--ref` to read a branch, tag or commit other than 
 - **Changing a variable rebuilds your app.** See [How builds work](../builds/overview.md#good-to-know).
 - **Only the service's Git branch deploys.** Pull requests can get their own
   [preview environments](../environments/preview-environments.md) instead.
-- **Merging a pull request brings its preview's setting changes.** Its code deploys like any
-  push, and the changes its [preview](../environments/preview-environments.md) made land in
-  production as one saved change, **Merged #146**, that deploys with the merge. The pull request's
-  **Ployz · ready to merge** check lists those changes first. It's informational: green, or neutral
-  when something needs a look, and never failing.
+- **Merging a pull request brings its code, not its preview's settings.** Its code deploys like
+  any push. Settings you changed in its [preview](../environments/preview-environments.md) stay
+  there: to bring one to production, open **Sync** in production and sync it from the preview
+  while the pull request is open.
 
 Next: [give your app its variables](../services/variables.md).

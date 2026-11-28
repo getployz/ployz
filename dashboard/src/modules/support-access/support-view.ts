@@ -1,6 +1,6 @@
 import type {
-  Automated, ConfigItemView, ConfigView, ConfigWritten, DeploymentSummary, DeploymentView, DiffView, EnvironmentsView, EnvironmentView, FollowHint, JsonValue, MergeRow,
-  NodeChange, OnMerge, OnMergeInto, Outcome, PullRequestView, Removal, RowTransition, ServerRow, ServiceSettingChange, ServiceView, SettingRow, SyncRow,
+  Automated, ConfigItemView, ConfigView, ConfigWritten, DeploymentSummary, DeploymentView, DiffView, EnvironmentsView, EnvironmentView, FollowHint, JsonValue,
+  NodeChange, Outcome, PullRequestView, Removal, RowTransition, ServerRow, ServiceSettingChange, ServiceView, SettingRow, SyncRow,
 } from "@ployz/sdk";
 import type { ApprovalReview } from "#/modules/approvals/approvals";
 import type { StoreAnswer, StoreCall, StoreResult } from "#/modules/config-store/store.contract";
@@ -65,11 +65,6 @@ function redactions(shows: SupportShows) {
   };
   const hint = (row: FollowHint): FollowHint => ({ ...row, value: cell(row.value, holds(row.row)) });
   const sync = (row: SyncRow): SyncRow => ({ ...row, from: cell(row.from, holds(row.row)), into: cell(row.into, holds(row.row)) });
-  const merge = (row: MergeRow): MergeRow => {
-    const kind = holds(row.row);
-    return { ...row, production: cell(row.production, kind), lands: cell(row.lands, kind), preview: cell(row.preview, kind) };
-  };
-  const destination = (into: OnMergeInto): OnMergeInto => ({ ...into, rows: into.rows.map(merge) });
   const failure = <T extends ServerRow | RowTransition>(row: T): T =>
     row.state === "failed" ? { ...row, log: null, cause: row.cause.map(withoutCheckOutput) } : row;
   const server = (row: ServerRow): ServerRow => {
@@ -92,13 +87,10 @@ function redactions(shows: SupportShows) {
     changes: <T extends { changes: NodeChange[] }>(view: T): T => ({ ...view, changes: view.changes.map(node) }),
     service: <T extends ServiceView>(view: T): T => ({ ...view, values: values(view.values), changes: view.changes.map(change) }),
     sync: <T extends { rows: SyncRow[] }>(view: T): T => ({ ...view, rows: view.rows.map(sync) }),
-    onMerge: <T extends OnMerge>(view: T): T => ({ ...view, destinations: view.destinations.map(destination) }),
     pullRequest: <T extends PullRequestView>(view: T): T => ({
       ...view,
       environments: view.environments.map((environment) =>
-        ({ ...environment, deployment: maybeSummary(environment.deployment), destinations: environment.destinations.map(destination) })),
-      // The check's summary is markdown with values in it; Cloud publishes it to GitHub, the dashboard never shows it.
-      check: view.check && !shows.variables ? { ...view.check, summary: "" } : view.check,
+        ({ ...environment, deployment: maybeSummary(environment.deployment) })),
     }),
     config: <T extends ConfigItemView>(view: T): T => shows.configs ? view : { ...view, contents: {} },
     summary,
@@ -142,7 +134,6 @@ function viewRedactions(shows: SupportShows): ViewRedactions {
     config: redact.config,
     sync: redact.sync,
     pull_request: redact.pullRequest,
-    on_merge: redact.onMerge,
     build_log: same,
     services: same,
     namespace: same,
@@ -192,7 +183,6 @@ export function viewForSupport<V extends ConfigView>(view: V, shows: SupportShow
 /** What a write wrote, as support may read it. Most writes answer with names and paths only. */
 export function writtenForSupport(written: ConfigWritten, shows: SupportShows): ConfigWritten {
   switch (written.written) {
-    case "on_merge": return redactions(shows).onMerge(written);
     case "deployment": return redactions(shows).summary(written);
     case "default_environment":
     case "branch_setup":

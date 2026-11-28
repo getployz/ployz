@@ -318,7 +318,6 @@ Commands:
   ls          List the Project's Environments
   never-sync  Mark settings Never sync: Sync never carries them into or out of the Environment
   new         Create an empty Environment
-  on-merge    Show what a PR Environment's pull request lands when it merges
   pr          Show or change PR Environments for a repository
   protect     Protect an Environment so it cannot be removed and only an owner or admin can change its repository or deploy branch
   rm          Remove an Environment: from the Servers first, then from Ployz

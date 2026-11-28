@@ -366,13 +366,6 @@ pub(crate) const ENV_NEVER_SYNC: Verb = Verb::cloud(
 pub(crate) const ENV_NEW: Verb = Verb::cloud("env new", Never, env::new_command, env::new)
     .needs(Permission::EnvironmentCreate)
     .docs("cli/overview.md");
-pub(crate) const ENV_ON_MERGE: Verb = Verb::cloud(
-    "env on-merge",
-    Never,
-    env::on_merge_command,
-    env::pr::on_merge,
-)
-.docs("cli/overview.md");
 pub(crate) const ENV_PR: Verb =
     Verb::cloud("env pr", Depends, env::pr_command, env::pr::pr).needs(Permission::ProjectEdit);
 pub(crate) const ENV_PR_APPROVE: Verb = Verb::cloud(
@@ -924,7 +917,6 @@ pub(crate) const VERBS: &[Verb] = &[
     ENV_LS,
     ENV_NEVER_SYNC,
     ENV_NEW,
-    ENV_ON_MERGE,
     ENV_PR,
     ENV_PR_APPROVE,
     ENV_PROTECT,

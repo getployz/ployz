@@ -59,7 +59,6 @@ function carried(command: ConfigCommand | BatchCommand): { path: string | null }
       return path === undefined ? null : { path };
     }
     case "sync": return sealedEnvelope(command.values ?? {}) ? { path: null } : null;
-    case "set_merge_value": return sealedEnvelope(command.value ?? null) ? { path: null } : null;
     case "batch": return command.commands.map(carried).find((found) => found !== null) ?? null;
     default: return null;
   }

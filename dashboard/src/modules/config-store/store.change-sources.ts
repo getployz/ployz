@@ -28,9 +28,7 @@ export const storeChangeSources = {
   // ponytail: logs the receiver only; another tab on the sender sees what it synced once the sender changes too.
   config_sync_arrival: { key: ["environment_id"], family: "store_environment" },
   config_proposal: { key: ["environment_id"], family: "store_environment" },
-  config_merge_value: { key: ["environment_id"], family: "store_environment" },
   // No family: Cloud never reads a merge's deferred deploy; the next push to the branch does.
-  config_merge_deploy: { key: ["environment_id"] },
   // No family: a receipt outlives its Environments and no view reads it.
   config_sync_receipt: { key: ["environment_id"] },
   config_build_order: { key: ["organization_id"], family: "store_organization" },
@@ -126,7 +124,6 @@ export const storeViewRefreshedBy = {
   // PR Environments, their Deployments, each Destination's Working State, and the facts GitHub last told Cloud.
   pull_request: ["store_environment", "store_deployment", "store_pull_request", "store_check_suite"],
   // What a merge lands: both Environments' Working and Saved, the Edits, and the pull request's facts.
-  on_merge: ["store_environment", "store_pull_request"],
   // Signed versions arrive with a Deploy and are never rewritten.
   versions: ["store_deployment"],
   // A parent is the newest applied Deployment's signed version, with the Saved spec it ran.

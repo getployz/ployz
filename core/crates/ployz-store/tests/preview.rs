@@ -1119,48 +1119,6 @@ fn only_a_member_s_pull_request_from_the_repository_deploys_as_a_preview_without
     assert_eq!(preview_of(&store, &who, 6), None);
 }
 
-/// Set `path` to `value` in `environment`.
-fn set(store: &ConfigStore, who: &Actor, environment: &str, path: &str, value: &str) {
-    let edit = ployz_store::Edit {
-        environment: at(environment),
-        expect: None,
-        changes: vec![ployz_store::Change::Set {
-            path: ployz_store::SettingPath::parse(path).unwrap(),
-            value: serde_json::Value::String(value.into()),
-        }],
-    };
-    store.write(who, &edit).unwrap();
-}
-
-#[test]
-fn a_preview_holding_what_its_merge_left_to_land_stays_open_and_gets_no_close() {
-    let (store, who) = shop();
-    previews(&store, &who, 1);
-    let trusted = homes(&['a']);
-    opened(&store, &who, (5, "feature"), &trusted);
-    let opened = preview_of(&store, &who, 5).unwrap().namespace().clone();
-    set(&store, &who, "pr-5", "web.env.A", "2");
-    // Nothing deploys `feature`, so the change stays for its Parent to take.
-    let mut merged = facts(5, false, "feature", "2026-01-02T00:00:00Z");
-    merged.merge_commit = Some(backend::sha(HEAD));
-
-    let first = pull(&store, &who, merged.clone(), &trusted);
-    let swept = observe(&store, &who, SystemEvent::Sweep(Sweep { now: 0 }), &trusted);
-    merged.updated = ployz_store::GithubTimestamp::parse("2026-01-03T00:00:00Z").unwrap();
-    let later = pull(&store, &who, merged, &trusted);
-
-    for automated in [&first, &swept, &later] {
-        assert!(
-            automated.closing.is_empty() && automated.removed.is_empty(),
-            "{automated:?}"
-        );
-    }
-    let asked = OpenPreviewsQuery {
-        namespaces: vec![opened],
-    };
-    assert_eq!(store.read(&who, &asked).unwrap().open.len(), 1);
-}
-
 #[test]
 fn a_deploy_refused_at_a_full_cap_costs_the_same_however_many_pull_requests_are_open() {
     let (store, who) = shop();

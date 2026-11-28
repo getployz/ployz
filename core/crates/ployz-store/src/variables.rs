@@ -590,19 +590,6 @@ pub(crate) fn text_parts(
     Ok((template.parts, fingerprint))
 }
 
-/// Text parts as a stored value: a literal unless they reference something.
-pub(crate) fn stored(mut parts: Vec<ValuePart>) -> SavedVariableValue {
-    match parts.as_mut_slice() {
-        [] => SavedVariableValue::Literal {
-            value: String::new(),
-        },
-        [ValuePart::Text { value }] => SavedVariableValue::Literal {
-            value: std::mem::take(value),
-        },
-        _ => SavedVariableValue::Template { parts },
-    }
-}
-
 /// The longest `KEY=value` string Linux passes a program, with its closing NUL:
 /// `MAX_ARG_STRLEN`. A Container given a longer one never starts.
 pub(crate) const MAX_ENV_STRING: usize = 128 * 1024;
@@ -956,33 +943,6 @@ pub(crate) fn make_generated(
         }
     }
     Ok(())
-}
-
-/// Give each generated variable in `working` that awaits a value the one `made` holds
-/// for the same Service lineage, key and generator: what Working State takes from the
-/// Saved State a merge published, so the two hold one value.
-pub(crate) fn take_generated(
-    working: &mut ployz_core::config::SavedEnvironmentIntent,
-    made: &ployz_core::config::SavedEnvironmentIntent,
-) {
-    for service in &mut working.services {
-        let Some(source) = made
-            .services
-            .iter()
-            .find(|made| made.lineage_id == service.lineage_id)
-        else {
-            continue;
-        };
-        for variable in service.variables.iter_mut().filter(|v| v.awaits_value()) {
-            if let Some(made) = source.variables.iter().find(|made| {
-                made.key == variable.key
-                    && made.generator() == variable.generator()
-                    && !made.awaits_value()
-            }) {
-                variable.value.clone_from(&made.value);
-            }
-        }
-    }
 }
 
 /// Refuse to publish a generated variable that awaits its value: Saved State and what

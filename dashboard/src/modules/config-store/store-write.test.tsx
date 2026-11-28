@@ -11,7 +11,7 @@ import * as functions from "./store.functions";
 import type { StoreResult } from "./store.contract";
 import { diffQuery, environmentSettingsQuery, environmentsQuery, refetchStoreViews, storeViewOptions, useStoreView } from "./store-view.queries";
 import {
-  useStoreBusy, useStoreCancelling, useStoreMergeRowsPending, useStorePendingDomains, useStorePrPlanPending, useStoreRenamePending,
+  useStoreBusy, useStoreCancelling, useStorePendingDomains, useStorePrPlanPending, useStoreRenamePending,
   withPendingChanges,
 } from "./store-pending";
 import { showRefusalInline, useStoreWriter, type StoreEdit } from "./store-write";
@@ -537,8 +537,6 @@ const marked: { name: string; command: ConfigCommand; shown: () => Mark; idle: M
   { name: "Cancel", command: { command: "cancel", deployment: "dep_1" }, shown: () => useStoreCancelling("acme", "dep_1"), idle: false, busy: true },
   { name: "domain", command: { command: "add_domain", environment: ref, service: "web", hostname: "shop.example.com", port: null },
     shown: () => useStorePendingDomains("acme", ref, "web"), idle: [], busy: ["shop.example.com"] },
-  { name: "On merge value", command: { command: "set_merge_value", environment: ref, into, row: "w:env.A", value: "b" },
-    shown: () => [...useStoreMergeRowsPending("acme", ref)], idle: [], busy: ["w:env.A"] },
   { name: "PR plan", command: { command: "set_pr_plan", project: "shop", repository: "acme/web", enabled: false, start_from: null, copy: null,
     setup: null, remove_on_close: null, include_bots: null }, shown: () => useStorePrPlanPending("acme", "shop", "acme/web"), idle: {}, busy: { enabled: false } },
 ];

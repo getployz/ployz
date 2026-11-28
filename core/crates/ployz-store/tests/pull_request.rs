@@ -408,42 +408,6 @@ fn an_opened_pull_request_gets_a_deployed_pr_environment_once() {
         )
         .unwrap();
     assert_eq!(view.environments.len(), 1);
-    assert_eq!(
-        view.environments[0].destinations[0].name.to_string(),
-        "production"
-    );
-    // Tracking the head branch is its own; nothing lands.
-    assert_eq!(
-        view.check.as_ref().map(|check| check.title.as_str()),
-        Some("No config changes"),
-        "{view:?}"
-    );
-    store
-        .write(
-            &who,
-            &ployz_store::Command::Edit(ployz_store::Edit {
-                environment: at("pr-5"),
-                expect: None,
-                changes: vec![ployz_store::Change::Set {
-                    path: ployz_store::SettingPath::parse("web.startCommand").unwrap(),
-                    value: json!("npm run serve"),
-                }],
-            }),
-        )
-        .unwrap();
-    let view = store
-        .read(
-            &who,
-            &PullRequestQuery {
-                repository_id: backend::repo_id(11),
-                number: backend::pr_number(5),
-            },
-        )
-        .unwrap();
-    assert_eq!(
-        view.check.map(|check| check.title),
-        Some("1 config change".to_owned())
-    );
 }
 
 const NEXT: &str = "2222222222222222222222222222222222222222";
@@ -1194,122 +1158,6 @@ fn image_service(store: &ConfigStore, who: &Actor, environment: &str, n: u8, nam
         .unwrap();
 }
 
-#[test]
-fn a_destinations_count_is_the_rows_its_sync_offers_where_nodes_are_used_live() {
-    let store = backend::open();
-    let who = Actor::system(OrganizationId::parse("org").unwrap());
-    store
-        .write(
-            &who,
-            &CreateProject {
-                id: ProjectId::parse(uuid(1)).unwrap(),
-                name: ProjectName::parse("shop").unwrap(),
-                default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
-                region: None,
-            },
-        )
-        .unwrap();
-    // production deploys `release`, and runs `cache`, which `site` uses.
-    store
-        .write_trusted(
-            &who,
-            &CreateGitService {
-                id: ServiceLineageId::parse(uuid(3)).unwrap(),
-                environment: EnvironmentRef::default(),
-                name: ServiceName::parse("site").unwrap(),
-                repository: backend::repo_name("acme/web"),
-                branch: Some(backend::git_branch("release")),
-            },
-            &vouched(),
-        )
-        .unwrap();
-    image_service(&store, &who, "production", 4, "cache");
-    set(
-        &store,
-        &who,
-        "production",
-        "site.env.CACHE_URL",
-        json!("${{ cache.PLOYZ_PRIVATE_DOMAIN }}"),
-    );
-    deploy(&store, &who, "production", &["cache"]);
-
-    // pr-5 copies `site` and uses `cache` live; then it adds and runs its own `db`.
-    plan(&store, &who, on());
-    let opened = pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
-    run(&store, &opened.admitted[0].deployment.id, &["site"]);
-    image_service(&store, &who, "pr-5", 5, "db");
-    set(
-        &store,
-        &who,
-        "pr-5",
-        "site.env.DB_URL",
-        json!("${{ db.PLOYZ_PRIVATE_DOMAIN }}"),
-    );
-    deploy(&store, &who, "pr-5", &["db"]);
-    // Its Branch `qa` deploys `main`, so it is the Destination; it uses `db` live.
-    store
-        .write(
-            &who,
-            &CreateBranch {
-                id: EnvironmentId::parse(uuid(6)).unwrap(),
-                from: at("pr-5"),
-                name: EnvironmentName::parse("qa").unwrap(),
-                copy: vec![node("site")],
-                live: Vec::new(),
-                setup: Vec::new(),
-                keep: true,
-                fix: None,
-            },
-        )
-        .unwrap();
-    set(&store, &who, "qa", "site.branch", json!("main"));
-    store
-        .write(
-            &who,
-            &ployz_store::Command::Publish(ployz_store::Publish {
-                id: None,
-                environment: at("qa"),
-                version: None,
-                message: None,
-                accept_volume_loss: Vec::new(),
-                rule: None,
-            }),
-        )
-        .unwrap();
-    set(&store, &who, "pr-5", "site.env.MODE", json!("fast"));
-
-    // `db` stays where qa uses it live: the page counts what the review offers.
-    let review = store
-        .read(
-            &who,
-            &ployz_store::SyncQuery {
-                from: at("pr-5"),
-                into: Some(at("qa")),
-            },
-        )
-        .unwrap();
-    let rows: Vec<String> = review.rows.iter().map(|row| row.at.to_string()).collect();
-    assert_eq!(rows, ["site.env.MODE"]);
-    let view = store
-        .read(
-            &who,
-            &PullRequestQuery {
-                repository_id: backend::repo_id(11),
-                number: backend::pr_number(5),
-            },
-        )
-        .unwrap();
-    let destinations = &view.environments[0].destinations;
-    assert_eq!(destinations.len(), 1);
-    assert_eq!(destinations[0].name.as_str(), "qa");
-    let landing: Vec<String> = destinations[0]
-        .rows
-        .iter()
-        .map(|row| row.at.to_string())
-        .collect();
-    assert_eq!(landing, rows);
-}
-
 /// Run `sql` on the database at `url`, beside the Store.
 fn execute(url: &str, sql: &str) -> usize {
     match url.strip_prefix("sqlite:") {
@@ -1770,175 +1618,6 @@ fn a_preview_reopened_while_the_old_one_closes_is_listed() {
 }
 
 #[test]
-fn an_idle_preview_with_something_to_land_only_shuts_down() {
-    let (store, who) = shop();
-    plan(&store, &who, on());
-    let opened = pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
-    run(&store, &opened.admitted[0].deployment.id, &["web", "api"]);
-    set(&store, &who, "pr-5", "web.env.A", json!("2"));
-
-    // A week idle: off the Servers, kept, so its merge still lands A.
-    let idle = sweep(&store, &who, now() + 8 * DAY);
-    assert_eq!(idle.shutting_down.len(), 1, "{idle:?}");
-    assert_eq!(idle.shutting_down[0].name.to_string(), "pr-5");
-    let off = shut_down(&store, &who, "pr-5");
-    run(&store, &off, &[]);
-    let swept = sweep(&store, &who, now() + 8 * DAY);
-    assert!(
-        swept.closing.is_empty() && swept.shutting_down.is_empty() && swept.removed.is_empty(),
-        "{swept:?}"
-    );
-    assert_eq!(listed(&store, &who), ["pr-5<production", "production"]);
-}
-
-#[test]
-fn an_idle_open_preview_whose_rows_are_all_excluded_only_shuts_down() {
-    let (store, who) = shop();
-    plan(&store, &who, on());
-    let opened = pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
-    run(&store, &opened.admitted[0].deployment.id, &["web", "api"]);
-    set(&store, &who, "pr-5", "web.env.A", json!("2"));
-    store
-        .write(
-            &who,
-            &ployz_store::NeverSync {
-                environment: at("pr-5"),
-                rows: vec!["web.env.A".into()],
-                off: false,
-            },
-        )
-        .unwrap();
-
-    // Nothing rides, but closing would lose the Excluded row: off the Servers, kept.
-    let idle = sweep(&store, &who, now() + 8 * DAY);
-    assert_eq!(idle.shutting_down.len(), 1, "{idle:?}");
-    let off = shut_down(&store, &who, "pr-5");
-    run(&store, &off, &[]);
-    let swept = sweep(&store, &who, now() + 8 * DAY);
-    assert!(
-        swept.closing.is_empty() && swept.shutting_down.is_empty() && swept.removed.is_empty(),
-        "{swept:?}"
-    );
-    assert_eq!(listed(&store, &who), ["pr-5<production", "production"]);
-}
-
-#[test]
-fn an_idle_kept_preview_edited_after_its_merge_landed_closes() {
-    let (store, who) = shop();
-    plan(
-        &store,
-        &who,
-        SetPrPlan {
-            remove_on_close: Some(false),
-            ..on()
-        },
-    );
-    let opened = pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
-    run(&store, &opened.admitted[0].deployment.id, &["web", "api"]);
-    set(&store, &who, "pr-5", "web.env.A", json!("2"));
-    pull(
-        &store,
-        &who,
-        PullRequest {
-            merge_commit: Some(backend::sha("3333333333333333333333333333333333333333")),
-            target_head: None,
-            ..facts(false, "2026-09-29T11:00:00Z")
-        },
-    );
-    assert_eq!(production_env(&store, &who).unwrap()["A"], json!("2"));
-
-    // The merge landed everywhere; nothing edited afterwards can land, so a week idle closes it.
-    set(&store, &who, "pr-5", "web.env.A", json!("3"));
-    let idle = sweep(&store, &who, now() + 8 * DAY);
-    assert_eq!(idle.closing.len(), 1, "{idle:?}");
-    let off = remove(&store, &who, "pr-5");
-    run(&store, &off, &[]);
-    sweep(&store, &who, now() + 8 * DAY);
-    assert_eq!(listed(&store, &who), ["production"]);
-}
-
-/// Pull request #5 onto `release`, which no Environment tracks.
-fn onto_release(open: bool, updated: &str) -> PullRequest {
-    PullRequest {
-        target_branch: backend::git_branch("release"),
-        ..facts(open, updated)
-    }
-}
-
-/// Pull request #5 merged onto `release` with pr-5 deployed, `changes` set there first.
-fn merged_onto_release(changes: &[(&str, serde_json::Value)]) -> (ConfigStore, Actor) {
-    let (store, who) = shop();
-    plan(&store, &who, on());
-    let opened = pull(&store, &who, onto_release(true, "2026-09-29T10:00:00Z"));
-    run(&store, &opened.admitted[0].deployment.id, &["web", "api"]);
-    for (path, value) in changes {
-        set(&store, &who, "pr-5", path, value.clone());
-    }
-    let merged = pull(
-        &store,
-        &who,
-        PullRequest {
-            merge_commit: Some(backend::sha("3333333333333333333333333333333333333333")),
-            ..onto_release(false, "2026-09-29T11:00:00Z")
-        },
-    );
-    assert!(
-        merged.closing.is_empty() && merged.removed.is_empty(),
-        "{merged:?}"
-    );
-    (store, who)
-}
-
-#[test]
-fn an_idle_preview_merged_where_nothing_deploys_keeps_its_changes() {
-    let (store, who) = merged_onto_release(&[("web.env.A", json!("2"))]);
-
-    // Its merge landed nowhere, so a week idle only shuts it down: A stays.
-    let idle = sweep(&store, &who, now() + 8 * DAY);
-    assert_eq!(idle.shutting_down.len(), 1, "{idle:?}");
-    let off = shut_down(&store, &who, "pr-5");
-    run(&store, &off, &[]);
-    let swept = sweep(&store, &who, now() + 8 * DAY);
-    assert!(
-        swept.closing.is_empty() && swept.shutting_down.is_empty() && swept.removed.is_empty(),
-        "{swept:?}"
-    );
-    assert_eq!(listed(&store, &who), ["pr-5<production", "production"]);
-}
-
-#[test]
-fn an_idle_preview_merged_where_nothing_deploys_with_no_changes_closes() {
-    let (store, who) = merged_onto_release(&[]);
-
-    let idle = sweep(&store, &who, now() + 8 * DAY);
-    assert_eq!(idle.closing.len(), 1, "{idle:?}");
-    let off = remove(&store, &who, "pr-5");
-    run(&store, &off, &[]);
-    sweep(&store, &who, now() + 8 * DAY);
-    assert_eq!(listed(&store, &who), ["production"]);
-}
-
-#[test]
-fn a_merge_reported_after_its_close_still_lands() {
-    let (store, who) = shop();
-    plan(&store, &who, on());
-    let opened = pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
-    run(&store, &opened.admitted[0].deployment.id, &["web", "api"]);
-    set(&store, &who, "pr-5", "web.env.A", json!("2"));
-
-    // GitHub's closed event, without the merge commit, came in first.
-    let closing = pull(&store, &who, facts(false, "2026-09-29T11:00:01Z"));
-    assert_eq!(closing.closing.len(), 1, "{closing:?}");
-    let merged = PullRequest {
-        merge_commit: Some(backend::sha("3333333333333333333333333333333333333333")),
-        target_head: None,
-        ..facts(false, "2026-09-29T11:00:00Z")
-    };
-    pull(&store, &who, merged);
-    assert_eq!(production_env(&store, &who).unwrap()["A"], json!("2"));
-}
-
-#[test]
 fn an_older_report_after_its_author_left_asks_for_approval() {
     let (store, who) = shop();
     plan(&store, &who, on());
@@ -2207,8 +1886,8 @@ fn a_row_an_older_store_wrote_since_reads_from_the_columns_it_wrote() {
     // It records #6's merge.
     execute(
         &url,
-        "UPDATE config_pull_request SET merged = '{\"commit\":\"3333333333333333333333333333333333333333\",\"into\":\"main\"}', \
-         unlanded = '[]' WHERE number = 6",
+        "UPDATE config_pull_request SET merged = '{\"commit\":\"3333333333333333333333333333333333333333\",\"into\":\"main\"}' \
+         WHERE number = 6",
     );
     assert_eq!(
         standings(&store, &who),
@@ -2229,25 +1908,20 @@ fn a_store_before_phases_reads_what_this_one_writes_from_its_columns() {
     let columns = || {
         let row = cells(
             &url,
-            "SELECT facts, standing, merged, unlanded FROM config_pull_request WHERE number = 5",
+            "SELECT facts, standing, merged FROM config_pull_request WHERE number = 5",
         );
         let facts: PullRequest = serde_json::from_str(row[0].as_deref().unwrap()).unwrap();
         let standing: Option<Standing> = row[1]
             .as_deref()
             .map(|text| serde_json::from_str(text).unwrap());
-        (facts.open, standing, row[2].clone(), row[3].clone())
+        (facts.open, standing, row[2].clone())
     };
     pull(&store, &who, outsider(HEAD, "2026-09-29T10:00:00Z"));
-    assert_eq!(columns(), (true, Some(Standing::NeedsApproval), None, None));
+    assert_eq!(columns(), (true, Some(Standing::NeedsApproval), None));
     approve(&store, &who, HEAD).unwrap();
     assert_eq!(
         columns(),
-        (
-            true,
-            Some(Standing::Approved(backend::sha(HEAD))),
-            None,
-            None
-        )
+        (true, Some(Standing::Approved(backend::sha(HEAD))), None)
     );
     pull(
         &store,
@@ -2258,7 +1932,7 @@ fn a_store_before_phases_reads_what_this_one_writes_from_its_columns() {
             ..outsider(HEAD, "2026-09-29T11:00:00Z")
         },
     );
-    let (open, standing, merged, unlanded) = columns();
+    let (open, standing, merged) = columns();
     assert_eq!(
         (open, standing),
         (false, Some(Standing::Approved(backend::sha(HEAD))))
@@ -2267,5 +1941,4 @@ fn a_store_before_phases_reads_what_this_one_writes_from_its_columns() {
         serde_json::from_str::<serde_json::Value>(merged.as_deref().unwrap()).unwrap(),
         json!({"commit": "3333333333333333333333333333333333333333", "into": "main"})
     );
-    assert!(unlanded.is_some(), "the merge landed");
 }

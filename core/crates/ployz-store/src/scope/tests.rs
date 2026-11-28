@@ -19,7 +19,6 @@ use crate::{
 enum Mode {
     Validated,
     Trusted,
-    Removed,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -43,7 +42,6 @@ fn write(
             environment,
             WorkingWrite::Trusted(Reason::Publish),
         ),
-        Mode::Removed => write_working(tx, evidence, environment, WorkingWrite::Removed),
     }
 }
 
@@ -144,7 +142,6 @@ fn attempt(protected: bool, mode: Mode, edit: Edit) -> (Observed, Observed) {
             let mut environment = load_by_id(tx, &id)?;
             let before = observe(tx, &id, None)?;
             match (mode, edit) {
-                (Mode::Removed, _) => environment.removed.record(&uuid(9), Some("gone")),
                 (_, Edit::Source) => {
                     let service = environment.working.services.first_mut().unwrap();
                     let ServiceSource::Git { branch, .. } = &mut service.config.source else {
@@ -280,27 +277,6 @@ fn each_write_of_working_state_validates_or_meets_the_fence_as_it_always_did() {
             "main",
             "setup",
             false,
-        ),
-        // Removals leave Working State, its revision and the fence alone.
-        (
-            true,
-            Mode::Removed,
-            Edit::Source,
-            None,
-            0,
-            "main",
-            "web",
-            true,
-        ),
-        (
-            false,
-            Mode::Removed,
-            Edit::Source,
-            None,
-            0,
-            "main",
-            "web",
-            true,
         ),
     ];
     for (protected, mode, edit, refused, bumped, branch, slug, removed) in table {
