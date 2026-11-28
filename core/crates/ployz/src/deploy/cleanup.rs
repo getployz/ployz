@@ -576,25 +576,35 @@ pub(crate) async fn gone<C: CopyLifecycle>(
         drain,
         anonymous_volumes,
     };
-    Ok(
-        match client.ensure_unsettled(machine_id, want, budget).await? {
-            EnsuredContainer::Ensured { .. } => Gone::Removed,
-            EnsuredContainer::Refused { refusal, .. }
-                if refusal.reason == ContainerRefusalReason::NotFound =>
-            {
-                Gone::Removed
+    // A daemon that exits mid-removal loses the reply. Gone converges on a resend, so
+    // the restarted daemon finishes the removal instead of the copy staying Exited.
+    let mut resent = false;
+    let ensured = loop {
+        match client
+            .ensure_unsettled(machine_id, want.clone(), budget)
+            .await
+        {
+            Err(error) if error.reply_lost() && !resent => resent = true,
+            ensured => break ensured,
+        }
+    };
+    Ok(match ensured? {
+        EnsuredContainer::Ensured { .. } => Gone::Removed,
+        EnsuredContainer::Refused { refusal, .. }
+            if refusal.reason == ContainerRefusalReason::NotFound =>
+        {
+            Gone::Removed
+        }
+        EnsuredContainer::Refused { now, refusal }
+            if refusal.reason == ContainerRefusalReason::InRotation =>
+        {
+            Gone::InRotation {
+                now: Box::new(now),
+                refusal,
             }
-            EnsuredContainer::Refused { now, refusal }
-                if refusal.reason == ContainerRefusalReason::InRotation =>
-            {
-                Gone::InRotation {
-                    now: Box::new(now),
-                    refusal,
-                }
-            }
-            EnsuredContainer::Refused { refusal, .. } => Gone::Refused(refusal),
-        },
-    )
+        }
+        EnsuredContainer::Refused { refusal, .. } => Gone::Refused(refusal),
+    })
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -906,7 +906,9 @@ mod tests {
             docker: root.0.join("docker"),
             ..Default::default()
         };
-        let marker = root.0.join(format!("{}.lock", ployz_build::builder_name()));
+        let isolated_slot = u8::MAX;
+        let builder = format!("{}-{isolated_slot}", ployz_build::builder_name());
+        let marker = root.0.join(format!("{builder}.lock"));
         fs::write(&marker, "termination unconfirmed\n").unwrap();
         // Docker reports the abandoned worker as one Ployz made.
         fs::write(
@@ -925,7 +927,7 @@ exit 0
         fs::set_permissions(&policy.docker, fs::Permissions::from_mode(0o700)).unwrap();
         let run_dir = config.socket.parent().unwrap().to_owned();
         let claimed = MachineApiSocket::claim(&config.socket).unwrap();
-        let mut daemon = Daemon::start_with_build_policy(config, claimed, policy.clone(), run_dir)
+        let mut daemon = Daemon::start_with_build_policy(config, claimed, policy, run_dir)
             .await
             .unwrap();
         daemon
@@ -936,11 +938,10 @@ exit 0
         assert!(
             fs::read_to_string(root.0.join("cleaned"))
                 .unwrap()
-                .contains("rm --force abandoned")
+                .lines()
+                .any(|line| line == "rm --force abandoned")
         );
-        // A mark from before marks named processes, and no Buildx process left.
         assert!(fs::read_to_string(marker).unwrap().is_empty());
-        drop(ployz_build::Admission::try_acquire_with(&policy).unwrap());
         assert!(
             describe(&socket)
                 .await

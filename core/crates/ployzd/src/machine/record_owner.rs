@@ -65,6 +65,7 @@ struct Shared {
     data_dir: std::path::PathBuf,
     run_dir: std::path::PathBuf,
     admission_lock: Arc<tokio::sync::RwLock<()>>,
+    installed_work: Arc<tokio::sync::RwLock<()>>,
     mutation_gate: MutationGate,
     thread: Mutex<Option<thread::JoinHandle<()>>>,
     /// Live handles. Counted explicitly so exactly one drop observes being last.
@@ -126,6 +127,7 @@ impl RecordOwner {
                 data_dir,
                 run_dir,
                 admission_lock,
+                installed_work: Arc::default(),
                 mutation_gate,
                 thread: Mutex::new(Some(thread)),
                 handles: AtomicUsize::new(1),
@@ -260,6 +262,13 @@ impl RecordOwner {
     #[must_use]
     pub(crate) fn admission_lock(&self) -> Arc<tokio::sync::RwLock<()>> {
         Arc::clone(&self.shared.admission_lock)
+    }
+
+    /// Held shared by work that holds no turn throughout, such as a stop followed by
+    /// its removal, and exclusive by shutdown, so the work ends before the record closes.
+    #[must_use]
+    pub(crate) fn installed_work(&self) -> Arc<tokio::sync::RwLock<()>> {
+        Arc::clone(&self.shared.installed_work)
     }
 
     #[must_use]
