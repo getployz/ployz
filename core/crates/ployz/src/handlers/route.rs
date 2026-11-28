@@ -758,11 +758,6 @@ pub(super) struct Silent {
     relayed: bool,
 }
 
-/// Whether `error` is a Server of Cloud's refusing to give this command access.
-pub(super) fn refused(error: &Error) -> bool {
-    error.connect_failure() == Some(&ConnectFailure::Refused)
-}
-
 /// Whether `error` is Servers Cloud knows that didn't answer, and none that refused.
 pub(super) fn servers_unanswered(error: &Error) -> bool {
     matches!(
@@ -893,7 +888,7 @@ mod tests {
     fn why_no_server_carried_a_command_is_a_value_not_a_sentence() {
         let none = no_servers();
         assert!(has_no_servers(&none));
-        assert!(!servers_unanswered(&none) && !refused(&none));
+        assert!(!servers_unanswered(&none));
         assert_eq!(none.report().message, "this Organization has no Servers");
         assert!(!has_no_servers(&Error::conflict(
             "this Organization has no Servers"

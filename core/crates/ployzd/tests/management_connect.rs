@@ -26,13 +26,12 @@ use ployz::{
 };
 use ployz_core::{
     AdvertisedEndpoint, ClientKey, ContainerId, DescribeContractRequest, DeviceKey, DeviceSet,
-    EnrollAs, EnrollRequest, ExecConfig, ExecOptions, ExecRequestFrame, ForgottenAnswer,
-    MANAGEMENT_ALPN, MachineId, MachineName, MachineRpcClient, ManagementCapability,
-    ManagementClientLabel, ManagementIdentity, OpaquePayload, RpcErrorCode, SetDeviceRequest,
-    SetManagementClientRequest, TUNNEL_ALPN, TUNNEL_FAILED, TUNNEL_OPEN, op,
+    EnrollAs, EnrollRequest, ExecConfig, ExecOptions, ExecRequestFrame, MANAGEMENT_ALPN, MachineId,
+    MachineName, MachineRpcClient, ManagementCapability, ManagementClientLabel, OpaquePayload,
+    RpcErrorCode, SetDeviceRequest, SetManagementClientRequest, TUNNEL_ALPN, TUNNEL_FAILED,
+    TUNNEL_OPEN, op,
 };
 use ployzd::{
-    corrosion::ReplicatedStore,
     machine::{LocalMachine, LocalMachineStore, RecordOwner},
     machine_api::{EndsOnShutdown, MachineApi},
     management::{self, ManagementConfig},
@@ -81,7 +80,6 @@ async fn two_holders_of_one_capability_stay_independent_through_the_relay() {
         local.clone(),
         MachineApi::builder(owner).build(),
         Arc::default(),
-        None::<ReplicatedStore>,
         shutdown.clone(),
     ));
     let process = || {
@@ -144,7 +142,6 @@ async fn a_held_session_with_a_silent_relay_does_not_stall_the_next_dial() {
         local.clone(),
         MachineApi::builder(owner).build(),
         Arc::default(),
-        None::<ReplicatedStore>,
         shutdown.clone(),
     ));
     let process: Arc<dyn Connector> = Arc::new(
@@ -297,7 +294,6 @@ async fn a_management_proof_admits_only_the_connection_it_was_made_on() {
         local.clone(),
         MachineApi::builder(owner).build(),
         Arc::default(),
-        None::<ReplicatedStore>,
         shutdown.clone(),
     ));
     let (holder, eavesdropper) = (
@@ -373,7 +369,6 @@ async fn a_reply_finished_as_shutdown_drains_reaches_the_caller() {
             gate: Arc::clone(&gate),
         },
         Arc::default(),
-        None::<ReplicatedStore>,
         shutdown.clone(),
     ));
     let channel = SystemConnector::new("/ployz-missing-ssh-client")
@@ -449,7 +444,6 @@ async fn shutdown_ends_open_streams_while_replies_and_builds_drain() {
             shutdown.clone(),
         ),
         Arc::default(),
-        None::<ReplicatedStore>,
         shutdown.clone(),
     ));
     let channel = SystemConnector::new("/ployz-missing-ssh-client")
@@ -541,7 +535,6 @@ async fn verification_racing_removal_does_not_revoke_the_saved_candidate() {
         local.clone(),
         MachineApi::builder(owner).build(),
         Arc::default(),
-        None::<ReplicatedStore>,
         shutdown.clone(),
     ));
     let connector = Arc::new(SystemConnector::default().with_management_relay(
@@ -619,7 +612,6 @@ async fn rotating_or_clearing_one_slot_revokes_only_its_holder() {
         local.clone(),
         MachineApi::builder(owner).build(),
         Arc::default(),
-        None::<ReplicatedStore>,
         shutdown.clone(),
     ));
     let connector = SystemConnector::default().with_management_relay(ManagementRelay::custom(
@@ -726,7 +718,6 @@ async fn only_a_device_execs_or_tunnels() {
         local.clone(),
         MachineApi::builder(owner).build(),
         Arc::default(),
-        None::<ReplicatedStore>,
         shutdown.clone(),
     ));
     let connector = SystemConnector::default().with_management_relay(ManagementRelay::custom(
@@ -833,7 +824,6 @@ async fn a_device_removing_itself_receives_the_outcome() {
         local.clone(),
         AnswersAfterRevocation(MachineApi::builder(owner).build()),
         Arc::default(),
-        None::<ReplicatedStore>,
         shutdown.clone(),
     ));
     let connector = SystemConnector::default().with_management_relay(ManagementRelay::custom(
@@ -980,7 +970,6 @@ async fn contract() {
         local.clone(),
         api,
         Arc::default(),
-        None::<ReplicatedStore>,
         shutdown.clone(),
     ));
     let connector = Arc::new(
@@ -1466,7 +1455,6 @@ impl Tunnels {
             local.clone(),
             MachineApi::builder(owner).build(),
             Arc::default(),
-            None::<ReplicatedStore>,
             shutdown.clone(),
         ));
         let connector = SystemConnector::default().with_management_relay(ManagementRelay::custom(
@@ -1771,7 +1759,6 @@ impl GrantMachine {
             local.clone(),
             MachineApi::builder(owner).build(),
             Arc::clone(&grants),
-            None::<ReplicatedStore>,
             shutdown.clone(),
         ));
         Self {
@@ -1858,304 +1845,6 @@ async fn fake_ingest() -> (std::net::SocketAddr, Arc<Mutex<Vec<String>>>) {
     (address, seen)
 }
 
-/// A forgotten Server asks a member with its own Management Identity as the transport
-/// key and reads the answer from the close code; nothing else about it is trusted.
-#[tokio::test(flavor = "multi_thread")]
-async fn forgotten_question_is_answered_by_the_asking_key_alone() {
-    let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
-    let (_dir, owner, local) = participating().await;
-    let member = local.record().management_secret().public_key();
-    let forgotten = SecretKey::generate();
-    let listed = SecretKey::generate();
-    let roster = FixedRoster(vec![
-        (identity(&forgotten), ForgottenAnswer::Forgotten),
-        (identity(&listed), ForgottenAnswer::Listed),
-    ]);
-    let endpoint = management::bind(
-        local.record().management_secret(),
-        &ManagementConfig {
-            relay: management::Relay::Only(relay_url.clone()),
-            port: 0,
-            relay_tls: CaTlsConfig::insecure_skip_verify(),
-        },
-    )
-    .await
-    .unwrap();
-    let shutdown = CancellationToken::new();
-    let server = tokio::spawn(management::serve(
-        endpoint,
-        local.clone(),
-        MachineApi::builder(owner).build(),
-        Arc::default(),
-        roster,
-        shutdown.clone(),
-    ));
-
-    let ask = |key: SecretKey| {
-        let relay_url = relay_url.clone();
-        async move {
-            let asker = keyed_endpoint(&relay_url, key).await;
-            let answer = tokio::time::timeout(
-                Duration::from_secs(30),
-                management::forgotten::ask(
-                    &asker,
-                    member,
-                    &management::Relay::Only(relay_url.clone()),
-                ),
-            )
-            .await
-            .expect("the member answers promptly");
-            asker.close().await;
-            answer
-        }
-    };
-    assert_eq!(ask(forgotten).await, Some(ForgottenAnswer::Forgotten));
-    assert_eq!(ask(listed).await, Some(ForgottenAnswer::Listed));
-    assert_eq!(
-        ask(SecretKey::generate()).await,
-        Some(ForgottenAnswer::NoAnswer)
-    );
-
-    shutdown.cancel();
-    server.await.unwrap();
-}
-
-/// A member without a roster, and a Machine running a daemon that predates the
-/// forgotten ALPN, give the asker nothing to act on.
-#[tokio::test(flavor = "multi_thread")]
-async fn forgotten_question_without_a_roster_or_an_older_member_gives_nothing() {
-    let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
-    let (_dir, owner, local) = participating().await;
-    let member = local.record().management_secret().public_key();
-    let asker_key = SecretKey::generate();
-    let endpoint = management::bind(
-        local.record().management_secret(),
-        &ManagementConfig {
-            relay: management::Relay::Only(relay_url.clone()),
-            port: 0,
-            relay_tls: CaTlsConfig::insecure_skip_verify(),
-        },
-    )
-    .await
-    .unwrap();
-    let shutdown = CancellationToken::new();
-    let server = tokio::spawn(management::serve(
-        endpoint,
-        local.clone(),
-        MachineApi::builder(owner).build(),
-        Arc::default(),
-        None::<ReplicatedStore>,
-        shutdown.clone(),
-    ));
-    let asker = keyed_endpoint(&relay_url, asker_key.clone()).await;
-    assert_eq!(
-        tokio::time::timeout(
-            Duration::from_secs(30),
-            management::forgotten::ask(&asker, member, &management::Relay::Only(relay_url.clone()))
-        )
-        .await
-        .unwrap(),
-        Some(ForgottenAnswer::NoAnswer)
-    );
-    shutdown.cancel();
-    server.await.unwrap();
-
-    let older_key = SecretKey::generate();
-    let older = identity(&older_key);
-    let older_endpoint = Endpoint::builder(presets::Minimal)
-        .secret_key(older_key)
-        .alpns(vec![MANAGEMENT_ALPN.to_vec()])
-        .relay_mode(RelayMode::custom([relay_url.clone()]))
-        .ca_tls_config(CaTlsConfig::insecure_skip_verify())
-        .clear_ip_transports()
-        .bind()
-        .await
-        .unwrap();
-    let accepting = tokio::spawn({
-        let older_endpoint = older_endpoint.clone();
-        async move { while older_endpoint.accept().await.is_some() {} }
-    });
-    assert_eq!(
-        tokio::time::timeout(
-            Duration::from_secs(30),
-            management::forgotten::ask(&asker, older, &management::Relay::Only(relay_url.clone()))
-        )
-        .await
-        .unwrap(),
-        None
-    );
-    older_endpoint.close().await;
-    accepting.abort();
-    asker.close().await;
-}
-
-/// Only a Participating Machine's view of the Cluster counts: one that never enrolled,
-/// or is on its way out, gives the asker nothing even when its roster would.
-#[tokio::test(flavor = "multi_thread")]
-async fn forgotten_question_to_a_machine_outside_a_cluster_gives_nothing() {
-    let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    let owner = RecordOwner::spawn(LocalMachineStore::open(dir.path()).unwrap()).unwrap();
-    let local = LocalMachine::new(owner.clone());
-    let member = local.record().management_secret().public_key();
-    let asker_key = SecretKey::generate();
-    let endpoint = management::bind(
-        local.record().management_secret(),
-        &ManagementConfig {
-            relay: management::Relay::Only(relay_url.clone()),
-            port: 0,
-            relay_tls: CaTlsConfig::insecure_skip_verify(),
-        },
-    )
-    .await
-    .unwrap();
-    let shutdown = CancellationToken::new();
-    let server = tokio::spawn(management::serve(
-        endpoint,
-        local.clone(),
-        MachineApi::builder(owner).build(),
-        Arc::default(),
-        FixedRoster(vec![(identity(&asker_key), ForgottenAnswer::Forgotten)]),
-        shutdown.clone(),
-    ));
-    let asker = keyed_endpoint(&relay_url, asker_key).await;
-    assert_eq!(
-        tokio::time::timeout(
-            Duration::from_secs(30),
-            management::forgotten::ask(&asker, member, &management::Relay::Only(relay_url.clone()))
-        )
-        .await
-        .unwrap(),
-        Some(ForgottenAnswer::NoAnswer)
-    );
-    asker.close().await;
-    shutdown.cancel();
-    server.await.unwrap();
-}
-
-/// The answer is bound to the member's key: an endpoint serving under another key, whether
-/// reached through the relay or at its own address, never yields one for the key asked
-/// about, so a stale or forged identity in a Machine row cannot speak for a member.
-#[tokio::test(flavor = "multi_thread")]
-async fn forgotten_question_for_one_key_is_never_answered_by_another() {
-    let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
-    let (_dir, owner, local) = participating().await;
-    let asker_key = SecretKey::generate();
-    let asked_about = identity(&SecretKey::generate());
-    let endpoint = management::bind(
-        local.record().management_secret(),
-        &ManagementConfig {
-            relay: management::Relay::Only(relay_url.clone()),
-            port: 0,
-            relay_tls: CaTlsConfig::insecure_skip_verify(),
-        },
-    )
-    .await
-    .unwrap();
-    let served_at = endpoint
-        .bound_sockets()
-        .into_iter()
-        .find(|socket| socket.is_ipv4())
-        .map(|socket| std::net::SocketAddr::from(([127, 0, 0, 1], socket.port())))
-        .expect("the management endpoint binds IPv4");
-    let shutdown = CancellationToken::new();
-    let server = tokio::spawn(management::serve(
-        endpoint,
-        local.clone(),
-        MachineApi::builder(owner).build(),
-        Arc::default(),
-        FixedRoster(vec![(identity(&asker_key), ForgottenAnswer::Forgotten)]),
-        shutdown.clone(),
-    ));
-
-    let asker = keyed_endpoint(&relay_url, asker_key.clone()).await;
-    let through_relay = tokio::time::timeout(
-        Duration::from_secs(15),
-        management::forgotten::ask(
-            &asker,
-            asked_about,
-            &management::Relay::Only(relay_url.clone()),
-        ),
-    )
-    .await;
-    assert!(
-        matches!(through_relay, Ok(None) | Err(_)),
-        "another key answered through the relay: {through_relay:?}"
-    );
-    asker.close().await;
-
-    let direct_asker = Endpoint::builder(presets::Minimal)
-        .secret_key(asker_key)
-        .relay_mode(RelayMode::custom([relay_url.clone()]))
-        .ca_tls_config(CaTlsConfig::insecure_skip_verify())
-        .bind()
-        .await
-        .unwrap();
-    let address = EndpointAddr::new(iroh::PublicKey::from_bytes(asked_about.as_bytes()).unwrap())
-        .with_ip_addr(served_at);
-    let direct = tokio::time::timeout(
-        Duration::from_secs(15),
-        direct_asker.connect(address, ployz_core::FORGOTTEN_ALPN),
-    )
-    .await;
-    if let Ok(Ok(connection)) = direct {
-        let close = connection.closed().await;
-        let answered = match &close {
-            iroh::endpoint::ConnectionError::ApplicationClosed(close) => {
-                ForgottenAnswer::from_close_code(
-                    u32::try_from(close.error_code.into_inner()).unwrap(),
-                )
-            }
-            iroh::endpoint::ConnectionError::VersionMismatch
-            | iroh::endpoint::ConnectionError::TransportError(_)
-            | iroh::endpoint::ConnectionError::ConnectionClosed(_)
-            | iroh::endpoint::ConnectionError::Reset
-            | iroh::endpoint::ConnectionError::TimedOut
-            | iroh::endpoint::ConnectionError::LocallyClosed
-            | iroh::endpoint::ConnectionError::CidsExhausted => None,
-        };
-        assert_eq!(
-            answered, None,
-            "another key answered at its address: {close:?}"
-        );
-    }
-    direct_asker.close().await;
-    shutdown.cancel();
-    server.await.unwrap();
-}
-
-struct FixedRoster(Vec<(ManagementIdentity, ForgottenAnswer)>);
-
-impl management::Roster for FixedRoster {
-    async fn forgotten(
-        &self,
-        identity: ManagementIdentity,
-    ) -> Result<ForgottenAnswer, ployzd::corrosion::Error> {
-        Ok(self
-            .0
-            .iter()
-            .find(|(known, _)| *known == identity)
-            .map_or(ForgottenAnswer::NoAnswer, |(_, answer)| *answer))
-    }
-}
-
-fn identity(key: &SecretKey) -> ManagementIdentity {
-    ManagementIdentity::from_bytes(*key.public().as_bytes())
-}
-
-/// An endpoint under `key`, dialing only through the relay.
-async fn keyed_endpoint(relay_url: &iroh::RelayUrl, key: SecretKey) -> Endpoint {
-    Endpoint::builder(presets::Minimal)
-        .secret_key(key)
-        .relay_mode(RelayMode::custom([relay_url.clone()]))
-        .ca_tls_config(CaTlsConfig::insecure_skip_verify())
-        .clear_ip_transports()
-        .bind()
-        .await
-        .unwrap()
-}
-
-/// A management endpoint under a fresh key, dialing only through the relay.
 async fn raw_endpoint(relay_url: &iroh::RelayUrl) -> Endpoint {
     Endpoint::builder(presets::Minimal)
         .relay_mode(RelayMode::custom([relay_url.clone()]))

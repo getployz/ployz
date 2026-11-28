@@ -258,21 +258,21 @@ export function forgetLoses(frame: RuntimeWatchView, machineId: string): DataLos
     .map(({ id }) => ({ kind: "docker_volume" as const, id }));
 }
 
-/** A reset removal loses access to the Volumes it confirmed; a forget loses those `forgetLoses` found. */
-export type Removal = { readonly reset: boolean; readonly volumes: readonly DataLossIdentity[] };
+/** A removal, `ployz server rm` or `forget`, and the Volumes only that Server holds, which the Cluster loses with it. */
+export type Removal = { readonly verb: "remove" | "forget"; readonly volumes: readonly DataLossIdentity[] };
 
 export function removePlan(
   machineId: string,
   name: string,
-  { reset, volumes: lost }: Removal,
+  { verb, volumes: lost }: Removal,
   labels: ReadonlyMap<string, string> = new Map(),
 ): OperationAsked {
   const volumes = [...lost].sort((a, b) => byName(volumeName(a), volumeName(b)));
   return {
     subject: `server:${machineId}`,
-    verb: reset ? "remove" : "forget",
+    verb,
     name,
-    preview: { server: machineId, reset, volumes: volumes.map(volumeName) },
+    preview: { server: machineId, volumes: volumes.map(volumeName) },
     effects: [
       { kind: "removes_server", name, node: machineId, path: `servers/${machineId}` },
       ...volumes.map((identity) => deletesVolume(identity, labels.get(identity.id.name))),
@@ -381,7 +381,17 @@ export const planRemove = Effect.fn("ServerOperations.planRemove")(function* (
   const frame = yield* observe(organizationId);
   const name = serverName(frame, machineId);
   if (name === undefined) return null;
-  const removal = confirmed === null ? { reset: false, volumes: forgetLoses(frame, machineId) } : { reset: true, volumes: confirmed };
+  const removal = { verb: confirmed === null ? "forget" : "remove", volumes: forgetLoses(frame, machineId) } as const;
+  if (confirmed !== null) {
+    const known = new Set(confirmed.map(volumeName));
+    const unconfirmed = removal.volumes.filter((identity) => !known.has(volumeName(identity)));
+    if (unconfirmed.length > 0) {
+      return yield* new Conflict({
+        userFacing: true,
+        message: `Server ${name} holds the only copy of ${unconfirmed.map(({ id }) => id.name).join(", ")}, which wasn't confirmed. No changes made. Confirm the removal again.`,
+      });
+    }
+  }
   const { owners, unreadables: [unread] } = yield* volumeOwners(organizationId, removal.volumes);
   // Fail closed: the Server may hold the only copy of a Volume nobody can name.
   if (unread !== undefined) return yield* unreadableEnvironment(unread);

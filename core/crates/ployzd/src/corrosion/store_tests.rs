@@ -1,8 +1,8 @@
 use std::{collections::BTreeMap, net::TcpListener, sync::Arc, time::SystemTime};
 
 use ployz_core::{
-    CertificateHost, ContainerId, DockerVolume, DockerVolumeId, DockerVolumeName, ForgottenAnswer,
-    IngressHost, IssuanceClock, IssuanceFailure, Machine, MachineId, QualifiedService, RowStanding,
+    CertificateHost, ContainerId, DockerVolume, DockerVolumeId, DockerVolumeName, IngressHost,
+    IssuanceClock, IssuanceFailure, Machine, MachineId, QualifiedService, RowStanding,
 };
 use serde_json::json;
 
@@ -1340,66 +1340,9 @@ async fn remove_machine_deletes_route_ack() {
 }
 
 #[tokio::test]
-async fn forget_leaves_a_tombstone_only_the_forgotten_identity_matches() {
-    let (store, task) = identity_store(corrosion_db()).await;
-    let (machine, local) = participating_record();
-    let identity = local.management_secret().public_key();
-    let other = crate::management::ManagementSecret::generate().public_key();
-    let publication = store.machine_publication().await;
-    let published = publishable_machine(&local, RuntimeOverlay::default()).unwrap();
-    assert_eq!(published.runtime.management_identity, Some(identity));
-    publication.publish(&published).await.unwrap();
-    drop(publication);
-    assert_eq!(
-        store.forgotten(identity).await.unwrap(),
-        ForgottenAnswer::Listed
-    );
-
-    store.forget_machine(&machine.id).await.unwrap();
-    assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
-    assert_eq!(
-        store.forgotten(identity).await.unwrap(),
-        ForgottenAnswer::Forgotten
-    );
-    assert_eq!(
-        store.forgotten(other).await.unwrap(),
-        ForgottenAnswer::NoAnswer
-    );
-
-    // An Entry on an older daemon can still write the id back without an identity
-    // (#3613): Listed wins.
-    store
-        .api()
-        .execute([Statement::new(
-            "INSERT INTO machines (id, info) VALUES (?, ?)",
-            [
-                json!(machine.id),
-                json!(serde_json::to_string(&machine).unwrap()),
-            ],
-        )])
-        .await
-        .unwrap();
-    assert_eq!(
-        store.forgotten(identity).await.unwrap(),
-        ForgottenAnswer::Listed
-    );
-    store.forget_machine(&machine.id).await.unwrap();
-
-    let mut twin = published.clone();
-    twin.id = MachineId::parse("c".repeat(32)).unwrap();
-    store.publish_local_machine(&twin).await.unwrap();
-    assert_eq!(
-        store.forgotten(identity).await.unwrap(),
-        ForgottenAnswer::Listed
-    );
-    task.abort();
-}
-
-#[tokio::test]
 async fn a_forgotten_machine_still_running_cannot_publish_itself_back() {
     let (store, task) = identity_store(corrosion_db()).await;
     let (machine, local) = participating_record();
-    let identity = local.management_secret().public_key();
     let publication = store.machine_publication().await;
     let published = publishable_machine(&local, RuntimeOverlay::default()).unwrap();
     publication.publish(&published).await.unwrap();
@@ -1421,10 +1364,6 @@ async fn a_forgotten_machine_still_running_cannot_publish_itself_back() {
         .unwrap();
 
     assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
-    assert_eq!(
-        store.forgotten(identity).await.unwrap(),
-        ForgottenAnswer::Forgotten
-    );
     task.abort();
 }
 
@@ -1492,13 +1431,6 @@ async fn forget_of_a_registered_row_keeps_its_id_gone() {
         publication.publish(&caught_up).await.unwrap();
         drop(publication);
         assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
-        assert_eq!(
-            store
-                .forgotten(local.management_secret().public_key())
-                .await
-                .unwrap(),
-            ForgottenAnswer::NoAnswer
-        );
         task.abort();
     }
 }
@@ -1615,18 +1547,23 @@ async fn a_register_does_not_take_back_the_forget_of_a_joined_row() {
 async fn leave_writes_no_tombstone() {
     let (store, task) = identity_store(corrosion_db()).await;
     let (machine, local) = participating_record();
-    let identity = local.management_secret().public_key();
     let publication = store.machine_publication().await;
     let published = publishable_machine(&local, RuntimeOverlay::default()).unwrap();
     publication.publish(&published).await.unwrap();
     drop(publication);
 
     store.remove_machine(&machine.id).await.unwrap();
-
     assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
+
+    store
+        .machine_publication()
+        .await
+        .publish(&published)
+        .await
+        .unwrap();
     assert_eq!(
-        store.forgotten(identity).await.unwrap(),
-        ForgottenAnswer::NoAnswer
+        store.machine(machine.id.as_str()).await.unwrap(),
+        Some(published)
     );
     task.abort();
 }

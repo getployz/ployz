@@ -75,18 +75,9 @@ it("names a Cluster rename by the private addresses it moves", () => {
 
 const deletedVolume: DestructiveEffect = { kind: "deletes_volume", name: "pgdata", node: "v1", path: "volumes/v1" };
 
-it("says server removal loses access while the disk keeps volume data", () => {
-  const review: ApprovalReview = { effects: [deletedVolume], operation: { subject: "server:box", verb: "remove", name: "box", preview: {} } };
-  const line = destroyedLine(deletedVolume, "remove", review);
-  expect(line.name).toBe("pgdata");
-  expect(`${line.verb}${line.after}`).not.toMatch(/deletes|not recoverable/i);
-  expect(approvalBadge("remove", review)).not.toMatch(/deletes/i);
-});
-
 it("keeps real volume deletion wording for project removal, namespace clean and deploy", () => {
-  for (const [subject, command] of [["project:shop", "remove"], ["namespace:shop", "clean"], ["server:box", "clean"], ["server:box", "forget"], ["servers:acme", "forget"]] as const) {
+  for (const [subject, command] of [["project:shop", "remove"], ["namespace:shop", "clean"], ["server:box", "clean"], ["server:box", "remove"], ["server:box", "forget"], ["servers:acme", "forget"]] as const) {
     const review: ApprovalReview = { effects: [deletedVolume], operation: { subject, verb: command, name: "shop", preview: {} } };
-    expect(destroyedLine(deletedVolume, command, review)).toEqual(destroyedLine(deletedVolume));
     expect(approvalBadge(command, review)).toMatch(/deletes/i);
   }
   expect(destroyedLine(deletedVolume)).toMatchObject({ verb: expect.stringMatching(/^Deletes/), name: "pgdata", after: expect.stringMatching(/not recoverable/i) });

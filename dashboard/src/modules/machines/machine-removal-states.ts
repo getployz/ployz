@@ -1,5 +1,3 @@
-import type { Departed } from "@ployz/sdk";
-
 export const MACHINE_REMOVE_ATTEMPT_STATES = [
   "pending",
   "running",
@@ -21,8 +19,5 @@ export type ServerRelease =
   /** Cloud kept its hold, for `reason`. */
   | { kind: "kept"; reason: string };
 
-/**
- * A settled removal: how the Server departed, and what became of Cloud's hold. `resetWarning` is `departed` as prose,
- * all a result older than `departed` holds. A removal without a reset has no `departed`.
- */
-export type MachineRemoveResult = { resetWarning: string | null; departed?: Departed; release: ServerRelease };
+/** A settled removal: what became of Cloud's hold. A result an older Cloud saved may carry more; nothing reads it. */
+export type MachineRemoveResult = { release: ServerRelease };

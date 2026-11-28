@@ -156,6 +156,8 @@ pub(super) struct DiscoveryService {
     pub(super) inspect_calls: Arc<AtomicUsize>,
     pub(super) storage: MachineStorageObservation,
     pub(super) storage_capacity: Option<ployz_core::StorageCapacity>,
+    /// Storage one Machine answers in place of `storage_capacity`, by its id.
+    pub(super) storage_by_machine: BTreeMap<MachineId, ployz_core::StorageCapacity>,
     pub(super) storage_hangs_after: Option<usize>,
     pub(super) storage_reads: Arc<AtomicUsize>,
     /// The first reads answer Unavailable, as a daemon that is not participating does.
@@ -195,10 +197,6 @@ pub(super) struct DiscoveryService {
     pub(super) management_clients: Arc<Mutex<Vec<ployz_core::ManagementClientLabel>>>,
     /// Inspect fails, so who manages the Machine can't be read.
     pub(super) inspect_fails: bool,
-    /// Leave fails in transport, as when the entry can't reach its target.
-    pub(super) leave_unavailable: bool,
-    /// Leave's refusal payload, as when the entry no longer lists its target.
-    pub(super) leave_error: Option<RpcError>,
     /// How many Forgets fail as unavailable, before any of them deletes a row.
     pub(super) forget_failures: Arc<AtomicUsize>,
     register_error: Arc<Mutex<Option<RpcError>>>,
@@ -270,7 +268,9 @@ impl DiscoveryService {
             volume_list_calls: Arc::new(AtomicUsize::new(0)),
             inspect_calls: Arc::new(AtomicUsize::new(0)),
             storage: MachineStorageObservation::Ready,
-            storage_capacity: None,
+            // Every Server answers a read: a removal checks it does before it names one dead.
+            storage_capacity: Some(empty_storage()),
+            storage_by_machine: BTreeMap::new(),
             storage_hangs_after: None,
             storage_reads: Arc::new(AtomicUsize::new(0)),
             storage_unavailable_for: 0,
@@ -302,8 +302,6 @@ impl DiscoveryService {
             proxies: Arc::default(),
             management_clients: Arc::default(),
             inspect_fails: false,
-            leave_unavailable: false,
-            leave_error: None,
             forget_failures: Arc::new(AtomicUsize::new(0)),
             register_error: Arc::new(Mutex::new(None)),
             register_calls: Arc::new(AtomicUsize::new(0)),
@@ -921,7 +919,7 @@ impl FakeMachine for DiscoveryService {
 
     async fn inspect_storage(
         &self,
-        _request: tonic::Request<ployz_core::OpaquePayload>,
+        request: tonic::Request<ployz_core::OpaquePayload>,
     ) -> Result<tonic::Response<ployz_core::OpaquePayload>, tonic::Status> {
         let read = self.storage_reads.fetch_add(1, Ordering::SeqCst);
         if read < self.storage_unavailable_for {
@@ -943,6 +941,12 @@ impl FakeMachine for DiscoveryService {
             .is_some_and(|replies| read >= replies)
         {
             return std::future::pending().await;
+        }
+        if let Some(capacity) = target(&request)
+            .ok()
+            .and_then(|machine_id| self.storage_by_machine.get(&machine_id))
+        {
+            return reply(capacity.clone());
         }
         let capacity = self.storage_capacity.as_ref().ok_or_else(|| {
             Status::unimplemented("storage capacity not supplied by this fixture")
@@ -1376,12 +1380,6 @@ impl FakeMachine for DiscoveryService {
         let machine_id = target(&request)?;
         let request = request.into_inner().decode_request().unwrap();
         assert!(matches!(request.body, RpcRequestBody::Leave(_)));
-        if self.leave_unavailable {
-            return Err(Status::unavailable("target unavailable"));
-        }
-        if let Some(error) = &self.leave_error {
-            return reply(error.clone());
-        }
         self.reset_machines.lock().unwrap().push(machine_id);
         reply(Left::Left {
             phase: LeftPhase::Resetting,

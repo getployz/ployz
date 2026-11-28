@@ -232,9 +232,9 @@ A verifier reports each entry as PASS, ISSUES or BLOCKED with evidence, against 
 - [SRV-39](servers.md#srv-39-drain-a-server-from-the-cli) Drain a server from the CLI
 - [SRV-42](servers.md#srv-42-set-a-servers-region-from-the-cli) Set a server's region from the CLI
 - [SRV-50](servers.md#srv-50-upgrade-or-downgrade-to-an-exact-version-over-ssh) Upgrade or downgrade to an exact version over SSH
-- [SRV-55](servers.md#srv-55-remove-and-reset-a-server-from-the-cli) Remove and reset a server from the CLI
+- [SRV-55](servers.md#srv-55-remove-a-server-from-the-cli) Remove a server from the CLI
 - [SRV-57](servers.md#srv-57-forget-a-dead-server-from-the-cli) Forget a dead server from the CLI
-- [SRV-58](servers.md#srv-58-a-forgotten-server-stops-its-services-and-stays-out) A forgotten server stops its services and stays out
+- [SRV-58](servers.md#srv-58-a-forgotten-server-stays-out) A forgotten server stays out
 - [SRV-67](servers.md#srv-67-a-server-picks-up-its-new-address-after-a-restart) A server picks up its new address after a restart
 - [SRV-68](servers.md#srv-68-tell-servers-where-one-is-after-every-ip-changed) Tell servers where one is after every IP changed
 - [SRV-69](servers.md#srv-69-servers-reach-each-other-over-the-wireguard-mesh-and-commands-name-a-missing-handshake) Servers reach each other over the WireGuard mesh, and commands name a missing handshake

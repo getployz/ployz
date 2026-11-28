@@ -634,6 +634,11 @@ mod tests {
                     "--accept-volume-loss",
                     "data",
                 ])
+                .is_ok()
+        );
+        assert!(
+            super::command()
+                .try_get_matches_from(["ployz", "server", "rm", "worker", "--accept-volume-loss"])
                 .is_err()
         );
     }

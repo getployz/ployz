@@ -203,7 +203,7 @@ describe("callCloud", () => {
       const { drizzle } = yield* Database.pipe(Effect.provide(services));
       yield* drizzle.update(organizationMachine).set({ machineName: "old-name" as MachineName });
       const [removal] = yield* drizzle.insert(machineRemoveAttempt).values({
-        organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId, confirmDataLoss: [], noReset: true,
+        organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId, confirmDataLoss: [],
       }).returning();
       const forget: Act = { attempt: "c".repeat(32), digest: "d".repeat(64), action: { action: "forget_server", server: { machine: MACHINE, name: "machine-1" } } };
       const unreachable = runtime({ status: "unreachable", error: null }, []);
@@ -243,7 +243,7 @@ describe("callCloud", () => {
       });
       yield* drizzle.insert(serverDrainAttempt).values({ id: DRAIN, organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId });
       yield* drizzle.insert(machineRemoveAttempt).values({ organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId, confirmDataLoss: [] });
-      expect(yield* dropRemovedServer({ organizationId: ORGANIZATION, machineId: MACHINE, generation, removal: "reset" }).pipe(Effect.provide(services)))
+      expect(yield* dropRemovedServer({ organizationId: ORGANIZATION, machineId: MACHINE, generation, removal: "removed" }).pipe(Effect.provide(services)))
         .toEqual({ kind: "others_remain" });
 
       const heard = yield* callCloud({ ...member, userId }, { ask: { query: "operations", subject: { kind: "server", machine: MACHINE }, attempt: null, limit: 5 } })
@@ -297,7 +297,7 @@ describe("callCloud", () => {
       });
       yield* drizzle.update(organizationMachine).set({ machineName: "web-1" as MachineName }).where(sql`${organizationMachine.machineId} = ${MACHINE}`);
       yield* startServerRuns(userId, "web-1").pipe(Effect.provide(services));
-      expect(yield* dropRemovedServer({ organizationId: ORGANIZATION, machineId: MACHINE, generation, removal: "reset" }).pipe(Effect.provide(services)))
+      expect(yield* dropRemovedServer({ organizationId: ORGANIZATION, machineId: MACHINE, generation, removal: "removed" }).pipe(Effect.provide(services)))
         .toEqual({ kind: "others_remain" });
 
       const heard = yield* callCloud({ ...member, userId }, { ask: { query: "operations", subject: { kind: "server", machine: MACHINE }, attempt: null, limit: 5 } })
@@ -316,7 +316,7 @@ describe("callCloud", () => {
       const { drizzle } = yield* Database.pipe(Effect.provide(services));
       yield* drizzle.update(organizationMachine).set({ machineName: "machine-1" as MachineName });
       yield* startServerRuns(userId, "machine-1").pipe(Effect.provide(services));
-      expect(yield* dropRemovedServer({ organizationId: ORGANIZATION, machineId: MACHINE, generation, removal: "reset" }).pipe(Effect.provide(services)))
+      expect(yield* dropRemovedServer({ organizationId: ORGANIZATION, machineId: MACHINE, generation, removal: "removed" }).pipe(Effect.provide(services)))
         .toEqual({ kind: "last" });
       expect(yield* forgetEmptiedPairing(ORGANIZATION, generation).pipe(Effect.provide(services))).toEqual({ kind: "released" });
 
@@ -378,7 +378,7 @@ describe("callCloud", () => {
       const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       const { drizzle } = yield* Database.pipe(Effect.provide(services));
       const [removal] = yield* drizzle.insert(machineRemoveAttempt).values({
-        organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId, confirmDataLoss: [], noReset: true,
+        organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId, confirmDataLoss: [],
       }).returning();
       yield* drizzle.insert(serverDrainAttempt).values({ id: DRAIN, organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId });
       const stored = (requestKey: string, tool: (typeof OPERATIONS)["server.forget" | "server.drain"]["idempotency"], attemptId: string) =>

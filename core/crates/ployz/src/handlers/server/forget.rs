@@ -1,15 +1,15 @@
-//! `server forget`: Forget one Server without a reset, or with no Server named, every
+//! `server forget`: Forget one Server, as `server rm` does, or with no Server named, every
 //! Server of the Organization when they were deleted.
 
 use crate::cloud;
 use crate::ui::Next;
 use clap::{ArgMatches, Command};
 use ployz_core::{Machine, RpcError, RpcErrorCode};
+use serde_json::json;
 
 use super::super::{Error, config_path, leaf_matches, runtime};
-use super::fence::{Forgotten, already_forgotten};
 use crate::approval;
-use crate::cli::{Rerun, base, positional, value};
+use crate::cli::{Rerun, base, positional, value, volume_acceptance};
 use crate::cloud::account::{Credential, ForgetCheck, ObservedServer, ServersForgotten};
 use crate::cloud::login::CredentialStore;
 use crate::connect::Client;
@@ -17,16 +17,14 @@ use ployz_core::Hint;
 use ployz_store::OperationVerb;
 
 pub(crate) fn command(command: Command) -> Command {
-    base(command, "Forget a Server without resetting it, or every Server when they were deleted",
+    base(command, "Forget a Server, or every Server when they were deleted",
     )
     .long_about(
-        "Forget a Server: take it out of the Cluster without resetting it, for a Server \
-         that is gone or can't be reset. Refused while the Server answers and holds a \
-         Volume copy: remove it with ployz server rm instead, so its reset demotes the \
-         copy. Type the Server's name with --confirm, or dead for a Server that does not \
-         answer within ten seconds. When Cloud manages the Server, Cloud forgets it even \
-         with --context or --connect, asking a human first when the Organization wants \
-         that.\n\n\
+        "Forget a Server: take it out of the Cluster and revoke its keys, as ployz server \
+         rm does. Type the Server's name with --confirm, or dead for a Server that does not \
+         answer within ten seconds, and name each Volume only that Server holds with \
+         --accept-volume-loss. When Cloud manages the Server, Cloud forgets it even with \
+         --context or --connect, asking a human first when the Organization wants that.\n\n\
          Without a Server, forget every Server of the Organization when they were \
          deleted. Cloud tries each Server first, waiting up to ten seconds for it, and \
          refuses while any answers. Projects, settings and Deployment history stay; \
@@ -44,6 +42,9 @@ pub(crate) fn command(command: Command) -> Command {
          Organization's slug",
     ))
     .arg(crate::cli::approval())
+    .arg(volume_acceptance().help(
+        "With a Server: accept losing a Volume only it holds, once per exact volume name",
+    ))
 }
 
 /// Forget the named Server, or without one, every Server of the Organization.
@@ -189,6 +190,19 @@ pub(super) async fn cloud_forgot(
     already_forgotten(selected)
 }
 
+/// The result of a forget of a Server another forget already took out.
+pub(super) fn already_forgotten(selected: &Machine) -> Result<(), Error> {
+    crate::ui::stream(format_args!(
+        "Server {} was already forgotten. Nothing to do.",
+        selected.name
+    ));
+    crate::ui::emit(&json!({
+        "server": crate::enrollment::output::server_json(selected),
+        "already_forgotten": true,
+    }))?;
+    Ok(())
+}
+
 /// Cloud's check, which waits on every Server before it answers.
 async fn check(credential: &Credential) -> Result<ForgetCheck, Error> {
     if !crate::ui::json() {
@@ -199,7 +213,6 @@ async fn check(credential: &Credential) -> Result<ForgetCheck, Error> {
 
 fn finished(forgotten: &ServersForgotten) -> Result<(), Error> {
     let next = "ployz server add".to_owned();
-    Forgotten::All.warn();
     crate::ui::finish(&Next::new(forgotten, Some(next)), || {
         let check = &forgotten.check;
         crate::ui::stream(format_args!(
