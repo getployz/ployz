@@ -4,6 +4,7 @@ import { connect, ConnectionState, type WorkerConnection } from "inngest/connect
 import { InngestClient, type PloyzInngest } from "#/modules/inngest/client";
 import { createWorkerFunctions } from "#/worker/functions";
 import { requestResealAtStart } from "#/modules/sealing/reseal.inngest";
+import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { AppConfig, type PolarConfiguration } from "#/server/config.server";
 import { AppRuntime } from "#/server/runtime.server";
 
@@ -25,6 +26,19 @@ const connectWorker = Effect.fn("Inngest.connectWorker")((
     catch: (cause) => new InngestConnectionError({ cause }),
   }),
 );
+
+/**
+ * Opens the Config Store once and exits, so `db:migrate` applies its migrations before a deploy goes on, and a
+ * failing one fails the deploy instead of the worker's start.
+ */
+export async function openStore() {
+  try {
+    await AppRuntime.runPromise(cloudStore);
+    console.info("Config Store migrations applied.");
+  } finally {
+    await AppRuntime.dispose();
+  }
+}
 
 /** Connect owns draining; application resources must outlive all active steps. */
 export async function runWorker() {

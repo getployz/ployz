@@ -13,10 +13,11 @@ plus Rust (rustup) for the locally linked SDK (see [core](../core/README.md)).
 pnpm install --frozen-lockfile
 cp .env.example .env
 docker compose up -d
+# db:migrate opens the Config Store through the worker build, so build it first (and after worker code changes):
+pnpm sdk && pnpm exec vite build --config vite.worker.config.ts
 pnpm db:migrate
 pnpm dev
-# In a second terminal (rebuild after worker code changes):
-pnpm exec vite build --config vite.worker.config.ts
+# In a second terminal:
 PORT=3001 INNGEST_DEV=1 pnpm start:worker
 ```
 
@@ -187,7 +188,7 @@ docker compose up -d
 docker compose ps                                # worker turns healthy once Connected
 ```
 
-Neither web nor worker migrates on boot. The worker's healthcheck is `/ready`:
+`db:migrate` applies Cloud's migrations, then opens the Config Store once so its own migrations run there too; a failure in either exits non-zero. The worker's healthcheck is `/ready`:
 200 while its Inngest Connect connection is active, 503 otherwise. It is not a
 database, schema, or GitHub check. Compose gives the worker a 30-minute
 `stop_grace_period` so active steps drain.
