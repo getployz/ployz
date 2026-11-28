@@ -171,6 +171,17 @@ pub enum RuleDraftError {
     NoRule,
     #[error("No service in this environment runs an image from {0}.")]
     NoImages(String),
+    #[error("{service} builds from {repository}, so previews can't build it.")]
+    OtherRepository {
+        service: ServiceName,
+        repository: String,
+    },
+    #[error(
+        "{service} runs {image}. Pin it to a digest, like image@sha256:…, then set up previews again."
+    )]
+    Unpinned { service: ServiceName, image: String },
+    #[error("{0} doesn't build from this repository or run an image, so previews can't run it.")]
+    Uncovered(ServiceName),
     #[error("{service} runs {image}, which an automatic deploy rule can't name: {reason}")]
     Unnamed {
         service: ServiceName,
@@ -208,6 +219,11 @@ pub struct RuleSummary {
     pub generation: u64,
     pub ended: bool,
     pub services: Vec<RuleServiceSummary>,
+    /// What a preview rule adds: where previews start from, the Services they run pinned,
+    /// and the Sealed values they open.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub preview: Option<super::preview_draft::PreviewSummary>,
 }
 
 /// What a rule deploys, as a person reads it.
@@ -232,8 +248,8 @@ pub enum SourceSummary {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
 pub struct RuleServiceSummary {
     pub name: ServiceName,
-    /// `Dockerfile in ., for linux/amd64, with the Actions cache`, or empty for a registry
-    /// rule, which builds nothing.
+    /// `Dockerfile in ., for linux/amd64, with the Actions cache`, empty for a registry
+    /// rule, which builds nothing, and `runs <image>` for a Service a preview rule pins.
     pub builds: String,
     /// What differs from the rule this one replaces, such as `settings` or `build args`.
     /// Empty when nothing does; `new to the rule` for a Service it didn't cover.
@@ -634,6 +650,7 @@ impl AutoDeployRule {
             servers: self.machines.len(),
             generation: self.generation,
             ended: self.ended,
+            preview: None,
             services: self
                 .services
                 .iter()

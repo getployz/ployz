@@ -17,6 +17,7 @@ pub mod join;
 pub mod key;
 pub mod keys;
 mod open;
+pub mod preview_draft;
 pub mod private_access;
 pub mod proposal;
 pub mod refusal;
@@ -45,6 +46,7 @@ pub use keys::{
     Approver, KeySignature, OwnPrompt, Purpose, Signed, Signer, SignerKey, SigningPublicKey,
     Statement,
 };
+pub use preview_draft::{PreviewBasis, PreviewSummary};
 pub use private_access::{
     AuthKeyDigest, KeyApproval, PrivateAccessApproval, PrivateAccessFacts, PrivateAccessTerms,
     key_approval_challenge,
