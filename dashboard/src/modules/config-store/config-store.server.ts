@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { gatherDomainEvidence, systemDomainEvidence } from "#/modules/config-store/domain-evidence.server";
 import { gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
-import { gatherPreviewHomes, gatherSigners } from "#/modules/config-store/preview-evidence.server";
+import { gatherPreviewHomes, gatherSigners, observeHomes } from "#/modules/config-store/preview-evidence.server";
 import { gatherRunning } from "#/modules/config-store/running-evidence.server";
 import { connectionsLoader, gatherUnanswered, gatherVolumeEvidence, systemVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
 import type { Actor } from "#/modules/identity/actor";
@@ -28,6 +28,7 @@ import { readClusterSealing } from "#/modules/sealing/cluster-sealing.server";
 import { writeAdmitted } from "#/modules/volume-placement/volume-placement.server";
 import type { StoreAnswer, StoreWriteResult, StoreCall, StoreRead, StoreResult, ViewAnswer } from "./store.contract";
 import { environmentKey } from "./environment-ref";
+import { draftsPreviewRule, previewCommand } from "#/modules/previews/previews.contract";
 
 /** One view Cloud reads for itself, with no evidence: its own lookups, such as a Deployment's Namespace for its logs. */
 export const readStore = <Q extends ConfigQuery>(organizationId: string, query: Q) =>
@@ -159,11 +160,13 @@ export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
   // An approval leaves a pull request trusted only while its author is a member or a bot opened it from the repository.
   const approves = call.operation === "write" && call.command.command === "approve_pull_request";
   // A preview deploys only a member's pull request, on a Server that can hold one. The previews view names the
-  // members too, but asks no Server: it refreshes as the Store changes.
+  // members too, but asks no Server: it refreshes as the Store changes. A preview rule's draft lists every Server that
+  // can hold one, even before the Organization uses previews.
   const deploysPreview = call.operation === "write" && call.command.command === "deploy_preview";
   const listsPreviews = call.operation === "read" && call.query.query === "previews";
   const members = approves || deploysPreview || listsPreviews ? yield* githubMembers(organizationId) : undefined;
-  const homes = deploysPreview ? yield* gatherPreviewHomes(organizationId, read) : undefined;
+  const drafts = call.operation === "read" && draftsPreviewRule(call.query);
+  const homes = deploysPreview ? yield* gatherPreviewHomes(organizationId, read) : drafts ? yield* observeHomes(organizationId) : undefined;
   // A preview rule is kept only once a key the Servers trust signed it.
   const signs = call.operation === "write" && call.command.command === "set_pr_plan" && call.command.preview_rule != null;
   const signers = signs ? yield* gatherSigners(organizationId) : undefined;
@@ -300,6 +303,7 @@ export const writePermission = (command: ConfigCommand): Permission => {
   if (command.command === "set_environment_protected") return "environments:protect";
   if (command.command === "set_build_order") return "org:settings";
   if (command.command === "name_region") return "servers:operate";
+  if (previewCommand(command) !== null) return "changes:deploy";
   if (command.command !== "remove") return "changes:stage";
   return command.environment == null ? "project:delete" : "environment:delete";
 };

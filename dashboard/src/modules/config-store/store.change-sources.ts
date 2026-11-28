@@ -1,5 +1,6 @@
 import type { ConfigQuery } from "@ployz/sdk";
 import * as EffectRecord from "effect/Record";
+import type { PreviewQueryKind } from "#/modules/previews/previews.contract";
 
 /**
  * The Config Store's organization-owned tables, keyed by the scope whose views a change invalidates. The Store
@@ -133,4 +134,6 @@ export const storeViewRefreshedBy = {
   parent: ["store_environment", "store_deployment"],
   // What a Service runs now is the newest applied Deployment's spec, with the signed versions kept for it.
   running: ["store_environment", "store_deployment"],
-} satisfies Record<ConfigQuery["query"], readonly StoreViewName[]>;
+  // The start-from's Saved Services and secrets, beside the plan's kept rule.
+  preview_rule: ["store_project", "store_environment"],
+} satisfies Record<ConfigQuery["query"] | PreviewQueryKind, readonly StoreViewName[]>;
