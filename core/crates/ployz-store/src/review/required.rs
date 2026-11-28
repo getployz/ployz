@@ -46,17 +46,6 @@ pub struct ApprovalOperation {
 }
 
 impl ApprovalOperation {
-    /// Whether approving it only gives up access to a Volume: a reset keeps Volume data on
-    /// the Server's disk, and a forget is for a Server that may be gone.
-    #[must_use]
-    pub fn loses_volume_access(&self) -> bool {
-        self.verb == OperationVerb::Remove
-            && self
-                .subject
-                .as_deref()
-                .is_some_and(|subject| subject.starts_with("server:"))
-    }
-
     /// The Cluster name a rename moves away from, when its preview says.
     #[must_use]
     pub fn renamed_from(&self) -> Option<&str> {

@@ -79,6 +79,7 @@ pub(super) fn run_fields_cleared(spec: &RequestedServiceSpec) -> RequestedServic
         sysctls,
         restart,
         network,
+        shared_writes,
     } = container;
     let ContainerResources {
         cpu_nanos: _,
@@ -126,6 +127,7 @@ pub(super) fn run_fields_cleared(spec: &RequestedServiceSpec) -> RequestedServic
             sysctls: sysctls.clone(),
             restart: *restart,
             network: *network,
+            shared_writes: shared_writes.clone(),
         },
         placement: if host_data {
             placement.clone()

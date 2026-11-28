@@ -170,7 +170,11 @@ not detect, prevent or repair that. A late step from a dead run can at worst
 leave a Volume with no Writer, never two. A copy restored elsewhere while its
 old Machine was away may take writes until Cloud demotes the older epoch; that
 window is accepted, not prevented. A Machine starts no second running Service
-Container on a Volume, but Docker's own restart of a stopped Container, by
+Container on a Volume unless the one it starts carries the Volume's Shared
+Writes in its signed spec: the user's consent to several writers, frozen at its
+Deploy, so the Machine decides from that spec alone. A stale Create of a
+sharing Container may so run beside a Writer after sharing was turned off;
+that is accepted too. Docker's own restart of a stopped Container, by
 restart policy or when dockerd restarts, bypasses Ployz. A dockerd restart
 during a stop-first handoff can briefly run two on one Volume (#4467); that is
 accepted too.

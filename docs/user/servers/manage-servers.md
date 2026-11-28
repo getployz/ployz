@@ -1003,19 +1003,19 @@ alone isn't enough here: the rerun with the old `ployz` puts the old daemon back
 ## Remove a server
 
 > [!WARNING]
-> Volumes stay on the removed server's disk as copies, and your services lose them until you
-> make a copy the writer again with `ployz volume restore`. The server's mirrors of volumes
-> written on other servers are deleted, and so is a restore still copying there. A restore that
-> finished copying stays as a copy. Copy off any data you need first.
+> Removing a server takes it out of your cluster and revokes its keys. A volume whose only copy is
+> on that server is lost to your cluster with it. Ployz never reaches the removed server: it keeps
+> running its containers, and its disk stays as it is. Copy off any data you need first.
 
 1. Open the server and click **Remove server**.
-2. Ployz lists the volumes on the server: each of your volumes by its name and its project and
-   environment, such as `pg-data` in `shop/production`. A volume Docker made with no name shows as
+2. Ployz lists the volumes only that server holds: each of your volumes by its name and its
+   project and environment, such as `pg-data` in `shop/production`. A volume with a writer or a
+   mirror on another server isn't listed. A volume Docker made with no name shows as
    **Anonymous volume**. Type the server's name and click **Remove**.
 
-The server you remove and every server Ployz reaches it through must run a Ployz that can remove
-servers. If one doesn't, the removal stops and says "Server removal
-needs a newer Ployz on web-1". Upgrade that server, then remove again.
+Every server Ployz reaches the removed one through must run a Ployz that can forget servers. If
+one doesn't, the removal stops and says "Server removal needs a newer Ployz on web-1". Upgrade that
+server, then remove again.
 
 <!-- screenshot: the Remove web-2? dialog listing one volume, with the name typed -->
 
@@ -1051,11 +1051,15 @@ to name a Server. On a Server Ployz Cloud does not manage, `--approval` has no e
 warning, also included in JSON `warnings`. The warning does not change the exit code.
 
 Ployz's build cache isn't one of the volumes you confirm losing.
-Otherwise services that ran only on that server stop. Your next deploy replaces its replicas on your other
-servers, except for services whose volume was on it (see
-[When a server goes down](../services/scaling.md#when-a-server-goes-down)). Removing your last
-server stops everything; your projects and settings stay, and the bottom bar shows **Add server**
-until you [add one](add-a-server.md).
+Your next deploy replaces the replicas that ran on that server on your other servers, except for
+services whose volume was on it (see
+[When a server goes down](../services/scaling.md#when-a-server-goes-down)).
+
+Removing your last server sends it nothing: Ployz Cloud lets go of your cluster and drops its keys.
+Your projects and settings stay, and the bottom bar shows **Add server** until you
+[add one](add-a-server.md). The server keeps running its containers, so `ployz server rm` and the
+dashboard say so: run `sudo ployz-uninstall` on it to stop them, or `ployz server add --reset` to
+use it again. With `--json`, `still_running` is `true`.
 
 A removed or forgotten server stays out. Each of your servers that has seen it go refuses it
 from then on, even if Ployz Cloud or a rerun of `ployz server add` asks for it again. To add the
@@ -1069,32 +1073,8 @@ new standalone Cluster in that empty context without signing in to Cloud. Run it
 Linux server, or append `root@HOST` to install over SSH from your computer. See
 [Add a standalone server](add-a-server.md#add-a-standalone-server).
 
-The reset first stops every copy in progress on the server. If one doesn't stop within 30 seconds,
-the removal fails and names its volume; remove the server again.
-
 Your other servers also forget which replicas the removed server was sending requests to, so
 `ployz status` never names it as a server that hasn't picked up a service's new version.
-
-If the server resets but your other servers can't forget it, `ployz server rm` says "Server web-2
-reset but is still listed." and prints `ployz server forget web-2` to finish. Ployz Cloud
-finishes such a removal on its own.
-
-If the server resets but can't remove its own row from the Cluster, `ployz server rm` warns
-"Server web-2 reset, but its own row removal failed:" with the cause. The removal still counts as
-a reset: Ployz Cloud lets go of the server as it does after any reset, and `ployz server rm` lists
-the Volume data the reset left, as after any reset, and doesn't exit 3 for it.
-With `--json`, `departed` says how the server left: `reset` (with any `row_warning`),
-`unreachable` (with its `cause`, the error the call to the server returned; the reset may have
-happened, but no reply confirmed it), or `already_forgotten`. It is `null` for
-`ployz server forget`, and when Ployz Cloud's result doesn't say: Cloud or the removal is older than
-this field, or Cloud sends a kind this CLI doesn't know. Then `ployz server rm` reads
-`reset_warning` as before. `reset_warning` carries the same news as text.
-
-A Ployz Cloud removal that retries can find the server already gone. Ployz then
-can't confirm the server reset. Cloud drops its record of the server, and `ployz server rm` says
-"Cloud let go of Server web-2, but its reset couldn't be confirmed: it was already gone from the
-Cluster. Reset does not erase volume data." and exits with code 3. Your last server is the exception: Cloud keeps its hold on your
-servers and says why. With `--json`, `cloud_kept` says which of the two happened.
 
 `sudo systemctl stop ployz.socket ployz` stops Ployz's control of the server. Stop the socket too:
 any `ployz` command on the server starts Ployz again through it. Your services, their private DNS,
@@ -1107,45 +1087,36 @@ they take out and ask yes or no first (see
 agent can't remove or forget one. The **Remove server** and **Forget server** dialogs don't ask:
 confirming one is your yes. An [agent sandbox](../account/try-without-an-account.md) that no person
 has claimed yet doesn't ask either, since no one could answer. One yes removes the server once, and
-a yes to a forget doesn't cover a removal that resets the server.
+a yes to a forget doesn't cover a removal.
 
-When you remove a server, the list names each volume Ployz loses access to. The removal
-doesn't erase those volumes' data: it stays on that server's disk until you wipe or reinstall
-the disk. `sudo ployz-uninstall` keeps volume data, including what waits in the server's trash. Forgetting a server says the volume's data
-is deleted, since a server you forget may already be gone with its disk.
+If a volume's other copy goes while you confirm, so that the server now holds its only copy, the
+removal stops and changes nothing; confirm it again.
 
 Removing or forgetting a server Ployz Cloud manages always goes through Ployz Cloud, even with
 `--context` or `--connect`: Cloud keeps a record of each server it manages, and removing one behind
 its back would leave that record behind.
-While other servers are listed, Ployz Cloud carries the removal through one of them, since a server
-can't carry its own; your last server carries its own. If none of the others answers Ployz Cloud,
-the removal fails on its first try, names them, and changes nothing: bring one back online, or forget
-the ones that are gone, then remove the server again.
+While other servers are listed, one of them forgets the server, since a server can't forget itself.
+If none of the others answers Ployz Cloud, the removal fails on its first try, names them, and
+changes nothing: bring one back online, or forget the ones that are gone, then remove the server
+again.
 Ctrl-C stops following the removal but doesn't stop it: it keeps running in Ployz Cloud, and the
 server stays listed, since the removal can still fail.
 
-If Ployz Cloud runs out of retries after it sent the server its reset, the removal didn't finish,
-and Ployz can't say how far it got: the server may have reset, and Ployz Cloud may already have
-dropped it. `ployz server rm` says the removal didn't finish and prints `ployz server ls` as its
-next step, so you check before you forget anything. The **Remove** dialog says the removal didn't
-finish and points at **Forget server**. If the
-server is gone but `ployz server ls` (or the **Servers** page) still lists it,
-[forget it](#forget-a-server-that-is-gone); if it still answers, remove it again; if it's no longer
-listed, there is nothing left to forget. A removal that runs out of retries before it reaches the
-server only shows its failure. While Ployz Cloud works, `ployz server rm` and `ployz server forget`
-say why after 30 seconds, then print a line each minute. They stop following a removal after 20
-minutes. They then say the removal keeps running in Ployz Cloud, and to forget the server if the
-removal fails and the server is gone but still listed.
+If Ployz Cloud runs out of retries, `ployz server rm` and the **Remove** dialog show the failure.
+Check `ployz server ls`: if the server is still listed, remove it again. While Ployz Cloud works,
+`ployz server rm` and `ployz server forget` say why after 30 seconds, then print a line each minute.
+They stop following a removal after 20 minutes. They then say the removal keeps running in Ployz
+Cloud.
 
-Ployz stays installed on a removed server, so you can add it again later. To remove Ployz itself,
-run `sudo ployz-uninstall` on the server after you remove it. Docker, your images and your volume
-data stay on the disk. If it says `Ployz mutation or installation is active; retry uninstall`,
+Ployz stays installed on a removed server, and its containers keep running. To stop them and remove
+Ployz itself, run `sudo ployz-uninstall` on the server. Docker, your images and your volume data
+stay on the disk. If it says `Ployz mutation or installation is active; retry uninstall`,
 wait for the upgrade or install to finish and run it again. Nothing was removed.
 
 ## Forget a server that is gone
 
-If a server is gone or can't be reset, forget it instead. Forgetting takes it off your list of
-servers without reaching it. The volumes it held come back only where they have a
+If a server is gone, forget it. Forgetting takes it out of your cluster as a removal does, and
+never reaches it. The volumes it held come back only where they have a
 [mirror](../services/volumes.md#when-its-server-goes-down); the rest are lost with it.
 
 When the server is offline, its page shows **Forget web-2** under **Danger**. Click **Forget
@@ -1161,6 +1132,7 @@ ployz server forget web-2 --confirm dead
 
 What Ployz Cloud shows before you say yes names the server and each volume whose only copy is on
 it, as those are lost with it. A volume with a mirror or a writer on another server isn't listed.
+Without Ployz Cloud, `--accept-volume-loss` names those volumes, as with `ployz server rm`.
 
 Once you say yes, forgetting an offline server takes seconds. Forgetting one that is still up but
 doesn't answer takes Ployz Cloud about 12 minutes, even when the server holds only mirrors.
@@ -1168,97 +1140,30 @@ Ployz Cloud can't tell which volumes a server writes until it answers, so it ret
 first in case it still writes one. `ployz server forget` says why after 30 seconds, then prints a
 line each minute so you can follow along, and says `Forgot Server web-2.` once it's done.
 
-`ployz server rm` on a server that doesn't answer stops before it changes anything and prints that
-command as its next step. When Ployz Cloud itself doesn't answer, it says to run `ployz server rm`
-again instead. A server that answers but refuses isn't gone: `ployz server rm` prints its reason and
-doesn't offer to forget it.
+`ployz server rm` on a server that doesn't answer stops before it changes anything and asks you to
+type `dead`. When Ployz Cloud itself doesn't answer, it says to run `ployz server rm` again instead.
 
 When it is your only server, Ployz Cloud forgets it as it [forgets servers you
 deleted](#forget-servers-you-deleted). When none of several servers answers, forget them all that
 way.
-
-If your only server still answers, `ployz server forget` refuses. Stop its Ployz daemon first, or
-use `ployz server rm` to reset and remove it. On the server, run
-`sudo systemctl stop ployz.socket ployz` to stop both the daemon and its socket.
-
-Ployz refuses to forget a server that answers and holds a copy of any volume. Remove it with
-`ployz server rm` instead, and the reset makes its copies read-only and deletes its mirrors.
-
-A mirror that Ployz v0.3.0-beta.2 or earlier refreshed last stays on the server after the reset.
-To have it gone, delete it with `ployz volume mirror rm` before you run `ployz server rm`.
-`ployz volume sync --full` refuses such a mirror, because Ployz can't tell whether it holds writes
-no other server has. On a server running Ployz 0.4.0-beta.2 or earlier, it refuses every mirror,
-and so does `ployz volume mirror rm`, since that server would delete the copy whatever it holds.
-Upgrade the server first.
-
-A forgotten server isn't told it was removed. If it runs again as it is, it starts its services on
-its own copy of each volume and they keep writing there, and a later move, mirror, sync or release
-of the volume doesn't reach it. Ployz never brings back what they write there, and if you've
-restored the volume on another server, the two copies drift apart.
-
-A forgotten server stops its services itself as a best effort. It needs the server and at least
-one other server to have run Ployz 0.3.1 or later while it was still connected, and the server
-that forgot it to run 0.3.1 or later. Once it has heard nothing from a server for a minute, it asks
-that server whether it was forgotten, and when one says so it resets itself as `ployz server rm`
-would, except that it keeps every volume copy on its disk, mirrors included. `journalctl -u ployz`
-on it then says `this Machine was forgotten by its Cluster`.
-
-- A server that was unreachable when it was forgotten stops its services up to about 15 minutes
-  after its network returns.
-- A server that was still running, but that Ployz Cloud couldn't reach, stops them about a minute
-  after the forget, once it runs Ployz 0.3.10 or later. Before 0.3.10 it put itself back on your
-  list of servers as soon as it was forgotten, and kept running.
-
-Nothing stops its services when it can't reach any of those servers, or when the versions don't
-line up. Those cases, and the minutes before it asks, are yours to cover.
-
-So decide before a forgotten server runs again. As soon as it boots, run `sudo ployz-uninstall`
-on it. That stops the services Ployz runs there and keeps every copy of a volume on the disk, along
-with Docker and your images. Adding it back later with a plain `ployz server add` keeps every copy
-on it, mirrors included, even after an uninstall, as long as the server runs Ployz 0.3.10 or later
-by then. A copy of a volume your project still has then shows under that volume's **Copies**,
-`ployz volume restore <volume> --from <server>` can bring the volume back from it, and
-`ployz volume mirror rm` deletes one you no longer need. If you gave the volume a new mirror
-meanwhile, syncs refuse a second mirror until you remove one of them. Wipe
-or reinstall its disk only if you need nothing on it. Ployz no longer lists a forgotten server, so `ployz server rm` can't
-reach it. `ployz server forget` prints this warning each time it forgets servers.
-
-A server forgotten before it finished joining, or while its last report came from Ployz 0.3.0,
-stays off your list even if it carries on later. That needs the server that forgets it to run Ployz
-0.3.17 or later when it forgets, and the forgotten server to run 0.3.17 or later when it carries on.
-It isn't told it was forgotten: it stays joining, or keeps running on its own. Run
-`sudo ployz-uninstall` on it, or add it again:
-
-- A server that never started joining keeps its ID and address.
-- Through Ployz Cloud, a retry resumes a server that is still joining, with the same ID and
-  address. One that had finished joining is refused, and the message says how to add it with
-  `--reset` and a new token.
-- In a standalone Cluster, a retry asks to reset a server that had started joining, then adds it
-  with a new address.
-
-On an older Ployz a forgotten server can put itself back on your list; forget it again.
 
 `ployz server forget` warns about replicated services as `ployz server rm` does, with one
 difference. A forgotten server may still run its replicas, so for a service with every replica on
 it, forget says "No copies of Replicated Services were seen on the remaining Servers" rather than
 that the service runs none. With `--json` it lists them as `no_copies` all the same.
 
-To add a forgotten server back, run `ployz server add` for it. A server that already reset itself
-joins as it is. One that didn't is refused, and the token that add used can't add it again; see
+To add a forgotten server back, run `ployz server add --reset` for it with a new token. A plain
+`ployz server add` is refused, and the token that add used can't add it again; see
 [A forgotten server is refused when you add it again](../troubleshooting/servers.md#a-forgotten-server-is-refused-when-you-add-it-again).
-Add it with `--reset` and a new token, and it resets the server first, as `ployz server rm` would
-have, and asks before it does; `--yes` skips the question.
+`--reset` resets the server first and asks before it does; `--yes` skips the question.
 That reset can delete the server's mirrors, so don't use it while a mirror there may be the last copy
 of a volume.
 
 Before Ployz 0.3.11, that refused plain `ployz server add` still put the forgotten server back on
-your list, under its old id. If the server was already resetting itself, it is listed but doesn't
-answer, so deploys and restores refuse with `<server> did not answer`, and a second add leaves two
-servers with the same name. If it wasn't, it is listed again and keeps running its services. To
-clear it, forget the old one by its id, `ployz server forget <old id>`, with the `--confirm` value
-the command asks for: `dead` once the server is down, or its name while it still runs. A server
-forgotten this way while it runs then stops its services. From 0.3.11 the refused add changes
-nothing, as long as every server you have left runs 0.3.11 or later.
+your list, under its old id, and a second add leaves two servers with the same name. To clear it,
+forget the old one by its id, `ployz server forget <old id>`, with the `--confirm` value the command
+asks for: `dead` once the server is down, or its name while it still runs. From 0.3.11 the refused
+add changes nothing, as long as every server you have left runs 0.3.11 or later.
 
 The server you add back must run Ployz 0.3.10 or later. Update `ployz` on your computer first, then
 let `ployz server add` install, which it does by default: it installs the release of the `ployz` you

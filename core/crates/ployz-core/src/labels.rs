@@ -24,6 +24,10 @@ pub const NAMESPACE: &str = "ployz.namespace";
 pub const VOLUME_ORIGIN: &str = "ployz.origin";
 /// On a container, the origin each named-volume mount expects ([`crate::MountOrigins`]).
 pub const VOLUME_ORIGINS: &str = "ployz.origins";
+/// On a Service Container, the Docker names of the Volumes it may write beside another
+/// running Service Container, comma-separated: those with Shared Writes on when its
+/// Deploy was admitted. Absent when it shares none.
+pub const SHARED_WRITES: &str = "ployz.shared-writes";
 /// The Service's deployment identity.
 pub const SERVICE_ID: &str = "ployz.service.id";
 pub const SERVICE_NAME: &str = "ployz.service.name";

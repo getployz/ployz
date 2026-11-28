@@ -62,16 +62,16 @@ export const othersRemain = Effect.fn("PairingRelease.othersRemain")(function* (
 export const replaced = { kind: "kept", reason: "Cloud was paired with a new Cluster since." } satisfies ServerRelease;
 
 /**
- * Server `machineId` of the pairing whose generation Cloud witnessed, `generation`, left the Cluster under Cloud's own
- * connection: reset, which took every key Cloud held there, or only taken out (`membership`), keeping its state. While
- * that pairing is still the current one, Cloud drops that Server's row of it (its device keys cascade); a pairing that
- * changed since is left untouched. `last` means a reset took the pairing's last Server: the caller clears the Store's
- * Applied State, then `forgetEmptiedPairing`. A pairing already gone was forgotten by an earlier run. A Server the
- * Cluster had already forgotten (`unconfirmed`) may still hold Cloud's key, so its row goes only while another Server
- * keeps the pairing; as the last, nothing is dropped and the answer is `unconfirmed_last`.
+ * Server `machineId` of the pairing whose generation Cloud witnessed, `generation`, left the Cluster: Cloud's own removal
+ * (`removed`), or one the Cluster made without Cloud (`unconfirmed`). While that pairing is still the current one, Cloud
+ * drops that Server's row of it (its device keys cascade) and expires its enrollment tokens; a pairing that changed since
+ * is left untouched. `last` means it was the pairing's last Server: the caller clears the Store's Applied State, then
+ * `forgetEmptiedPairing`. A pairing already gone was forgotten by an earlier run. A Server the Cluster forgot without
+ * Cloud goes only while another Server keeps the pairing; as the last, nothing is dropped and the answer is
+ * `unconfirmed_last`.
  */
 export const dropRemovedServer = Effect.fn("PairingRelease.dropRemoved")(
-  function* (input: { organizationId: string; machineId: MachineId; generation: string; removal: "reset" | "membership" | "unconfirmed" }) {
+  function* (input: { organizationId: string; machineId: MachineId; generation: string; removal: "removed" | "unconfirmed" }) {
     const { organizationId, generation } = input;
     const database = yield* Database;
     const released = yield* database.transaction(Effect.gen(function* () {
@@ -92,9 +92,6 @@ export const dropRemovedServer = Effect.fn("PairingRelease.dropRemoved")(
         or(eq(machineEnrollmentToken.claimedMachineId, input.machineId), eq(machineEnrollmentToken.joinedMachineId, input.machineId)),
       ));
       if (yield* othersRemain(organizationId, generation)) return { kind: "others_remain" } as const;
-      if (input.removal === "membership") {
-        return { kind: "kept", reason: "it left the Cluster without a reset, so Cloud keeps the pairing." } as const;
-      }
       return { kind: "last" } as const;
     }));
     yield* requestBillingSync(organizationId, "server-removed");

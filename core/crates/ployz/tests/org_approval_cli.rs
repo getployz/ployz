@@ -12,14 +12,6 @@ use std::{
 
 use serde_json::{Value, json};
 
-/// What a forget of Servers no daemon reached tells the operator, word for word (#2927).
-const FENCE_WARNING: &str = "A forgotten Server doesn't know it was forgotten. If one runs again as it is, its \
-     services start again on its own copy of each Volume, and Ployz never brings back what \
-     they write there. When it boots, run sudo ployz-uninstall on it to stop them and keep \
-     every Volume copy on its disk. Adding it back with ployz server add --reset keeps its \
-     writer copies read-only but can delete its mirrors, so don't while one may be a \
-     Volume's last copy. Wipe its disk only if you need nothing on it.";
-
 /// Cloud's ask before `verb`, naming `digest` as what it would do.
 fn asked(verb: &str, name: &str, digest: &str, effects: &Value) -> String {
     json!({ "error": {
@@ -410,7 +402,8 @@ fn forgetting_a_lone_server_that_does_not_answer_says_it_is_asking_cloud() {
         1,
         "{stderr}"
     );
-    assert!(stderr.contains(&format!("! {FENCE_WARNING}\n")), "{stderr}");
+    // Ployz no longer warns about what a forgotten Server keeps on its disk.
+    assert!(!stderr.contains("! "), "{stderr}");
 }
 
 /// Without a terminal nothing says yes: the forget shows what it destroys, runs nothing,

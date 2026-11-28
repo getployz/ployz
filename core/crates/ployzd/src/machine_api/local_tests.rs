@@ -3834,6 +3834,61 @@ mod set_volume_copy {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
+    /// A Container whose Deploy shares the Volume is created and started beside the
+    /// running Writer, and carries the sharing on its labels for a start with no spec,
+    /// as bridge recovery makes. One that doesn't share it stays refused beside both.
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_holder_that_shares_the_volume_runs_beside_the_writer() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-shared-holder").await;
+        let plugin = FakePlugin::default();
+        plugin.reply(INSPECT_ROUTE, writer_root(1, None));
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let kept = kept_holder(&service, &fake).await;
+        running_holder(&service, &fake).await;
+        let mut sharing = spec();
+        sharing["container"]["shared_writes"] = json!(["v0"]);
+        let shared = create_service_container(&service, serde_json::from_value(sharing).unwrap())
+            .await
+            .container_id;
+        fake.volume_users
+            .lock()
+            .unwrap()
+            .entry(VOLUME.into())
+            .or_default()
+            .push(json!({"Id": shared.to_string()}));
+        let labels = fake
+            .named_containers
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .values()
+            .find(|container| container["Id"] == shared.to_string().as_str())
+            .and_then(|container| container.pointer("/Config/Labels").cloned())
+            .unwrap();
+        assert_eq!(
+            labels[ployz_core::labels::SHARED_WRITES],
+            VOLUME,
+            "{labels}"
+        );
+
+        service.local.start_container(shared, None).await.unwrap();
+        start_holder(&fake, &shared);
+        assert_eq!(running(&fake), 2, "{:?}", holder_status(&fake));
+        let refused = service.local.start_container(kept, None).await.unwrap_err();
+        assert!(
+            matches!(
+                refused,
+                crate::machine::LocalMachineError::Docker(crate::docker::Error::VolumeHeld { .. })
+            ),
+            "{refused:?}"
+        );
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
     /// A Container Ployz didn't make, in `status`, that mounts the Volume.
     fn helper_on_root(fake: &crate::docker::test_support::FakeDocker, status: &str) {
         let id = format!("{}{}", MachineId::random(), MachineId::random());

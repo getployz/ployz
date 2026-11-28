@@ -626,33 +626,6 @@ impl Client {
         to_json(&observed)
     }
 
-    /// Remove `machine` after an exact Data Loss confirmation.
-    ///
-    /// `confirm_data_loss` must be a DataLossConfirmation object, not a bare
-    /// Data Loss list or an ObservedDataLoss read.
-    ///
-    /// # Errors
-    ///
-    /// Returns a generated [`RpcError`] JSON payload when `confirm_data_loss`
-    /// is not a DataLossConfirmation object, the session is closed, the
-    /// Machine cannot be removed, or the confirmation does not cover the fresh
-    /// Data Loss.
-    #[napi(ts_return_type = "Promise<LocalMachineRemoved>")]
-    pub async fn remove_machine(
-        &self,
-        machine: String,
-        #[napi(ts_arg_type = "DataLossConfirmation")] confirm_data_loss: serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        let confirm_data_loss: DataLossConfirmation =
-            from_js(confirm_data_loss).map_err(invalid_argument)?;
-        let removed = self
-            .inner
-            .remove_machine(&machine, &confirm_data_loss)
-            .await
-            .map_err(rpc_to_napi)?;
-        to_json(&removed)
-    }
-
     /// Drain `machine` within `scope`.
     ///
     /// Resolves with the report even when it is partial or the session closes mid-drain.

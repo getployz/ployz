@@ -233,6 +233,7 @@ fn service() -> RequestedServiceSpec {
             replicas: NonZeroU32::MIN,
         },
         container: ServiceContainerSpec {
+            shared_writes: Default::default(),
             image: "ghcr.io/getployz/db:1".into(),
             command: Vec::new(),
             entrypoint: Vec::new(),

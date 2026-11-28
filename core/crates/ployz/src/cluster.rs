@@ -16,13 +16,13 @@ use ployz_core::{
     ListVolumesRequest, LiveServices, LocalMachineRemoved, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
     Machine, MachineFailure, MachineId, MachineImages, MachineLabelKey, MachineName,
     MachineObservation, MachineStorageObservation, MachineSuccess, MachineTarget, MachineUpdate,
-    NameMatches, Namespace, ObservedDataLoss, OpaquePayload, PartialResult, PrivateAccessSet,
+    NameMatches, ObservedDataLoss, OpaquePayload, PartialResult, PrivateAccessSet,
     RemoveVolumeRequest, RemoveVolumesRequest, Rpc, RpcError, RpcErrorCode, RuntimeWatchFrame,
     RuntimeWatchRequest, SetIngressDoorsRequest, SetPrivateAccessRequest, StopOptions,
     StorageCapacity, TelemetryObservation, UnconfirmedDataLoss, VolumeInventory, VolumeRemoval,
     VolumeRemovalOutcome, decode_runtime_watch_frame, derive_live_services, op,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -667,7 +667,9 @@ impl Client {
         })
     }
 
-    /// Live Observation of Data Loss that removing `machine` would cause.
+    /// Live Observation of Data Loss that removing `machine` would cause: each Docker
+    /// Volume on it that no other Machine holds a copy of. A Machine that doesn't answer
+    /// may hold one, so its silence never takes a Volume off the list.
     ///
     /// This is not a complete Cluster view. Mutates nothing: it is safe to
     /// call when the operator then cancels.
@@ -683,64 +685,35 @@ impl Client {
     ) -> Result<ObservedDataLoss, RpcError> {
         let machines = self.machines().await.map_err(RpcError::from)?;
         let observation = visible_machine(machine, &machines)?;
-        data_loss_on_machine(self, observation).await
-    }
-
-    /// Remove `machine` after an exact Data Loss confirmation.
-    ///
-    /// Re-reads Data Loss at execute time. Fresh Data Loss the confirmation does
-    /// not cover refuse the removal. Confirmed identities that disappeared
-    /// are ignored.
-    /// Resets the Machine. A reset warning is returned, not swallowed.
-    /// Refused before reset or membership mutation when this is the last Machine
-    /// and a Management Client other than Cloud holds a key, or Cloud holds it and
-    /// `remover` isn't Cloud.
-    ///
-    /// Sending it again is the retry: every guard runs again while the Machine is listed.
-    /// A Machine ID the list no longer holds was already forgotten, so this answers removed,
-    /// with a warning that its reset can't be confirmed: only a Leave reply confirms one.
-    ///
-    /// # Errors
-    ///
-    /// Returns a generated [`RpcError`] when the Machine is not visible or is
-    /// the current entry while another Machine is visible, when the Machine
-    /// is the last Machine and its holders refuse it or can't be read, when the Machine
-    /// did not respond so Data Loss cannot be listed, when the confirmation does not cover the
-    /// fresh Data Loss, or when reset or shared-row removal fails.
-    pub async fn remove_machine(
-        &mut self,
-        machine: &MachineTarget,
-        confirm_data_loss: &DataLossConfirmation,
-        remover: Remover,
-    ) -> Result<LocalMachineRemoved, RpcError> {
-        let machines = self.machines().await.map_err(RpcError::from)?;
-        let Some(observation) = listed_unless_forgotten(machine, &machines)? else {
-            return Ok(Departed::AlreadyForgotten.into());
-        };
-        let selected = observation.machine.id;
-        let current = self
-            .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
+        let on_machine = data_loss_on_machine(self, observation).await?;
+        let others: Vec<MachineObservation> = machines
+            .iter()
+            .filter(|other| other.machine.id != observation.machine.id)
+            .cloned()
+            .collect();
+        let elsewhere: BTreeSet<String> = self
+            .inspect_storage(&others)
             .await
-            .map_err(RpcError::from)?
-            .machine_id;
-        if selected == current && machines.len() > 1 {
-            return Err(RpcError::invalid_argument(
-                "the current entry Machine cannot be removed while another Machine is visible",
-            ));
-        }
-        let hold = refuse_last_managed(self, &machines, selected).await?;
-        if hold == CloudHold::Last && remover == Remover::Operator {
-            return Err(cloud_holds_last(selected));
-        }
-        evict_machine(self, observation, confirm_data_loss, current).await
+            .successes
+            .iter()
+            .flat_map(|success| success.value.roles().map(|(name, _)| name.to_string()))
+            .collect();
+        Ok(ObservedDataLoss {
+            data_loss: on_machine
+                .data_loss
+                .into_iter()
+                .filter(|loss| !elsewhere.contains(loss.name()))
+                .collect(),
+        })
     }
 
-    /// Remove Cluster membership for `machine` without resetting it.
+    /// Remove Cluster membership for `machine`: its row goes, and every Member refuses its
+    /// key from then on. Nothing reaches the Machine itself.
     ///
     /// Refused before membership mutation when this is the last Machine and any
-    /// Management Client holds a key: Cloud lets go of its last Machine only by resetting it.
-    /// Also refused while the Machine answers with a copy of any Volume, which only its
-    /// reset demotes, or replies with an error; a Machine that sends no reply goes.
+    /// Management Client holds a key: Cloud lets go of its last Machine by forgetting the
+    /// Cluster. Also refused while the Machine replies with an error; a Machine that sends
+    /// no reply goes.
     ///
     /// Sending it again is the retry: every guard runs again while the Machine is listed,
     /// and a Machine ID the list no longer holds was already forgotten.
@@ -749,8 +722,7 @@ impl Client {
     ///
     /// Returns a generated [`RpcError`] when the Machine is not visible, when
     /// it is the last Machine and a Management Client holds a key or its holders
-    /// can't be read, when it answers holding a Volume copy or replies with an error,
-    /// or when shared-row removal fails.
+    /// can't be read, when it replies with an error, or when shared-row removal fails.
     pub async fn remove_machine_membership(
         &mut self,
         machine: &MachineTarget,
@@ -773,30 +745,19 @@ impl Client {
         if refuse_last_managed(self, &machines, selected).await? == CloudHold::Last {
             return Err(cloud_holds_last(selected));
         }
-        let held = match (self.held_copies(observation).await?, dead) {
-            (HeldCopies::Dead, DeadConfirmed::Yes) => BTreeSet::new(),
-            (HeldCopies::Dead, DeadConfirmed::No) => {
-                return Err(stopped_answering(&observation.machine));
+        match (self.reply(observation).await?, dead) {
+            (Reply::Dead, DeadConfirmed::No) => Err(stopped_answering(&observation.machine)),
+            (Reply::Gone(_), _) => Ok(()),
+            (Reply::Dead, DeadConfirmed::Yes) | (Reply::Answered, _) => {
+                forget(self, selected).await
             }
-            (HeldCopies::Answered(held), _) => held,
-            (HeldCopies::Gone(_), _) => return Ok(()),
-        };
-        if !held.is_empty() {
-            return Err(copies_left_behind(
-                &observation.machine.name,
-                held.iter()
-                    .map(|name| Namespace::declared_volume_name(name).unwrap_or(name.as_str())),
-            ));
         }
-        forget(self, selected).await
     }
 
-    pub(crate) async fn held_copies(
-        &self,
-        machine: &MachineObservation,
-    ) -> Result<HeldCopies, RpcError> {
+    /// Whether `machine` answers a read: a forget of one that doesn't needs dead typed.
+    pub(crate) async fn reply(&self, machine: &MachineObservation) -> Result<Reply, RpcError> {
         if !machine.invites_rpc() {
-            return Ok(HeldCopies::Dead);
+            return Ok(Reply::Dead);
         }
         let mut client = self.clone();
         match client
@@ -806,22 +767,20 @@ impl Client {
             )
             .await
         {
-            Ok(storage) => Ok(HeldCopies::Answered(
-                storage.roles().map(|(name, _)| name.clone()).collect(),
-            )),
-            Err(error) if error.target_unanswered() => Ok(HeldCopies::Dead),
+            Ok(_) => Ok(Reply::Answered),
+            Err(error) if error.target_unanswered() => Ok(Reply::Dead),
             Err(error) => {
                 let error = rpc_error(error);
                 let unlisted = error.server_unlisted(&machine.machine.id);
                 // Often only the entry was busy, as when several forgets share it.
                 let unchecked = RpcError::unavailable(format!(
-                    "Couldn't check whether Server {} holds Volume copies. No changes made. \
-                     Run the command again, one Server at a time if you're forgetting several.",
+                    "Couldn't check whether Server {} answers. No changes made. Run the \
+                     command again, one Server at a time if you're removing several.",
                     machine.machine.name
                 ))
                 .with_causes(std::iter::once(error.message).chain(error.cause).collect());
                 if unlisted {
-                    Ok(HeldCopies::Gone(unchecked))
+                    Ok(Reply::Gone(unchecked))
                 } else {
                     Err(unchecked)
                 }
@@ -1357,7 +1316,7 @@ pub(crate) enum DeadConfirmed {
 
 fn stopped_answering(machine: &Machine) -> RpcError {
     RpcError::confirmation_required(format!(
-            "Server {} stopped answering after its name was typed. Forgetting it leaves any Volume copies on it behind, so it needs dead typed. No changes made.",
+            "Server {} stopped answering after its name was typed, so it needs dead typed. No changes made.",
             machine.name
         )).with_details(json!({
             "server": { "id": machine.id, "name": machine.name },
@@ -1366,9 +1325,9 @@ fn stopped_answering(machine: &Machine) -> RpcError {
 }
 
 #[derive(Debug)]
-pub(crate) enum HeldCopies {
+pub(crate) enum Reply {
     Dead,
-    Answered(BTreeSet<DockerVolumeName>),
+    Answered,
     /// The entry refused the read because it no longer lists the Server, as when Cloud's
     /// removal finished first. Only the entry that listed it proves it gone; from another
     /// entry, which may not have learned of a fresh join yet, it stays this refusal.
@@ -1376,34 +1335,11 @@ pub(crate) enum HeldCopies {
 }
 
 /// Whether Cloud holds the last Machine. Cloud lets go of it by removing it itself:
-/// the reset takes its keys, and Cloud forgets the pairing.
+/// Cloud forgets the Cluster and drops its keys.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CloudHold {
     None,
     Last,
-}
-
-/// Who removes a Machine. Only Cloud may remove the last Machine it holds: it sees the
-/// reset, and only then lets go of the Cluster.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Remover {
-    /// Cloud, through its own Management Client.
-    Cloud,
-    /// Anyone else: the CLI, whatever it connects through.
-    Operator,
-}
-
-/// Forgetting `machine` leaves its copies of `volumes` behind: only its
-/// reset demotes them.
-pub(crate) fn copies_left_behind<'a>(
-    machine: &MachineName,
-    volumes: impl IntoIterator<Item = &'a str>,
-) -> RpcError {
-    RpcError::conflict(format!(
-        "Server {machine} answers and holds copies of Volumes {}; forgetting it leaves them \
-             behind. No changes made. Remove it with ployz server rm so its reset demotes them.",
-        volumes.into_iter().collect::<Vec<_>>().join(", ")
-    ))
 }
 
 /// The last Machine is Cloud's: anyone else removing it would leave Cloud paired
@@ -1773,10 +1709,6 @@ fn dials_direct(path: &str) -> bool {
 /// Leave on `machine`, then Forget its row through the entry unless it is the entry. Both
 /// are idempotent. A Leave the entry can't route finds no row: Forget already ran, and
 /// whether the reset did is unknown, so it departed [`Departed::AlreadyForgotten`].
-///
-/// A Forget that fails after the target answered Left carries that reply as
-/// [`LeftNotForgotten`]: a retry can no longer reach the target, and the reply is the only
-/// proof that it reset.
 async fn depart(
     client: &mut Client,
     machine: MachineId,
@@ -1801,42 +1733,10 @@ async fn depart(
             error => return Err(error),
         },
     };
-    if machine != current
-        && let Err(error) = forget(client, machine).await
-    {
-        return Err(match departed {
-            Departed::Reset { row_warning } => LeftNotForgotten::carried_by(error, row_warning),
-            Departed::Unreachable { .. } | Departed::AlreadyForgotten => error,
-        });
+    if machine != current {
+        forget(client, machine).await?;
     }
     Ok(departed.into())
-}
-
-/// A Forget that failed after its target answered Left. The failed Forget's error carries
-/// this in `details`, so a caller that retries with Forget alone keeps the reset's warning.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct LeftNotForgotten {
-    left: bool,
-    pub(crate) reset_warning: Option<String>,
-}
-
-impl LeftNotForgotten {
-    fn carried_by(error: RpcError, reset_warning: Option<String>) -> RpcError {
-        error.with_details(
-            serde_json::to_value(Self {
-                left: true,
-                reset_warning,
-            })
-            .expect("LeftNotForgotten is JSON"),
-        )
-    }
-
-    /// The Leave reply a failed removal carries, when it carries one.
-    pub(crate) fn from_rpc_error(error: &RpcError) -> Option<Self> {
-        Self::deserialize(&error.details)
-            .ok()
-            .filter(|carried| carried.left)
-    }
 }
 
 /// Delete `machine_id`'s shared row through the entry Machine.

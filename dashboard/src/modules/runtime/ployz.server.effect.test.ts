@@ -2,7 +2,6 @@ import type { Client, Connection, RuntimeWatchView } from "@ployz/sdk";
 import { assert, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber } from "effect";
 import { asTestDouble } from "#/lib/test-double";
-import { MissingDataLossIdentities } from "#/modules/runtime/data-loss-confirm";
 import { ClusterOutOfTime } from "#/modules/runtime/organization-runtime.server";
 import {
   closeCutWarning,
@@ -70,43 +69,6 @@ it.effect("classifies provider connection failures", () =>
     assert.instanceOf(error.cause, Error);
   }),
 );
-
-it.effect("preserves exact execute-time Data Loss refusals", () =>
-  Effect.gen(function* () {
-    const missing = [
-      {
-        kind: "docker_volume" as const,
-        id: {
-          machine_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          name: "new-data",
-        },
-      },
-    ];
-    const client = asTestDouble<Client>()({
-      removeMachine: async () => {
-        throw Object.assign(new Error("confirmation is stale"), {
-          code: "invalid_argument",
-          details: { missing },
-        });
-      },
-      close: async () => undefined,
-    });
-    const layer = makePloyzLayer({
-      connect: async () => client,
-    });
-
-    const error = yield* Effect.scoped(
-      Effect.gen(function* () {
-        const session = yield* (yield* Ployz).connect(options);
-        return yield* session.removeMachine("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", { confirmed: [] });
-      }),
-    ).pipe(Effect.provide(layer), Effect.flip);
-
-    assert.instanceOf(error, MissingDataLossIdentities);
-    assert.deepStrictEqual(error.identities, missing);
-  }),
-);
-
 
 it.effect("cancels an in-flight SDK connection when its fiber is interrupted", () =>
   Effect.gen(function* () {

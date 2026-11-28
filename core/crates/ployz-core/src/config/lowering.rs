@@ -185,6 +185,10 @@ pub struct LowerDeploymentVolume {
     /// The Server an earlier Deployment chose for its first copy. Written only when set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_copy: Option<crate::MachineId>,
+    /// Shared Writes were on when the Deploy was admitted, so each Container that mounts
+    /// it may run beside another on its Server. Written only when set.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shared_writes: bool,
 }
 
 /// One Config the Namespace holds, its references resolved.
@@ -244,7 +248,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
                 .filter(|birth| birth.namespace == input.namespace);
             (
                 v.volume_resource_id.as_str(),
-                (v.storage, v.deployed, birth),
+                (v.storage, v.deployed, birth, v.shared_writes),
             )
         })
         .collect();
@@ -324,8 +328,9 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
 struct Sources<'a> {
     namespace: &'a Namespace,
     sealed_for: Option<&'a SealedFor>,
-    /// Storage, whether a Deploy applied it, and the birth its mounts carry.
-    volumes: &'a BTreeMap<&'a str, (VolumeKind, bool, Option<&'a crate::VolumeBirth>)>,
+    /// Storage, whether a Deploy applied it, the birth its mounts carry, and whether it
+    /// has Shared Writes on.
+    volumes: &'a BTreeMap<&'a str, (VolumeKind, bool, Option<&'a crate::VolumeBirth>, bool)>,
     configs: &'a BTreeMap<&'a str, &'a LowerDeploymentConfig>,
     region: Option<&'a Region>,
 }
@@ -343,6 +348,7 @@ struct LoweredVolumes {
     mounts: Vec<ServiceMount>,
     names: BTreeMap<crate::DockerVolumeName, String>,
     deployed: BTreeSet<crate::DockerVolumeName>,
+    shared: BTreeSet<crate::ServiceVolumeReference>,
 }
 
 struct LoweredConfigs {
@@ -397,6 +403,7 @@ fn lower_snapshot(
         mounts,
         names: volume_names,
         deployed: deployed_volumes,
+        shared: shared_writes,
     } = lower_volumes(sources, configured_mounts)?;
     let configs = lower_configs(sources, configured_configs)?;
     let ports = lower_ports(&config.routes, route_ports)?;
@@ -463,6 +470,7 @@ fn lower_snapshot(
             stop_signal: None,
             sysctls: BTreeMap::new(),
             network: None,
+            shared_writes,
         },
         placement,
         regions,
@@ -624,9 +632,10 @@ fn lower_volumes(
         mounts: Vec::new(),
         names: BTreeMap::new(),
         deployed: BTreeSet::new(),
+        shared: BTreeSet::new(),
     };
     for mount in configured_mounts {
-        let Some((storage, deployed, birth)) =
+        let Some((storage, deployed, birth, shared)) =
             sources.volumes.get(mount.volume_resource_id.as_str())
         else {
             continue;
@@ -646,6 +655,9 @@ fn lower_volumes(
             lowered
                 .deployed
                 .insert(sources.namespace.volume_name(&name));
+        }
+        if *shared {
+            lowered.shared.insert(reference.clone());
         }
         let source = match storage {
             VolumeKind::Docker {} => RawVolumeSource::Ordinary {

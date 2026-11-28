@@ -1243,7 +1243,7 @@
       "title": "Create a Volume"
     },
     {
-      "description": "Change one thing about a Volume per call: its size limit, its name, or turn its shared writes off. A new size or name is staged until the next deploy.",
+      "description": "Change one thing about a Volume per call: its size limit, its name, or whether several containers may write to it. A new size or name is staged until the next deploy.",
       "destructive": false,
       "gate": "never",
       "idempotent": true,
@@ -1266,7 +1266,7 @@
             "type": "string"
           },
           "shared_writes": {
-            "description": "Set false to turn shared writes off. Turning them on is paused for now. Applies right away, without a deploy.",
+            "description": "Set true to let several containers write to the Volume. Applies right away; each Server learns it at the next deploy.",
             "type": "boolean"
           },
           "size": {

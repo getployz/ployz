@@ -2,7 +2,6 @@
 
 pub(crate) mod boot_pass;
 mod build;
-pub(crate) mod forgotten_fence;
 
 /// Numeric status returned by the Ployz Docker Volume plugin.
 #[derive(serde::Deserialize, serde::Serialize)]

@@ -158,7 +158,7 @@ tool_input! {
         #[serde(default)]
         #[schemars(with = "Option<String>", pattern(NODE_NAME))]
         to: Option<VolumeName>,
-        /// Set false to turn shared writes off. Turning them on is paused for now. Applies right away, without a deploy.
+        /// Set true to let several containers write to the Volume. Applies right away; each Server learns it at the next deploy.
         #[serde(default)]
         shared_writes: Option<bool>,
         @revision,
@@ -170,13 +170,13 @@ impl Tool for VolumeUpdate {
     const NAME: &'static str = "volume_update";
     const STATUS: ToolId = ToolId::VolumeShow;
     const TITLE: &'static str = "Change a Volume";
-    const DESCRIPTION: &'static str = "Change one thing about a Volume per call: its size limit, its name, or turn its shared writes off. A new size or name is staged until the next deploy.";
+    const DESCRIPTION: &'static str = "Change one thing about a Volume per call: its size limit, its name, or whether several containers may write to it. A new size or name is staged until the next deploy.";
     // A size or shared writes set again changes nothing; a rename sent again
     // finds the new name taken and is refused.
     const EFFECT: Effect = Effect::Change { idempotent: true };
 
     fn example() -> Value {
-        json!({ "volume": "data", "shared_writes": false })
+        json!({ "volume": "data", "shared_writes": true })
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {

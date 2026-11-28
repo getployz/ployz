@@ -143,7 +143,7 @@ export const cleanNamespace = (caller: Caller, namespace: string, call: Operatio
     }).pipe(Effect.map((id) => ({ ok: true, id }) as const));
   })));
 
-/** Takes Server `machineId` out of the Cluster without a reset, for a Server that is gone. Null when no Server has `machineId`. */
+/** Takes Server `machineId` out of the Cluster, losing whatever only it holds unconfirmed. Null when no Server has `machineId`. */
 export const forgetServer = (caller: Caller, machineId: MachineId, call: OperationCall, serverName?: MachineName) =>
   removeServer(caller, machineId, null, call, serverName);
 
@@ -159,24 +159,24 @@ export const forgetServerFromDashboard = (caller: Caller, machineId: MachineId, 
   });
 
 /**
- * Takes Server `machineId` out of the Cluster: a reset deleting exactly the Data Loss the caller `confirmed`, or, with
- * `null`, a Forget with no reset. Null when no Server has `machineId`. Its run keeps `serverName`, the name the caller
- * showed, else the Server's name in the frame it planned from.
+ * Takes Server `machineId` out of the Cluster and revokes its keys. The Volumes only it holds are lost: the caller
+ * `confirmed` each of them, or, with `null` (a Forget), an approval covers them. Null when no Server has `machineId`. Its
+ * run keeps `serverName`, the name the caller showed, else the Server's name in the frame it planned from.
  */
 export const removeServer = (
   caller: Caller, machineId: MachineId, confirmed: readonly DataLossIdentity[] | null, call: OperationCall, serverName?: MachineName,
 ) =>
   holding(caller, call, OPERATIONS[confirmed === null ? "server.forget" : "server.remove"].requires, undefined, Effect.gen(function* () {
-    const noReset = confirmed === null;
-    const tool = noReset ? OPERATIONS["server.forget"].idempotency : OPERATIONS["server.remove"].idempotency;
-    const body = noReset ? { machineId } : { machineId, confirmed };
+    const forget = confirmed === null;
+    const tool = forget ? OPERATIONS["server.forget"].idempotency : OPERATIONS["server.remove"].idempotency;
+    const body = forget ? { machineId } : { machineId, confirmed };
     // A removal's success takes the Server away, so a retry of its lost reply replays before looking for it.
     const answered = yield* replayed(caller.organization.id, { tool, key: call.key, body });
     if (answered !== undefined) return answered;
     const plan = yield* planRemove(caller.organization.id, machineId, confirmed);
     if (plan === null) return null;
     return yield* admitOperation(caller.organization.id, { tool, key: call.key, body }, Effect.gen(function* () {
-      const gated = yield* gate(caller, call, { ...plan, ployz: `ployz server ${noReset ? "forget" : "rm"} ${plan.name}` });
+      const gated = yield* gate(caller, call, { ...plan, ployz: `ployz server ${forget ? "forget" : "rm"} ${plan.name}` });
       if (!gated.ok) return refused(gated.refusal);
       return (id: string) => startMachineRemove({
         id,
@@ -184,7 +184,7 @@ export const removeServer = (
         requestedByUserId: caller.userId,
         machineId,
         serverName: serverName || plan.name,
-        ...(noReset ? { confirmDataLoss: [], noReset: true } : { confirmDataLoss: [...confirmed] }),
+        confirmDataLoss: forget ? [] : [...confirmed],
       }).pipe(Effect.map((started) => ({ ok: true, id: started.id }) as const));
     }));
   }));

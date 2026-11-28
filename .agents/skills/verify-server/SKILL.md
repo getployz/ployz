@@ -183,7 +183,7 @@ scripts/verify-cluster exec "$run" machine-1 -- sh /run/ployz-faults/unproxy.sh 
   }
   ```
 
-  Arm it only once: a second `-I` adds duplicate rules that one `-D` leaves in place. Confirm it took: `server forget <name> --confirm not-this` must ask for `--confirm dead`, not for the name, and must not say the Server answers and holds copies. On a `--cloud` run, the forget then waits about 12 minutes while Cloud retries, so pass `cli --timeout 1200`. Before you rely on the drop for another check, confirm that check's path really fails too.
+  Arm it only once: a second `-I` adds duplicate rules that one `-D` leaves in place. Confirm it took: `server forget <name> --confirm not-this` must ask for `--confirm dead`, not for the name. On a `--cloud` run, the forget then waits about 12 minutes while Cloud retries, so pass `cli --timeout 1200`. Before you rely on the drop for another check, confirm that check's path really fails too.
 
 Disarm a socket proxy before restarting Corrosion or the plugin's socket unit on that Machine. Either restart binds a new real socket at the path, and `unproxy.sh` would then move a stale `.real` over it. `/run` empties at reboot, so `power off` and `down` drop every script.
 

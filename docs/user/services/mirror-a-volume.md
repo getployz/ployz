@@ -43,15 +43,14 @@ amber with a warning sign. A staged mirror shows **New** in green, a staged remo
 
 Click a mirror, on the canvas or under **Elsewhere**, to open it. It shows its server, when it last
 refreshed, **Refresh now** and **Remove mirror**. A mirror more than an hour
-behind says **Refresh skipped** and why. Either its server is not answering or its last refresh
-failed. It also says how much of its writes a failover would lose.
+behind after a failed refresh says **Refresh skipped**, that the last refresh failed, and how much
+of its writes a failover would lose.
 
-A mirror stays listed while its server is not answering. A mirror made with `ployz volume mirror`
-is then known only from that server's last report, so its row reads "Last reported", with no age.
-It may have been removed since. Copies can't make it primary, remove it or refresh it until its
-server answers. If Copies knows of no copy outside `web-1` while another server hasn't reported,
-**Elsewhere** says why, for example "web-2 is not answering, so Copies can't say what is outside
-web-1".
+Copies lists a mirror only while its server reports it. While that server isn't answering, its
+report hasn't arrived, or it can't report the copy, the mirror drops out of the list and comes
+back once the server reports again. **Elsewhere** says why, for example "web-2 is not answering,
+so Copies can't say what is outside web-1", or, beside a copy it does list, "web-2 is not
+answering, so a copy there won't show until it reports".
 
 ## Refresh a mirror
 

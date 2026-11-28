@@ -5,7 +5,7 @@ import { asTestDouble } from "#/lib/test-double";
 import { MissingDataLossIdentities } from "#/modules/runtime/data-loss-confirm";
 import { ServerLacks } from "#/modules/runtime/daemon-compat";
 import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
-import { asSdkFailure, PloyzProviderError, type PloyzSession } from "#/modules/runtime/ployz.server";
+import { PloyzProviderError, type PloyzSession } from "#/modules/runtime/ployz.server";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -33,7 +33,7 @@ describe("asRemoveMachineOutcome", () => {
   });
 
   it("ends on the Server's refusal instead of retrying it", async () => {
-    const message = "Server two answers and holds copies of Volumes vol-1; removing it without a reset leaves them behind. No changes made.";
+    const message = "Server two is the Server this connection entered by. No changes made.";
     await expect(
       Effect.runPromise(
         asRemoveMachineOutcome(
@@ -63,17 +63,6 @@ describe("asRemoveMachineOutcome", () => {
         ),
       ),
     ).resolves.toMatchObject({ kind: "refused", failureCode: "server_lacks" });
-  });
-
-  it("keeps a Leave the Server answered before its Forget failed, as a result the step remembers", async () => {
-    const cause = {
-      code: "unavailable",
-      message: "the Cluster store is unavailable",
-      details: { left: true, reset_warning: "Docker reset failed" },
-    };
-    await expect(
-      Effect.runPromise(asRemoveMachineOutcome(Effect.fail(asSdkFailure("remove machine", cause)))),
-    ).resolves.toEqual({ kind: "left", resetWarning: "Docker reset failed" });
   });
 
   it("leaves any other failure to the step's retries", async () => {

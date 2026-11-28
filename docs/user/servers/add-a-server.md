@@ -204,8 +204,7 @@ run at one:
 sudo ployz key add pk1_…
 ```
 
-Removing a server with `ployz server rm`, which resets it, and the uninstaller use up the first
-key too. To add a server you removed or reinstalled, run `sudo ployz key add` with the key from a
+The uninstaller uses up the first key too. To add a server you removed or reinstalled, run `sudo ployz key add` with the key from a
 new install command at the server's terminal, then join it again.
 
 `ployz server add USER@HOST --reset` can't make such a server found a cluster through Ployz Cloud,

@@ -2075,6 +2075,102 @@ fn a_volume_confirmed_mid_run_still_reads_deployed_once_the_deploy_ends() {
 }
 
 #[test]
+fn a_shared_volume_lands_with_the_one_confirmed_service_whatever_the_other_does() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("api").unwrap(),
+                image: Some("caddy:2".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set_shared_writes(&store, &who, true).unwrap();
+    edit(
+        &store,
+        &who,
+        Change::Set {
+            path: path("api.mounts.data"),
+            value: json!("/srv"),
+        },
+    )
+    .unwrap();
+    admit(&store, &who, 1, &[], None).unwrap();
+    prepare(&store, 1, &["web", "api"]);
+    let runner = RunnerId::parse("runner").unwrap();
+    store
+        .record(
+            &id(1),
+            &runner,
+            RunEvidence::Confirmed(vec![ServiceName::parse("web").unwrap()]),
+        )
+        .unwrap();
+    // api is still pending, yet the storage web runs on is confirmed.
+    assert!(outcomes(&store, &who, 1).contains(&("data".to_owned(), NodeStatus::Deployed)));
+    store
+        .record(&id(1), &runner, RunEvidence::Abandoned)
+        .unwrap();
+    assert!(
+        !diff(&store, &who)
+            .changes
+            .iter()
+            .any(|change| change.name == "data" || change.name == "web")
+    );
+}
+
+#[test]
+fn a_shared_volume_one_planned_service_mounts_locks_whatever_blocks_the_other() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("api").unwrap(),
+                image: Some("caddy:2".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set_shared_writes(&store, &who, true).unwrap();
+    edit(
+        &store,
+        &who,
+        Change::Set {
+            path: path("api.mounts.data"),
+            value: json!("/srv"),
+        },
+    )
+    .unwrap();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let runner = RunnerId::parse("runner").unwrap();
+    store.claim(&id(1), &runner).unwrap();
+    // The run prepares data for api, while web waits on something else.
+    let preview: DeployPreview = serde_json::from_value(json!({
+        "namespace": "shop-production",
+        "operations": [{
+            "index": 0, "machine_id": "a".repeat(32), "service_name": "api",
+            "operation": remove_web(), "status": {"type": "pending"}
+        }],
+        "warnings": [], "would_remove": [], "preserved_volumes": [],
+        "blocked": [{
+            "service": "web",
+            "error": {"code": "conflict", "message": "blocked", "details": {}}
+        }]
+    }))
+    .unwrap();
+    store
+        .record(&id(1), &runner, RunEvidence::Prepared(preview))
+        .unwrap();
+    assert!(listed(&store, &who)[0].storage_locked);
+}
+
+#[test]
 fn a_running_deploy_shows_a_volume_unchanged_once_its_preview_plans_nothing_that_mounts_it() {
     let (store, who) = shop();
     // A new Volume waits with the Service that mounts it.
@@ -2139,58 +2235,51 @@ fn replicas(n: u8) -> Change {
     }
 }
 
-const INSPECT: &str = "ployz volume inspect data --env production --project shop";
+const NEXT: &str = "ployz volume set data --shared-writes --env production --project shop";
 
 #[test]
-fn a_second_replica_on_a_volume_is_refused() {
+fn a_second_replica_on_a_volume_is_refused_until_shared_writes_is_on() {
     let (store, who) = shop();
+    assert!(!listed(&store, &who)[0].volume.shared_writes);
     let refused = edit(&store, &who, replicas(2)).unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::Conflict);
     assert_eq!(
         refused.message,
-        "data is attached to web; set replicas to 1"
+        "data is attached to web; set replicas to 1, or allow shared writes: ployz volume set data --shared-writes"
     );
-    assert_eq!(refused.details["next"], INSPECT);
+    assert_eq!(refused.details["next"], NEXT);
+
+    assert!(set_shared_writes(&store, &who, true).unwrap());
+    assert!(listed(&store, &who)[0].volume.shared_writes);
+    edit(&store, &who, replicas(2)).unwrap();
 }
 
-/// Shared writes are paused: a Volume can't turn them on, nor be added with them.
+/// Shared writes lets several replicas write a Volume, all on its one Server.
 #[test]
-fn shared_writes_cannot_be_turned_on_while_paused() {
+fn replicas_in_two_regions_on_a_volume_are_refused_with_shared_writes_on() {
     let (store, who) = shop();
-    let refused = set_shared_writes(&store, &who, true).unwrap_err();
-    assert_eq!(refused.code, RpcErrorCode::Unsupported);
+    set_shared_writes(&store, &who, true).unwrap();
+    let counts = |value| Change::Set {
+        path: path("web.replicas"),
+        value,
+    };
+
+    let refused = edit(&store, &who, counts(json!({ "fsn": 1, "syd": 1 }))).unwrap_err();
+
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
     assert_eq!(
         refused.message,
-        "Shared writes are paused for now, so data can't turn them on"
+        "data is attached to web; set replicas in one region"
     );
-    assert!(!listed(&store, &who)[0].volume.shared_writes);
-    assert!(!set_shared_writes(&store, &who, false).unwrap());
-
-    let refused = store
-        .write(
-            &who,
-            &CreateVolume {
-                shared_writes: true,
-                storage_locked: false,
-                restored_from: None,
-                storage: VolumeKind::Docker {},
-                id: VolumeId::parse("00000000-0000-4000-8000-000000000008").unwrap(),
-                environment: EnvironmentRef::default(),
-                name: VolumeName::parse("uploads").unwrap(),
-                mounts: Vec::new(),
-            },
-        )
-        .unwrap_err();
     assert_eq!(
-        refused.code,
-        RpcErrorCode::Unsupported,
-        "{}",
-        refused.message
+        refused.details["next"],
+        "ployz volume inspect data --env production --project shop"
     );
+    edit(&store, &who, counts(json!({ "fsn": 2 }))).unwrap();
 }
 
 #[test]
-fn a_second_service_mounting_a_volume_is_refused() {
+fn a_second_service_mounting_a_volume_is_refused_until_shared_writes_is_on() {
     let (store, who) = shop();
     add_api(&store, &who);
     let mount = || Change::Set {
@@ -2201,13 +2290,13 @@ fn a_second_service_mounting_a_volume_is_refused() {
     assert_eq!(refused.code, RpcErrorCode::Conflict);
     assert_eq!(
         refused.message,
-        "data is already mounted by web; mount it in one Service"
+        "data is already mounted by web; allow shared writes first: ployz volume set data --shared-writes"
     );
-    assert_eq!(refused.details["next"], INSPECT);
+    assert_eq!(refused.details["next"], NEXT);
 
     // A new Volume mounted into two Services at once has the same second writer.
-    let both = CreateVolume {
-        shared_writes: false,
+    let both = |shared_writes| CreateVolume {
+        shared_writes,
         storage_locked: false,
         restored_from: None,
         storage: VolumeKind::Docker {},
@@ -2221,17 +2310,24 @@ fn a_second_service_mounting_a_volume_is_refused() {
             })
             .into(),
     };
-    let refused = store.write(&who, &both).unwrap_err();
+    let refused = store.write(&who, &both(false)).unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::Conflict);
     assert_eq!(
         refused.message,
-        "uploads would be mounted by web, api; mount it in one Service"
+        "uploads would be mounted by web, api; add it with shared writes on"
     );
-    assert!(refused.details.get("next").is_none(), "{}", refused.details);
+    assert_eq!(
+        refused.details["next"],
+        "ployz volume add uploads --mount web:/uploads --mount api:/uploads --docker --shared-writes --env production --project shop"
+    );
+    assert!(store.write(&who, &both(true)).unwrap().volume.shared_writes);
+
+    set_shared_writes(&store, &who, true).unwrap();
+    edit(&store, &who, mount()).unwrap();
 }
 
 #[test]
-fn a_new_volume_on_a_second_replica_is_refused() {
+fn a_new_volume_on_a_second_replica_is_refused_with_an_add_that_works() {
     let (store, who) = shop();
     add_api(&store, &who);
     edit(
@@ -2243,8 +2339,8 @@ fn a_new_volume_on_a_second_replica_is_refused() {
         },
     )
     .unwrap();
-    let add = CreateVolume {
-        shared_writes: false,
+    let add = |shared_writes| CreateVolume {
+        shared_writes,
         storage_locked: true,
         restored_from: None,
         storage: VolumeKind::Provisioned {
@@ -2258,13 +2354,19 @@ fn a_new_volume_on_a_second_replica_is_refused() {
             path: "/my $uploads".into(),
         }],
     };
-    let refused = store.write(&who, &add).unwrap_err();
+    let refused = store.write(&who, &add(false)).unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::Conflict);
     assert_eq!(
         refused.message,
-        "uploads would be attached to api; set replicas to 1"
+        "uploads would be attached to api; set replicas to 1, or add it with shared writes on"
     );
-    assert!(refused.details.get("next").is_none(), "{}", refused.details);
+    assert_eq!(
+        refused.details["next"],
+        "ployz volume add uploads --mount 'api:/my $uploads' --size 1.5GB --shared-writes --env production --project shop"
+    );
+    let words = shell_words::split(refused.details["next"].as_str().unwrap()).unwrap();
+    assert!(words.contains(&"api:/my $uploads".to_owned()), "{words:?}");
+    assert!(store.write(&who, &add(true)).unwrap().volume.shared_writes);
 }
 
 #[test]
@@ -2308,13 +2410,13 @@ fn a_new_volume_refused_in_a_batch_that_creates_its_service_has_no_next() {
     assert_eq!(refused.code, RpcErrorCode::Conflict);
     assert_eq!(
         refused.message,
-        "uploads would be attached to api; set replicas to 1"
+        "uploads would be attached to api; set replicas to 1, or add it with shared writes on"
     );
     assert!(refused.details.get("next").is_none(), "{}", refused.details);
 }
 
 #[test]
-fn start_first_on_a_volume_is_refused() {
+fn start_first_on_a_volume_is_refused_until_shared_writes_is_on() {
     let (store, who) = shop();
     let order = |order: &str| Change::Set {
         path: path("web.updateOrder"),
@@ -2326,12 +2428,88 @@ fn start_first_on_a_volume_is_refused() {
     assert_eq!(refused.code, RpcErrorCode::Conflict);
     assert_eq!(
         refused.message,
-        "web mounts data, and start-first runs two copies on it; set web.updateOrder=stop-first"
+        "web mounts data, and start-first runs two copies on it; set web.updateOrder=stop-first, or allow shared writes: ployz volume set data --shared-writes"
     );
     assert_eq!(
         refused.details["next"],
         "ployz set web.updateOrder=stop-first --env production --project shop"
     );
+
+    set_shared_writes(&store, &who, true).unwrap();
+    edit(&store, &who, order("start-first")).unwrap();
+    let refused = set_shared_writes(&store, &who, false).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{}", refused.message);
+}
+
+#[test]
+fn shared_writes_turns_off_only_while_one_container_writes() {
+    let (store, who) = shop();
+    set_shared_writes(&store, &who, true).unwrap();
+    edit(&store, &who, replicas(2)).unwrap();
+    let refused = set_shared_writes(&store, &who, false).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        refused.message,
+        "data is written by web; leave one Service with 1 replica before turning shared writes off"
+    );
+    assert_eq!(
+        refused.details["next"],
+        "ployz volume inspect data --env production --project shop"
+    );
+    assert!(listed(&store, &who)[0].volume.shared_writes);
+
+    edit(&store, &who, replicas(1)).unwrap();
+    assert!(!set_shared_writes(&store, &who, false).unwrap());
+}
+
+#[test]
+fn shared_writes_turn_off_only_once_one_writer_is_deployed() {
+    let (store, who) = shop();
+    set_shared_writes(&store, &who, true).unwrap();
+    edit(&store, &who, replicas(3)).unwrap();
+    admit(&store, &who, 1, &[], None).unwrap();
+    run(&store, 1, Vec::new());
+    edit(&store, &who, replicas(1)).unwrap();
+
+    // The next Deploy would start a writer without them beside the three running.
+    let refused = set_shared_writes(&store, &who, false).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+    assert_eq!(
+        refused.message,
+        "data still has 3 writers deployed; deploy it with one Service at 1 replica first, then turn shared writes off"
+    );
+    assert_eq!(refused.details["next"], "ployz deploy");
+    assert!(listed(&store, &who)[0].volume.shared_writes);
+
+    admit(&store, &who, 2, &[], None).unwrap();
+    run(&store, 2, Vec::new());
+    assert!(!set_shared_writes(&store, &who, false).unwrap());
+}
+
+#[test]
+fn shared_writes_applies_at_once_and_is_no_diff_row() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    run(&store, 1, Vec::new());
+    set_shared_writes(&store, &who, true).unwrap();
+    let view = diff(&store, &who);
+    assert!(view.changes.is_empty(), "{:?}", view.changes);
+    assert!(view.draft_changes.is_empty(), "{:?}", view.draft_changes);
+    assert_eq!((view.total_count, view.draft_count), (0, 0));
+
+    // Discarding the whole Volume returns it to the deployed value.
+    store
+        .write(
+            &who,
+            &Discard {
+                environment: EnvironmentRef::default(),
+                target: Some(ployz_store::DiscardTarget::Head),
+                path: Some(SettingPath::parse("volumes.data").unwrap()),
+                version: None,
+            },
+        )
+        .unwrap();
+    assert!(!listed(&store, &who)[0].volume.shared_writes);
 }
 
 /// A Deploy or Save at a stale version is refused for the version. When the fresh

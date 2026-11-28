@@ -1145,6 +1145,7 @@ fn container_on(
                 replicas: std::num::NonZeroU32::new(1).unwrap(),
             },
             container: ployz_core::ServiceContainerSpec {
+                shared_writes: Default::default(),
                 image: "api".into(),
                 command: vec![],
                 entrypoint: vec![],

@@ -49,13 +49,6 @@ pub(crate) fn admit(
 ) -> Result<DeploymentSummary, RpcError> {
     let environment = &at.summary.id;
     let intent = saved_at(tx, environment, saved)?;
-    super::admit::refuse_shared_writes(
-        at,
-        (&intent, |service: &SavedServiceIntent| {
-            frozen.hands(service)
-        }),
-        super::admit::Shipping::Saved,
-    )?;
     let logins = crate::registry::freeze(tx, environment, &intent, frozen)?;
     let id = &admission.id();
     let (held, push) = match admission {

@@ -144,7 +144,7 @@ A service deployed with one number goes back to one number when you remove the r
 With the count unchanged, nothing is left to deploy.
 
 **Add region** shows only when the environment has a region and the service has no
-[volume](volumes.md). A service with a volume also keeps one replica,
+[volume](volumes.md). A service whose volume doesn't allow shared writes also keeps one replica,
 and says **Limited to 1**. You can still pick its region. A service that shares its volume with
 another service can only pick the volume's region, and its row says so.
 

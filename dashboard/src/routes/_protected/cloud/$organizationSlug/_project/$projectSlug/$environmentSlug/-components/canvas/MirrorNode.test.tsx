@@ -15,7 +15,7 @@ const volume = asTestDouble<VolumeListing>()({ id: "vol-1", name: "data", mounts
 const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
 const mirror = (extra: Partial<MirrorCopy> = {}): MirrorCopy => ({
   kind: "mirror", id: "m2", server: { id: "m2" as MachineId, name: "web-2" }, name: "data-web-2", refreshedAt: minutesAgo(4),
-  skipped: null, lastReported: false, staged: null, busy: null, ...extra,
+  failed: false, staged: null, busy: null, ...extra,
 });
 const old: OldCopy = {
   kind: "old", id: "m3", server: { id: "m3" as MachineId, name: "web-3" }, name: "data-old", since: null, bytes: 1e6, staged: null, busy: null,
@@ -104,8 +104,3 @@ it("hangs nothing under a Volume whose only other copy is old", async () => {
   expect(document.querySelector("[data-copy]")).toBeNull();
 });
 
-it("names a mirror known only from its silent Server's last report as last reported", async () => {
-  await show([mirror({ lastReported: true })]);
-  const link = screen.getByRole("link", { name: "data-web-2, last reported mirror of data" });
-  expect(link.textContent).toMatch(/^data-web-2Last reported · /);
-});

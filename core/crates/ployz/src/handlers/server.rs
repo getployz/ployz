@@ -35,7 +35,6 @@ pub(super) mod clean;
 pub(super) mod drain;
 mod endpoint;
 pub(super) mod enroll;
-mod fence;
 pub(super) mod forget;
 mod helpers;
 pub(crate) mod init;
@@ -813,12 +812,12 @@ pub(super) fn list_command(command: Command) -> Command {
 
 pub(super) fn remove_command(command: Command) -> Command {
     base(command, "Remove a Server")
-                .long_about("Remove a Server from the Cluster and reset it; for a Server that is gone or can't be reset, use ployz server forget. Type the Server's name with --confirm, or in a terminal when it asks; elsewhere it fails with confirmation_required, naming what goes and the exact command to retry. When Cloud manages the Server, Cloud removes it even with --context or --connect, asking a human first when the Organization wants that.")
-                .arg(value("confirm", None).value_name("SERVER").help("The Server's name, typed to confirm its removal"))
+                .long_about("Remove a Server: take it out of the Cluster and revoke its keys. Nothing is sent to the Server, so it keeps whatever is on its disk and runs its containers until you stop them. Removing the last Server lets go of the Cluster. Type the Server's name with --confirm, or dead for a Server that does not answer within ten seconds, and name each Volume only that Server holds with --accept-volume-loss; a terminal asks instead. Elsewhere it fails with confirmation_required, naming what goes and the exact command to retry. When Cloud manages the Server, Cloud removes it even with --context or --connect, asking a human first when the Organization wants that.")
+                .arg(value("confirm", None).value_name("SERVER").help("The Server's name, or dead for one that does not answer"))
                 .arg(positional("server", true).help("Server name or ID"))
                 .arg(crate::cli::approval())
                 .arg(
-                    volume_acceptance().help("Accept loss of Cluster access: repeat once per exact volume name; reset does not erase volume data on the host"),
+                    volume_acceptance().help("Accept losing a Volume only this Server holds: repeat once per exact volume name"),
                 )
 }
 
