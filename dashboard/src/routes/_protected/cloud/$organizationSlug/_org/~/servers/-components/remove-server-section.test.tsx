@@ -28,14 +28,9 @@ async function renderOffline(last = false) {
   return screen.findByRole("button", { name: "Forget server" });
 }
 
-it("says a mirrored volume comes back from its mirror, and only a volume with no copy elsewhere is lost", async () => {
-  const button = await renderOffline();
-  expect(screen.getByText("It's gone. Ployz stops waiting for it. Its volumes come back only where another server holds a mirror.")).toBeTruthy();
-
-  fireEvent.click(button);
+it("says what forgetting does, and that volumes only on the server may be lost when it can't list them", async () => {
+  fireEvent.click(await renderOffline());
   const dialog = await screen.findByRole("alertdialog", { name: "Forget web-1?" });
-  expect(dialog.textContent).toContain(
-    "A volume with a mirror on another server comes back from it: open the volume's Copies, click Use mirror, then deploy. Volumes with no copy elsewhere are lost.",
-  );
-  expect(dialog.textContent).not.toContain("can't be recovered");
+  expect(dialog.textContent).toContain("web-1 will be removed from your cluster. Any volumes only on web-1 will be lost.");
+  expect(dialog.textContent).not.toContain("Use mirror");
 });

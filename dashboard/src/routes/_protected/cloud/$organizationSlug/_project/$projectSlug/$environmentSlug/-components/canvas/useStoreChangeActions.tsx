@@ -159,7 +159,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
         }}
         title={loss?.action === "publish" ? "Next deploy deletes data" : loss?.check.losesWrites ? "Data loss" : "Deletes data"}
         place={place}
-        sentence={loss?.action === "publish" ? "Saving keeps data for now. The next deploy deletes it, including one a Git push starts." : undefined}
+        sentence={loss?.action === "publish" ? () => "Saving keeps data for now. The next deploy deletes it, including one a Git push starts." : undefined}
         confirmLabel={loss?.action === "publish" ? "Save only" : "Deploy"}
         items={loss?.check.items}
         callbacks={{

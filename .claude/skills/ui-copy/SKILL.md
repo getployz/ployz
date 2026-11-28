@@ -1,6 +1,6 @@
 ---
 name: ui-copy
-description: Rewrite user-facing strings in the dashboard, CLI and engine so they read like a product, not a spec sheet. Use after adding or changing any label, hint, button, badge, empty state, toast, error or refusal, CLI output or help, `ployz status` line, Approval card or prompt, published-command description, or `docs/user` page, and before review.
+description: Rewrite user-facing strings in the dashboard, CLI and engine so they read like a product, not a spec sheet. Use after adding or changing any label, hint, button, badge, empty state, toast, confirm dialog, error or refusal, CLI output or help, `ployz status` line, Approval card or prompt, published-command description, or `docs/user` page, and before review.
 ---
 
 # UI copy
@@ -46,6 +46,34 @@ For each string, ask what the user does differently after reading it. If nothing
 - A copyable thing is a copy block, not a sentence that contains it.
 - An error says what is valid: "Keys start with tskey-auth-.", not "That isn't a Tailscale auth key."
 - Use the terms in `dashboard/CONTEXT.md` or `core/CONTEXT.md`. Never internal names (ZFS, Inngest, container IDs, Corrosion).
+
+## Confirm dialogs
+
+A confirm dialog for a destructive action, such as removing a server or deleting an environment, has one job. It tells the user what they are about to do and what they will lose. Write it the way Vercel and Railway do: "**my-project** and all its deployments will be permanently deleted." Then the list. The user already chose the action, so don't teach them anything else.
+
+- **Say what the action does, and name what's lost.** Start with the thing by name and what happens to it. When something is lost, list it by name. The dialog's list does this, so the sentence points at the list ("These volumes … will be lost:"). Don't describe the loss in general terms.
+- **Don't explain the mechanics.** Leave out how Ployz does it, what it can or can't reach, and what happens on the far side.
+- **No version numbers or best-effort caveats.** "If it ran 0.3.1 or later…", "As a best effort…" and "up to about 15 minutes" belong in a changelog. Ship the behaviour, and keep the dialog to what's true for everyone.
+- **No recovery tutorials.** A confirm dialog is the wrong place for a click-path such as "open the volume's Copies, click Use mirror, then deploy". If a recovery flow exists, the screen it lives on offers it when the user needs it.
+- **Don't overstate.** Say "will be lost", not "permanently destroyed and can never be recovered". When the list may be incomplete, say "any volumes only on web-2 will be lost", not that nothing or everything is lost.
+
+The Forget dialog broke every one of these rules. In 0.3.19 it read:
+
+> Ployz takes it out of the cluster without reaching it. A volume with a mirror on another server comes back from it: open the volume's Copies, click Use mirror, then deploy. Volumes with no copy elsewhere are lost. postsell-bf-q4 isn't told it was forgotten. If it runs again as it is, its services keep writing to its own copies, and Ployz never brings that back: run sudo ployz-uninstall on it as soon as it boots. As a best effort, if it and at least one other server ran 0.3.1 or later while it was still connected, and the server that forgot it runs 0.3.1 or later, it stops them itself up to about 15 minutes after its network returns.
+
+Now it reads:
+
+> postsell-bf-q4 will be removed from your cluster. These volumes are only on postsell-bf-q4 and will be lost:
+> `pg-data` · shop/production
+
+| Before | After | Rule |
+|---|---|---|
+| Ployz takes it out of the cluster without reaching it. | postsell-bf-q4 will be removed from your cluster. | Say what it does |
+| Volumes with no copy elsewhere are lost. | These volumes are only on postsell-bf-q4 and will be lost: *(list)* | Name what's lost |
+| postsell-bf-q4 isn't told it was forgotten. If it runs again as it is, its services keep writing to its own copies… | *(cut)* | No mechanics |
+| As a best effort, if it and at least one other server ran 0.3.1 or later… | *(cut)* | No versions or caveats |
+| open the volume's Copies, click Use mirror, then deploy | *(cut)* | No recovery tutorials |
+| run sudo ployz-uninstall on it as soon as it boots | *(cut)* | No overstating. A removed server doesn't matter any more |
 
 ## Keep it consistent
 

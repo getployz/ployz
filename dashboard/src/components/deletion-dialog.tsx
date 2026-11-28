@@ -41,8 +41,8 @@ export type DeletionDialogProps<Evidence> = {
   /** What Cloud knows goes, shown while the servers are asked; the servers' additions to it are new. None for a list only
    *  the servers know, such as a server's volumes. */
   items?: readonly DeletionItem[];
-  /** Replaces "You're deleting from {place}:". */
-  sentence?: ReactNode;
+  /** Replaces "You're deleting from {place}:", given the items as listed now: empty until the check is in. */
+  sentence?: (items: readonly DeletionItem[]) => ReactNode;
   callbacks: DeletionCallbacks<Evidence>;
 };
 
@@ -123,7 +123,7 @@ function OpenDeletionDialog<Evidence>({ onOpenChange, title, place, confirmLabel
             {title}
           </AlertDialogTitle>
           <AlertDialogDescription>
-            {sentence ?? (items.length === 0
+            {sentence?.(items) ?? (items.length === 0
               ? check.status === "ready"
                 ? <><span className="text-foreground">{place}</span> is empty: nothing else goes with it.</>
                 : <>You're <span className="text-destructive">deleting</span> <span className="text-foreground">{place}</span>.</>

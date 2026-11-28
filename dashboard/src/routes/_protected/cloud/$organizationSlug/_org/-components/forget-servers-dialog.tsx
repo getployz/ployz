@@ -46,15 +46,18 @@ export function ForgetServersDialog({ organizationSlug, open, onOpenChange }: {
     const forgotten = await forget({ data: { organizationSlug } });
     if (!forgotten.ok) throw new Error(forgotten.refusal.message);
     clusterReleased();
-    toast.success("Your servers are forgotten. Add a server to deploy again.");
+    toast.success("Servers forgotten. Add a server to deploy again.");
   }
 
   return (
     <DeletionDialog open={open} onOpenChange={onOpenChange} title="Forget all servers?" place={organizationSlug}
       confirmLabel="Forget servers" pendingLabel="Forgetting"
-      sentence={<>Use this when your servers were deleted. Your projects and settings stay. Volume data on these servers is
-        lost: no server is left to hold a mirror of it. Your enrollment tokens are deleted too, so make a new one for each
-        server you add.</>}
+      sentence={(items) => <>
+        Every server in {organizationSlug} will be removed. Your projects and settings stay
+        {items.some((item) => item.kind === "volume")
+          ? <>; these volumes <span className="text-destructive">will be lost</span>:</>
+          : "."}
+      </>}
       callbacks={{ load, confirm }} />
   );
 }

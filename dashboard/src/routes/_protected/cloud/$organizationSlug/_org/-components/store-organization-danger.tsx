@@ -99,7 +99,7 @@ export function StoreOrganizationDanger({ organizationSlug }: { organizationSlug
         />
       </SettingsSection>
       <DeletionDialog open={dialog === "delete"} onOpenChange={(open) => setDialog(open ? "delete" : null)} title={`Delete ${organizationSlug}?`} place={organizationSlug}
-        confirmLabel="Delete" sentence={<>You're <span className="text-destructive">deleting</span> <span className="text-foreground">{organizationSlug}</span>, and unpairing its servers from it.</>}
+        confirmLabel="Delete" sentence={() => <>You're <span className="text-destructive">deleting</span> <span className="text-foreground">{organizationSlug}</span>, and unpairing its servers from it.</>}
         callbacks={{ load: () => Promise.resolve({ items: servers, evidence: null }), confirm: removeOrganization }} />
       <ForgetServersDialog organizationSlug={organizationSlug} open={dialog === "forget"} onOpenChange={(open) => setDialog(open ? "forget" : null)} />
     </>

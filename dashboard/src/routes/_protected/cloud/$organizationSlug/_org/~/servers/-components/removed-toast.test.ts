@@ -10,9 +10,9 @@ describe("removedToast", () => {
     });
   });
 
-  it("says the last Server still runs its containers and how to stop them", () => {
-    expect(removedToast("web-1", { release: { kind: "released" } }).message)
-      .toMatch(/^web-1 removed\. It still runs its containers: run sudo ployz-uninstall on it .* ployz server add --reset/);
+  it("says to add a server once the last one is removed", () => {
+    expect(removedToast("web-1", { release: { kind: "released" } }))
+      .toEqual({ warning: false, message: "web-1 removed. Add a server to deploy again." });
   });
 
   it("says a removal with other Servers left plainly", () => {

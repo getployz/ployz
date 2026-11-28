@@ -170,7 +170,7 @@ function BranchSync({ params, store, branch, environments }: {
       {closing.dialog}
       {/* Everything that goes, by name, and the user types where: a closed Branch doesn't come back. */}
       <DeletionDialog open={asking} onOpenChange={setAsking} title={`Close ${name}?`} place={`${params.projectSlug}/${name}`}
-        sentence={branch.to_parent ? <>
+        sentence={branch.to_parent ? () => <>
           <span className="text-destructive">{plural(branch.to_parent, "change")} not synced to {branch.parent}</span> go with it, and:
         </> : undefined}
         confirmLabel="Close branch" callbacks={{
