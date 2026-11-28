@@ -32,37 +32,9 @@ const FOUNDER_WAIT: Duration = Duration::from_secs(15 * 60);
 /// The prefix also matches 0.3.0 Cloud's "Cloud can't reach this Server yet.".
 const CLOUD_CANT_REACH: &str = "Cloud can't reach this Server";
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum Command {
-    ServerAdd,
-    ServerEnroll,
-}
-
-impl Command {
-    /// The step that recovers an enrollment the Server half finished, as a sentence.
-    pub(crate) fn again(self) -> &'static str {
-        match self {
-            Self::ServerAdd => {
-                "Rerun the same ployz server add command without --reset, keeping all other options"
-            }
-            Self::ServerEnroll => {
-                "Run ployz server enroll again, or use Enroll in Servers > Waiting to join"
-            }
-        }
-    }
-
-    /// [`Self::again`], as a hint after `retry:`.
-    pub(crate) fn retry(self) -> &'static str {
-        match self {
-            Self::ServerAdd => {
-                "rerun the same ployz server add command without --reset (keep all other options)"
-            }
-            Self::ServerEnroll => {
-                "run ployz server enroll again, or use Enroll in Servers > Waiting to join"
-            }
-        }
-    }
-}
+/// The step that recovers an enrollment the Server half finished, as a sentence.
+pub(crate) const AGAIN: &str =
+    "Rerun the same ployz server add command without --reset, keeping all other options";
 
 /// Failures talking to Cloud enroll.
 #[derive(Debug, Error)]
@@ -89,10 +61,9 @@ pub(crate) enum Error {
     )]
     FounderWait,
     #[error(
-        "Cloud {operation} failed; {}.", .command.retry()
+        "Cloud {operation} failed; rerun the same ployz server add command without --reset (keep all other options)."
     )]
     RetrySameCommand {
-        command: Command,
         operation: &'static str,
         #[source]
         cause: Box<dyn std::error::Error + Send + Sync>,
@@ -497,7 +468,6 @@ impl From<ployz_core::Sealing> for Sealing {
 ///
 /// HTTP status, unexpected JSON, or a non-transport HTTP failure.
 pub(crate) async fn enroll(
-    command: Command,
     url: &str,
     token: &CloudEnrollToken,
     identity: &EnrollIdentity,
@@ -518,7 +488,7 @@ pub(crate) async fn enroll(
         )
         .await
         .map_err(|error| {
-            let error = retry_error(command, "enrollment", error);
+            let error = retry_error("enrollment", error);
             match error {
                 Error::CodedConflict { body } => {
                     coded_refusal_status(&body, &[token.as_str().to_owned()], "enrollment")
@@ -573,7 +543,6 @@ pub(crate) async fn enroll(
 ///
 /// HTTP failure, or a reply Cloud's `/api/enroll/callback` never sends.
 pub(crate) async fn callback(
-    command: Command,
     url: &str,
     token: &CloudEnrollToken,
     machine_id: MachineId,
@@ -589,13 +558,12 @@ pub(crate) async fn callback(
         sealing: sealing.map(Sealing::from),
         recovery_backup,
     };
-    let reply = post_callback(command, url, token, &body, "enrollment completion").await?;
+    let reply = post_callback(url, token, &body, "enrollment completion").await?;
     Ok(serde_json::from_slice(&reply)?)
 }
 
 /// Publish a candidate against the authenticated enrollment attempt before completion.
 pub(crate) async fn publish(
-    command: Command,
     url: &str,
     token: &CloudEnrollToken,
     machine_id: MachineId,
@@ -610,7 +578,7 @@ pub(crate) async fn publish(
         sealing: None,
         recovery_backup: None,
     };
-    post_callback(command, url, token, &body, "candidate publication")
+    post_callback(url, token, &body, "candidate publication")
         .await
         .map(|_| ())
 }
@@ -639,7 +607,6 @@ pub(crate) async fn release(
 }
 
 async fn post_callback(
-    command: Command,
     url: &str,
     token: &CloudEnrollToken,
     body: &EnrollCallback<'_>,
@@ -695,7 +662,6 @@ async fn post_callback(
         crate::setup_retry::Error::Permanent(error @ Error::CodedConflict { .. }) => error,
         error @ (crate::setup_retry::Error::Permanent(_)
         | crate::setup_retry::Error::Exhausted { .. }) => Error::RetrySameCommand {
-            command,
             operation,
             cause: Box::new(error),
         },
@@ -853,16 +819,11 @@ fn data_letters(said: &str) -> usize {
         .sum()
 }
 
-fn retry_error(
-    command: Command,
-    operation: &'static str,
-    error: crate::setup_retry::Error<Error>,
-) -> Error {
+fn retry_error(operation: &'static str, error: crate::setup_retry::Error<Error>) -> Error {
     match error {
         crate::setup_retry::Error::Permanent(error) => {
             if matches!(error, Error::Timeout(_) | Error::Http(_)) {
                 Error::RetrySameCommand {
-                    command,
                     operation,
                     cause: Box::new(ResponseLost(Some(error))),
                 }
@@ -874,12 +835,10 @@ fn retry_error(
         crate::setup_retry::Error::Exhausted {
             in_flight: true, ..
         } => Error::RetrySameCommand {
-            command,
             operation,
             cause: Box::new(ResponseLost(None)),
         },
         exhausted => Error::RetrySameCommand {
-            command,
             operation,
             cause: Box::new(exhausted),
         },
@@ -1118,12 +1077,9 @@ mod tests {
                 });
                 let credential = PairingCredential::parse("ppair_FAKEpairing").unwrap();
                 let result = match path {
-                    0 => enroll(Command::ServerAdd, &url, &token(), &identity(), &|_| {})
-                        .await
-                        .map(drop),
+                    0 => enroll(&url, &token(), &identity(), &|_| {}).await.map(drop),
                     1 => {
                         publish(
-                            Command::ServerAdd,
                             &url,
                             &token(),
                             MachineId::random(),
@@ -1135,17 +1091,9 @@ mod tests {
                         )
                         .await
                     }
-                    _ => callback(
-                        Command::ServerEnroll,
-                        &url,
-                        &token(),
-                        MachineId::random(),
-                        &credential,
-                        None,
-                        None,
-                    )
-                    .await
-                    .map(drop),
+                    _ => callback(&url, &token(), MachineId::random(), &credential, None, None)
+                        .await
+                        .map(drop),
                 };
                 server.await.unwrap();
                 let error = result.unwrap_err();
@@ -1194,17 +1142,9 @@ mod tests {
             .unwrap();
         });
         let credential = PairingCredential::parse("ppair_FAKEpairing").unwrap();
-        let error = callback(
-            Command::ServerAdd,
-            &url,
-            &token(),
-            MachineId::random(),
-            &credential,
-            None,
-            None,
-        )
-        .await
-        .unwrap_err();
+        let error = callback(&url, &token(), MachineId::random(), &credential, None, None)
+            .await
+            .unwrap_err();
         server.await.unwrap();
         assert_eq!(error_chain::row(&error), said);
         assert_eq!(
@@ -1253,17 +1193,9 @@ mod tests {
                 }
             });
             let credential = PairingCredential::parse("ppair_FAKEpairing").unwrap();
-            let error = callback(
-                Command::ServerAdd,
-                &url,
-                &token(),
-                MachineId::random(),
-                &credential,
-                None,
-                None,
-            )
-            .await
-            .unwrap_err();
+            let error = callback(&url, &token(), MachineId::random(), &credential, None, None)
+                .await
+                .unwrap_err();
             server.abort();
             assert_eq!(
                 error.to_string(),
@@ -1538,7 +1470,6 @@ mod tests {
             }
         });
         let outcome = enroll(
-            Command::ServerAdd,
             &CloudOrigin::new(&origin).enroll_url(),
             &token(),
             &identity(),
@@ -1726,9 +1657,7 @@ mod tests {
         });
         let origin = CloudOrigin::new(&origin);
         let url = origin.enroll_url();
-        enroll(Command::ServerAdd, &url, &token(), &identity(), &|_| {})
-            .await
-            .unwrap();
+        enroll(&url, &token(), &identity(), &|_| {}).await.unwrap();
         let request = server.await.unwrap();
         let request_line = request.lines().next().unwrap();
         assert_eq!(request_line, "POST /api/enroll HTTP/1.1");
@@ -1757,7 +1686,6 @@ mod tests {
             .unwrap();
         });
         let error = enroll(
-            Command::ServerAdd,
             &CloudOrigin::new(&origin).enroll_url(),
             &token(),
             &identity(),
@@ -1793,7 +1721,6 @@ mod tests {
         });
         let stages = std::cell::RefCell::new(Vec::new());
         let outcome = enroll(
-            Command::ServerAdd,
             &CloudOrigin::new(&origin).enroll_url(),
             &token(),
             &identity(),
@@ -1847,7 +1774,6 @@ mod tests {
         let outcome = tokio::time::timeout(
             answers_after + Duration::from_secs(10),
             enroll(
-                Command::ServerAdd,
                 &CloudOrigin::new(&origin).enroll_url(),
                 &token(),
                 &identity(),
@@ -1900,9 +1826,7 @@ mod tests {
 
     #[tokio::test]
     async fn enrollment_never_reposts_after_losing_a_dispatched_response() {
-        for (timeout, command) in [false, true].into_iter().flat_map(|timeout| {
-            [Command::ServerAdd, Command::ServerEnroll].map(|command| (timeout, command))
-        }) {
+        for timeout in [false, true] {
             let (listener, url) = listen().await;
             let server = tokio::spawn(async move {
                 let (mut stream, _) = listener.accept().await.unwrap();
@@ -1921,7 +1845,7 @@ mod tests {
             });
             let error = tokio::time::timeout(
                 ENROLL_TIMEOUT + Duration::from_secs(10),
-                enroll(command, &url, &token(), &identity(), &|_| {}),
+                enroll(&url, &token(), &identity(), &|_| {}),
             )
             .await
             .expect("lost response must return without retrying")
@@ -1929,14 +1853,7 @@ mod tests {
             let rendered = error_chain::row(&error);
             assert!(rendered.contains("uncertain"), "{rendered}");
             let message = error.to_string();
-            match command {
-                Command::ServerAdd => assert!(message.contains("without --reset"), "{message}"),
-                Command::ServerEnroll => {
-                    assert!(message.contains("ployz server enroll"), "{message}");
-                    assert!(!message.contains("server add"), "{message}");
-                    assert!(!message.contains("--reset"), "{message}");
-                }
-            }
+            assert!(message.contains("without --reset"), "{message}");
             server.await.unwrap();
         }
     }
@@ -1967,7 +1884,6 @@ mod tests {
         let error = tokio::time::timeout(
             crate::setup_retry::WAIT + Duration::from_secs(10),
             enroll(
-                Command::ServerAdd,
                 &format!("http://{address}/api/enroll"),
                 &token(),
                 &identity(),
@@ -2010,7 +1926,6 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(25), async {
                 if stage == "publish" {
                     publish(
-                        Command::ServerAdd,
                         &url,
                         &token(),
                         MachineId::random(),
@@ -2024,7 +1939,6 @@ mod tests {
                     .unwrap();
                 } else {
                     callback(
-                        Command::ServerAdd,
                         &url,
                         &token(),
                         MachineId::random(),
@@ -2061,7 +1975,6 @@ mod tests {
             let credential = PairingCredential::parse("pairing-secret").unwrap();
             let result = if publishing {
                 publish(
-                    Command::ServerAdd,
                     &url,
                     &token(),
                     MachineId::random(),
@@ -2073,17 +1986,9 @@ mod tests {
                 )
                 .await
             } else {
-                callback(
-                    Command::ServerAdd,
-                    &url,
-                    &token(),
-                    MachineId::random(),
-                    &credential,
-                    None,
-                    None,
-                )
-                .await
-                .map(drop)
+                callback(&url, &token(), MachineId::random(), &credential, None, None)
+                    .await
+                    .map(drop)
             };
             result.unwrap();
             server.await.unwrap();
@@ -2149,7 +2054,6 @@ mod tests {
             });
             let credential = PairingCredential::parse("pairing-secret").unwrap();
             callback(
-                Command::ServerAdd,
                 &url,
                 &token(),
                 MachineId::random(),
@@ -2200,7 +2104,6 @@ mod tests {
             let credential = PairingCredential::parse("pairing-secret").unwrap();
             let result = if publishing {
                 publish(
-                    Command::ServerAdd,
                     &url,
                     &token(),
                     MachineId::random(),
@@ -2212,17 +2115,9 @@ mod tests {
                 )
                 .await
             } else {
-                callback(
-                    Command::ServerAdd,
-                    &url,
-                    &token(),
-                    MachineId::random(),
-                    &credential,
-                    None,
-                    None,
-                )
-                .await
-                .map(drop)
+                callback(&url, &token(), MachineId::random(), &credential, None, None)
+                    .await
+                    .map(drop)
             };
             server.abort();
             let error = result.unwrap_err();
@@ -2269,7 +2164,6 @@ mod tests {
             let credential = PairingCredential::parse("pairing-secret").unwrap();
             let result = if publishing {
                 publish(
-                    Command::ServerEnroll,
                     &url,
                     &token(),
                     MachineId::random(),
@@ -2281,23 +2175,13 @@ mod tests {
                 )
                 .await
             } else {
-                callback(
-                    Command::ServerEnroll,
-                    &url,
-                    &token(),
-                    MachineId::random(),
-                    &credential,
-                    None,
-                    None,
-                )
-                .await
-                .map(drop)
+                callback(&url, &token(), MachineId::random(), &credential, None, None)
+                    .await
+                    .map(drop)
             };
             let message = result.unwrap_err().to_string();
-            assert!(!message.contains("server add"), "{message}");
-            assert!(!message.contains("--reset"), "{message}");
-            assert!(message.contains("ployz server enroll"), "{message}");
-            assert!(message.contains("Servers > Waiting to join"), "{message}");
+            assert!(message.contains("ployz server add"), "{message}");
+            assert!(message.contains("without --reset"), "{message}");
             server.await.unwrap();
         }
     }
@@ -2315,7 +2199,6 @@ mod tests {
         });
         let credential = PairingCredential::parse("pairing-secret").unwrap();
         let error = callback(
-            Command::ServerAdd,
             &url,
             &token(),
             MachineId::random(),
@@ -2426,7 +2309,6 @@ mod tests {
                     .unwrap();
             });
             let error = publish(
-                Command::ServerAdd,
                 &url,
                 &token,
                 MachineId::random(),
@@ -2476,7 +2358,6 @@ mod tests {
             let (result, operation) = if publishing {
                 (
                     publish(
-                        Command::ServerAdd,
                         &url,
                         &token(),
                         MachineId::random(),
@@ -2488,17 +2369,9 @@ mod tests {
                 )
             } else {
                 (
-                    callback(
-                        Command::ServerAdd,
-                        &url,
-                        &token(),
-                        MachineId::random(),
-                        &credential,
-                        None,
-                        None,
-                    )
-                    .await
-                    .map(drop),
+                    callback(&url, &token(), MachineId::random(), &credential, None, None)
+                        .await
+                        .map(drop),
                     "enrollment completion",
                 )
             };
@@ -2529,7 +2402,7 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let error = enroll(Command::ServerAdd, &url, &token(), &identity(), &|_| {})
+        let error = enroll(&url, &token(), &identity(), &|_| {})
             .await
             .unwrap_err();
         assert!(

@@ -1,5 +1,4 @@
-//! What one `ployz server add` asks to enroll, read once from the command line or from the
-//! enroll instruction Cloud sends the check-in loop.
+//! What one `ployz server add` asks to enroll, read once from the command line.
 //!
 //! Every flag that shapes the Server is read here, once, with the text it was given as, so the
 //! line `--command` prints repeats exactly the flags the command line or the environment gave
@@ -12,12 +11,8 @@ use std::time::Duration;
 use clap::ArgMatches;
 use clap::parser::ValueSource;
 use ipnet::Ipv4Net;
-use ployz_core::{
-    ClusterName, InspectRequest, MachineLayout, MachineName, MachineRelease, StoragePreparation,
-    ValueError, ZfsDevice,
-};
+use ployz_core::{ClusterName, InspectRequest, MachineName, MachineRelease, StoragePreparation};
 
-use crate::checkin::{EnrollInstruction, EnrollStorage};
 use crate::cli::{Rerun, leaf_matches, string_values};
 use crate::connect::Client;
 use crate::failure::Failure as Error;
@@ -216,27 +211,10 @@ struct Destination {
     remote: RemoteTarget,
 }
 
-/// Where an enrollment reaches the Server it enrolls, and the config it keeps.
-pub(crate) enum Reach {
-    /// The command line, as its root matches: its connection options `--ployz-config`,
-    /// `--connect`, `--context` and `--ssh-timeout`, and what a rerun keeps.
-    CommandLine(ArgMatches),
-    /// This host's daemon over its socket, as the check-in loop enrolls it.
-    ThisHost { config: PathBuf },
-}
-
-/// A value in Cloud's enroll instruction that `server add` refuses before it enrolls.
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum EnrollInstructionError {
-    #[error("Cloud asked for the {field} {value:?}, which can't start with '-'.")]
-    LeadingDash { field: &'static str, value: String },
-    #[error("Cloud asked for ZFS on the device {device:?}.")]
-    ZfsDevice {
-        device: String,
-        #[source]
-        source: ValueError,
-    },
-}
+/// Where an enrollment reaches the Server it enrolls, and the config it keeps: the command
+/// line, as its root matches, with its connection options `--ployz-config`, `--connect`,
+/// `--context` and `--ssh-timeout`, and what a rerun keeps.
+pub(crate) struct Reach(ArgMatches);
 
 impl EnrollPlan {
     pub(crate) fn from_matches(root: &ArgMatches) -> Self {
@@ -259,88 +237,8 @@ impl EnrollPlan {
             }),
             no_install: flag("no-install"),
             show_recovery_code: flag("show-recovery-code"),
-            reach: Reach::CommandLine(root.clone()),
+            reach: Reach(root.clone()),
         }
-    }
-
-    /// What Cloud's enroll `instruction` asks of this host: `server add --yes` through its
-    /// daemon's socket, keeping `config`. A value `server add` refuses as a flag, such as one
-    /// starting with `-`, is refused here; one the engine refuses is left to the engine.
-    pub(crate) fn from_instruction(
-        instruction: &EnrollInstruction,
-        config: PathBuf,
-    ) -> Result<Self, EnrollInstructionError> {
-        let unflagged = |field: &'static str, value: &str| {
-            if value.starts_with('-') && value != "-" {
-                Err(EnrollInstructionError::LeadingDash {
-                    field,
-                    value: value.to_owned(),
-                })
-            } else {
-                Ok(value.to_owned())
-            }
-        };
-        let storage = match &instruction.storage {
-            EnrollStorage::None => StoragePreparation::None,
-            EnrollStorage::Zfs { device } => StoragePreparation::Zfs {
-                device: device
-                    .as_deref()
-                    .map(|device| {
-                        ZfsDevice::parse(device).map_err(|source| {
-                            EnrollInstructionError::ZfsDevice {
-                                device: device.to_owned(),
-                                source,
-                            }
-                        })
-                    })
-                    .transpose()?,
-            },
-        };
-        let policy = &instruction.policy;
-        let mut labels = Vec::new();
-        for (key, value) in &policy.labels {
-            let label = unflagged("label", &format!("{key}={value}"))?;
-            // `--label-add` splits its value at commas.
-            labels.extend(label.split(',').map(str::to_owned));
-        }
-        let shaping = Shaping {
-            name: (!instruction.name.is_empty())
-                .then(|| unflagged("Server name", &instruction.name))
-                .transpose()?,
-            storage: Some(storage),
-            public_ip: Some("auto".to_owned()),
-            wg_endpoints: Vec::new(),
-            wg_mtu: None,
-            labels,
-            region: None,
-            accepts: [
-                Some(policy.accepts_builds),
-                Some(policy.accepts_services),
-                Some(policy.accepts_ingress),
-            ],
-            network: Some(ployz_core::DEFAULT_CLUSTER_NETWORK),
-            cluster_name: instruction
-                .founding_cluster_name
-                .as_deref()
-                .map(|name| unflagged("Cluster name", name))
-                .transpose()?,
-            version: Some(
-                env!("CARGO_PKG_VERSION")
-                    .parse()
-                    .expect("this CLI's release parses"),
-            ),
-            reset: false,
-            yes: true,
-            ingress_closed: instruction.founding_ingress_closed,
-            pasted: Vec::new(),
-        };
-        Ok(Self {
-            shaping,
-            destination: None,
-            no_install: false,
-            show_recovery_code: false,
-            reach: Reach::ThisHost { config },
-        })
     }
 
     pub(crate) fn shaping(&self) -> &Shaping {
@@ -382,63 +280,35 @@ impl EnrollPlan {
 impl Reach {
     /// The config this enrollment reads and saves to.
     pub(crate) fn config(&self) -> PathBuf {
-        match self {
-            Self::CommandLine(root) => crate::context::expand_home(Path::new(
-                leaf_matches(root)
-                    .get_one::<String>("ployz-config")
-                    .expect("ployz-config has a default"),
-            )),
-            Self::ThisHost { config } => config.clone(),
-        }
+        crate::context::expand_home(Path::new(
+            leaf_matches(&self.0)
+                .get_one::<String>("ployz-config")
+                .expect("ployz-config has a default"),
+        ))
     }
 
     /// The connection asked for, which wins over the current context and the local socket.
     pub(crate) fn connect(&self) -> Option<String> {
-        match self {
-            Self::CommandLine(root) => {
-                crate::cli::connection(leaf_matches(root)).map(str::to_owned)
-            }
-            Self::ThisHost { .. } => Some(this_host()),
-        }
+        crate::cli::connection(leaf_matches(&self.0)).map(str::to_owned)
     }
 
     pub(crate) fn ssh_timeout(&self) -> Duration {
-        match self {
-            Self::CommandLine(root) => crate::cli::ssh_timeout(leaf_matches(root)),
-            Self::ThisHost { .. } => crate::connect::DEFAULT_SSH_TIMEOUT,
-        }
+        crate::cli::ssh_timeout(leaf_matches(&self.0))
     }
 
     /// `args` as a command that reaches the same Cluster.
     pub(crate) fn rerun(&self, args: &[&str]) -> Rerun {
-        match self {
-            Self::CommandLine(root) => Rerun::then(root, args),
-            Self::ThisHost { config } => Rerun::for_this_host(config, &this_host(), args),
-        }
+        Rerun::then(&self.0, args)
     }
 
-    /// This command line again; the check-in loop has none.
-    pub(crate) fn again(&self) -> Option<Rerun> {
-        match self {
-            Self::CommandLine(root) => Some(Rerun::again(root)),
-            Self::ThisHost { .. } => None,
-        }
+    /// This command line again.
+    pub(crate) fn again(&self) -> Rerun {
+        Rerun::again(&self.0)
     }
 
     /// The Cluster entry that signs a join waiting for approval.
     pub(crate) async fn entry(&self) -> Result<Client, Error> {
-        match self {
-            Self::CommandLine(root) => {
-                crate::handlers::route::connect(leaf_matches(root), None).await
-            }
-            Self::ThisHost { config } => Ok(crate::connect::connect_with_ssh_timeout(
-                config,
-                Some(&this_host()),
-                None,
-                crate::connect::DEFAULT_SSH_TIMEOUT,
-            )
-            .await?),
-        }
+        crate::handlers::route::connect(leaf_matches(&self.0), None).await
     }
 }
 
@@ -449,11 +319,6 @@ pub(crate) fn remote_target(matches: &ArgMatches) -> RemoteTarget {
         matches.get_one::<String>("ssh-key").cloned(),
         crate::cli::ssh_timeout(matches),
     )
-}
-
-/// This host's daemon socket, as a `--connect` value.
-fn this_host() -> String {
-    format!("unix://{}", MachineLayout::production().socket().display())
 }
 
 /// The `--cluster-name` value given, as a Cluster Name.

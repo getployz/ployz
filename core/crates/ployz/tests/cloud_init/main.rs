@@ -1695,7 +1695,7 @@ async fn a_token_of_another_kind_is_refused_before_any_request() {
             Some(FLEET),
             FLEET,
             None,
-            ["PLOYZ_ENROLL_TOKEN", "PLOYZ_FLEET_TOKEN"],
+            ["PLOYZ_ENROLL_TOKEN", "no longer takes"],
         ),
         (
             Some(ORGANIZATION),
@@ -1707,7 +1707,7 @@ async fn a_token_of_another_kind_is_refused_before_any_request() {
             None,
             FLEET,
             Some(fleet_file),
-            ["--token-file", "PLOYZ_FLEET_TOKEN"],
+            ["--token-file", "no longer takes"],
         ),
     ] {
         let cloud = EnrollListen::script([]).await;

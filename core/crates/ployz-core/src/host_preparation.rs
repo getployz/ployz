@@ -1,5 +1,4 @@
-//! Host preparation as ployzd records it in `prepare/state.json`, and as the check-in loop reads
-//! it back.
+//! Host preparation as ployzd records it in `prepare/state.json`.
 //!
 //! Each step is one object: a `state` tag beside `started_at` and `finished_at`, as ployzd has
 //! always written it, so every reader of an earlier release still parses what this one writes.
@@ -134,32 +133,6 @@ pub enum ZfsBuild {
     },
 }
 
-/// The two steps of [`PrepState`], which is all the check-in loop reads of it. A projection, not
-/// a second record: it ignores `added_packages`, `zfs_build` and the fields after them, so a file
-/// ployzd itself can't read back (a missing `added_packages`, a build route this release doesn't
-/// know) still tells the check-in where each step stands. A host with no record reads as both steps
-/// not started.
-#[derive(Debug, Default)]
-pub struct PrepSteps {
-    pub docker: PrepStep<DockerOutcome>,
-    pub zfs: PrepStep<ZfsOutcome>,
-}
-
-impl<'de> Deserialize<'de> for PrepSteps {
-    /// Reads through a struct that serde names `PrepState`, as the check-in's own record was
-    /// called before it moved here, so the "expected struct PrepState" a malformed file produces
-    /// reads as it always has.
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        struct PrepState {
-            docker: PrepStep<DockerOutcome>,
-            zfs: PrepStep<ZfsOutcome>,
-        }
-        let PrepState { docker, zfs } = PrepState::deserialize(deserializer)?;
-        Ok(Self { docker, zfs })
-    }
-}
-
 /// Why `prepare/state.json` didn't read.
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
@@ -169,8 +142,7 @@ pub enum StateError {
     Malformed(#[source] serde_json::Error),
 }
 
-/// Reads the preparation record at `path` as `S`: the whole [`PrepState`] for ployzd, or the
-/// [`PrepSteps`] a check-in reports from. `None` when there is no file.
+/// Reads the preparation record at `path` as `S`. `None` when there is no file.
 ///
 /// # Errors
 ///

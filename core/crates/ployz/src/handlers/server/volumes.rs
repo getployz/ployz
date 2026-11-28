@@ -271,7 +271,7 @@ fn table(kept: &[KeptVolume], empty: &str) -> Table {
             printable(&format!("{}/{}", volume.namespace, volume.service)),
             printable(volume.path.as_str()),
             DateTime::from_timestamp(volume.kept_at, 0)
-                .map_or_else(|| "-".to_owned(), |at| crate::checkin::ago(at, now)),
+                .map_or_else(|| "-".to_owned(), |at| crate::ui::ago(at, now)),
             volume.size_bytes.map_or_else(|| "unknown".to_owned(), size),
         ]);
     }

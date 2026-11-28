@@ -449,7 +449,7 @@ One thing an AI agent asks of Ployz, through one of four surfaces: hosted `/mcp`
 _Avoid_: Request (one command makes many), session (a session groups calls)
 
 **Reason**:
-Why an agent made a call: `--why` on the CLI, `intent` on MCP. It is required only when an AI agent is detected. `AI_AGENT` names the agent, else the `is-ai-agent` crate reads the environment, and `AI_AGENT=off` turns detection off. People, scripts and CI with no agent marker are neither asked for a Reason nor recorded. An agent marker set together with `CI` is still an agent, so the Reason is still required. Signed out, or run with `--connect` or `--context`, the Reason is still required and nothing is reported. On MCP every tool takes a required `intent`, and a call without one is refused. `ployz mcp` itself, help, `--version`, `completion`, `server checkin` and Internal verbs need no Reason.
+Why an agent made a call: `--why` on the CLI, `intent` on MCP. It is required only when an AI agent is detected. `AI_AGENT` names the agent, else the `is-ai-agent` crate reads the environment, and `AI_AGENT=off` turns detection off. People, scripts and CI with no agent marker are neither asked for a Reason nor recorded. An agent marker set together with `CI` is still an agent, so the Reason is still required. Signed out, or run with `--connect` or `--context`, the Reason is still required and nothing is reported. On MCP every tool takes a required `intent`, and a call without one is refused. `ployz mcp` itself, help, `--version`, `completion` and Internal verbs need no Reason.
 _Avoid_: Intent and why as separate concepts, justification
 
 **Deploy Progress**:
@@ -531,18 +531,6 @@ _Avoid_: allocator role, global reservation, Cluster IPAM
 **Cloud Enroll Token**:
 Cloud's Organization-scoped bearer that authorizes copy-paste founding and joining. It does not own enrollment lifecycle and is not a Pairing Credential or Management Capability.
 _Avoid_: pairing token, API key, join URL as identity
-
-**Fleet Token**:
-Cloud's Organization-scoped `pflt_` secret a signed-in member makes so many hosts can carry it and check in as Waiting Servers to ask to join one Organization. It admits a host to the waiting list, never to a Cluster. `ployz server token` makes, lists and revokes it by its two-word name; the secret is shown once. Expiry or revoke stops new hosts and removes the token's Waiting Servers that have no open Server Enrollment, so their check-in loops end. Revoke removes them at once, and expiry on each host's next check-in. Enrollments already started finish, and Servers already in stay. It is not a Cloud Enroll Token or membership.
-_Avoid_: Cloud Enroll Token, Enrollment token, join token, bootstrap token, API key
-
-**Waiting Server**:
-A host that has a Fleet Token and checks in with Cloud over HTTP pull until an operator approves, rejects, or the token ends. It holds no Cluster state and runs no daemon besides preparation; the check-in loop ends at enroll, reject, revoke, or expiry. A reject doesn't stop a host once Cloud has heard it report joining or publishing, without a failure, for its open Server Enrollment; it finishes joining. A reject that lands after the daemon commits but before that report reaches Cloud still cancels it.
-_Avoid_: pending Machine, unenrolled Machine, Cluster member
-
-**Check-in Key**:
-The ed25519 key a Waiting Server generates and keeps under `/var/lib/ployz-checkin` to sign each check-in, so Cloud knows repeat check-ins come from the same host. It is not the Management Identity and never reaches the management plane.
-_Avoid_: Management Identity, Machine key, WireGuard key
 
 **First Key**:
 The one Device or passkey a fresh Server trusts to found its Cluster or approve its join, from the `pk1_` key its install line carries or `sudo ployz key add`. It sits beside the data directory, Waiting until the Server founds or enrolls, then Spent; a reset or uninstall spends it too, and a Spent First Key never founds or approves anything. Replacing a Waiting or Spent one asks at the Server's own terminal. After enrollment the Server trusts only what its Cluster does.

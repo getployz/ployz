@@ -241,7 +241,6 @@ pub fn generated_files() -> [(&'static str, String); 8] {
 enum Constant {
     Number(i128),
     Text(&'static str),
-    List(&'static [&'static str]),
 }
 
 impl Constant {
@@ -249,25 +248,12 @@ impl Constant {
         match self {
             Self::Number(number) => number.to_string(),
             Self::Text(text) => format!("{text:?}"),
-            Self::List(items) => format!("Object.freeze({})", Self::tuple(items)),
-        }
-    }
-
-    fn tuple(items: &[&str]) -> String {
-        let items: Vec<String> = items.iter().map(|item| format!("{item:?}")).collect();
-        format!("[{}]", items.join(", "))
-    }
-
-    fn declaration(&self) -> String {
-        match self {
-            Self::List(items) => format!("readonly {}", Self::tuple(items)),
-            Self::Number(_) | Self::Text(_) => self.value(),
         }
     }
 }
 
 fn cloud_contract_constants() -> Vec<(&'static str, Constant)> {
-    use Constant::{List, Number, Text};
+    use Constant::{Number, Text};
     use ployz_core::cloud_contract as contract;
     vec![
         ("UPLOAD_LIMIT", Number(contract::UPLOAD_LIMIT as i128)),
@@ -279,40 +265,6 @@ fn cloud_contract_constants() -> Vec<(&'static str, Constant)> {
         ("ERROR_CODE_HEADER", Text(contract::ERROR_CODE_HEADER)),
         ("CLIENT_ID", Text(contract::CLIENT_ID)),
         ("MANIFEST_FORMAT", Number(contract::MANIFEST_FORMAT.into())),
-        (
-            "CHECKIN_PROTOCOL_VERSION",
-            Number(contract::CHECKIN_PROTOCOL_VERSION.into()),
-        ),
-        (
-            "MAX_SKEW_SECONDS",
-            Number(contract::MAX_SKEW_SECONDS.into()),
-        ),
-        (
-            "CHECKIN_WAIT_SECONDS",
-            Number(contract::CHECKIN_WAIT_SECONDS.into()),
-        ),
-        ("ENROLL_OPTIONS", List(contract::ENROLL_OPTIONS)),
-        ("PROBE_WINDOW_MS", Number(contract::PROBE_WINDOW_MS.into())),
-        (
-            "PROBE_FIRST_ATTEMPT_MS",
-            Number(contract::PROBE_FIRST_ATTEMPT_MS.into()),
-        ),
-        (
-            "PROBE_ATTEMPT_EVERY_MS",
-            Number(contract::PROBE_ATTEMPT_EVERY_MS.into()),
-        ),
-        (
-            "PROBE_ATTEMPT_TIMEOUT_MS",
-            Number(contract::PROBE_ATTEMPT_TIMEOUT_MS.into()),
-        ),
-        (
-            "PROBE_GREETING_READ_MS",
-            Number(contract::PROBE_GREETING_READ_MS.into()),
-        ),
-        (
-            "PROBE_GREETING_LENGTH",
-            Number(contract::PROBE_GREETING_LENGTH as i128),
-        ),
         ("INGRESS_VERIFY_PATH", Text(contract::INGRESS_VERIFY_PATH)),
         ("HOSTNAME_VERIFY_PATH", Text(contract::HOSTNAME_VERIFY_PATH)),
         (
@@ -334,9 +286,7 @@ fn cloud_contract_files() -> [(&'static str, String); 3] {
     let constants = cloud_contract_constants();
     let declarations: String = constants
         .iter()
-        .map(|(name, constant)| {
-            format!("export declare const {name}: {};\n", constant.declaration())
-        })
+        .map(|(name, constant)| format!("export declare const {name}: {};\n", constant.value()))
         .collect();
     let esm: String = constants
         .iter()

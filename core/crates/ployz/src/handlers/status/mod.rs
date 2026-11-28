@@ -7,7 +7,7 @@ use std::borrow::Cow;
 use std::time::Duration;
 
 use clap::{ArgMatches, Command};
-use ployz_core::{LocalMachinePhase, RpcErrorCode, error_chain};
+use ployz_core::{RpcErrorCode, error_chain};
 use ployz_store::{
     DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery, EnvironmentSummary,
     NamespaceQuery,
@@ -18,7 +18,6 @@ use super::link::{Identity, identity, scope};
 use super::status_servers::UNCHECKED;
 use super::store::{next, reachable, scoped};
 use super::{Error, config_path, leaf_matches};
-use crate::checkin::{LocalCheckin, Paths, Seen};
 use crate::cloud::account::StoreCallError;
 use crate::scope::Scope;
 use crate::ui::{Cell, Fields, Next, Tone};
@@ -42,33 +41,6 @@ struct Staged {
     version: String,
 }
 
-/// This host's check-in record, and whether its Machine left the Cluster since it joined.
-#[derive(Serialize)]
-struct ThisServer {
-    #[serde(flatten)]
-    checkin: LocalCheckin,
-    /// The check-in loop saw this server join, and its daemon now runs no Machine, as after
-    /// `ployz server rm` resets it. The stopped loop never rewrites its record.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    left: bool,
-    /// A check-in loop ran here and none runs now, so the record no longer changes.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    stopped: bool,
-}
-
-impl ThisServer {
-    fn read(checkin: LocalCheckin, left: bool, loop_stopped: bool) -> Self {
-        // A loop that ended or joined meant to stop; one that didn't left its last answer behind.
-        let stopped =
-            loop_stopped && checkin.view.answer != Seen::Joined && !checkin.headline().ended;
-        Self {
-            checkin,
-            left,
-            stopped,
-        }
-    }
-}
-
 /// This host's Machine key and its fingerprint.
 #[derive(Serialize)]
 struct ThisMachine {
@@ -78,8 +50,6 @@ struct ThisMachine {
 
 #[derive(Serialize)]
 struct Status {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    this_server: Option<ThisServer>,
     #[serde(skip_serializing_if = "Option::is_none")]
     this_machine: Option<ThisMachine>,
     identity: Option<Identity>,
@@ -101,8 +71,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
     crate::context::Config::load_or_empty(config_path(matches)?)?;
     let local = super::runtime()
         .ok()
-        .and_then(|runtime| runtime.block_on(crate::checkin::local_machine(LOCAL_INSPECT)));
-    let this_server = this_server(local.as_ref());
+        .and_then(|runtime| runtime.block_on(local_machine()));
     let this_machine = this_machine(local.as_ref());
     let store = reachable(root)?;
     let identity = store.as_ref().map(identity).transpose()?;
@@ -221,11 +190,8 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
                 .first()
                 .map(|deployment| super::deploy::hint_for(matches, deployment))
         })
-        .or_else(|| {
-            (identity.is_none() && this_server.is_none()).then(|| "ployz login".to_owned())
-        });
+        .or_else(|| identity.is_none().then(|| "ployz login".to_owned()));
     let status = Status {
-        this_server,
         this_machine,
         identity,
         scope,
@@ -246,23 +212,34 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
 /// How long `status` waits for this host's daemon to say whether it still runs a Machine.
 const LOCAL_INSPECT: Duration = Duration::from_secs(3);
 
-fn this_server(local: Option<&ployz_core::MachineDetails>) -> Option<ThisServer> {
-    let path = Paths::production().status();
-    let checkin = LocalCheckin::read(&path)
-        .inspect_err(|error| {
-            crate::ui::warn(format!("Could not read {}: {error}", path.display()));
-        })
-        .ok()
-        .flatten()?;
-    let left = checkin.view.answer == Seen::Joined
-        && local.is_some_and(|details| {
-            matches!(
-                details.phase,
-                LocalMachinePhase::Uninitialized | LocalMachinePhase::Resetting
+/// This host's Machine, if its daemon answers on the local socket within [`LOCAL_INSPECT`].
+async fn local_machine() -> Option<ployz_core::MachineDetails> {
+    use crate::context::{Connection, ConnectionSource, SelectedConnections};
+    use ployz_core::{InspectRequest, op};
+
+    let inspect = async {
+        let connection = Connection::unix(ployz_core::MachineLayout::production().socket()).ok()?;
+        let mut client = crate::connect::connect_selected_with(
+            SelectedConnections {
+                source: ConnectionSource::LocalSocket,
+                connections: vec![connection],
+            },
+            std::sync::Arc::new(crate::connect::SystemConnector::default()),
+        )
+        .await
+        .ok()?;
+        client
+            .call::<op::Inspect>(
+                InspectRequest::default(),
+                crate::cluster::Call::read().waiting(crate::cluster::Wait::standard()),
             )
-        });
-    let stopped = crate::checkin::loop_stopped(&Paths::production().checkin_dir);
-    Some(ThisServer::read(checkin, left, stopped))
+            .await
+            .ok()
+    };
+    tokio::time::timeout(LOCAL_INSPECT, inspect)
+        .await
+        .ok()
+        .flatten()
 }
 
 fn this_machine(local: Option<&ployz_core::MachineDetails>) -> Option<ThisMachine> {
@@ -276,7 +253,6 @@ fn this_machine(local: Option<&ployz_core::MachineDetails>) -> Option<ThisMachin
 #[cfg(test)]
 pub(in crate::handlers) fn rendered(attention: Vec<Attention>) -> String {
     let status = Status {
-        this_server: None,
         this_machine: None,
         identity: Some(Identity {
             credential: "local",
@@ -297,52 +273,6 @@ pub(in crate::handlers) fn rendered(attention: Vec<Attention>) -> String {
 
 fn status_record(status: &Status) -> Fields {
     let mut record = Fields::new();
-    if let Some(ThisServer { left: true, .. }) = &status.this_server {
-        record.push(
-            "this server",
-            Cell::status("Not in a Cluster", Tone::Change),
-        );
-    } else if let Some(ThisServer {
-        checkin, stopped, ..
-    }) = &status.this_server
-    {
-        let crate::checkin::Headline {
-            title: headline,
-            ended,
-        } = checkin.headline();
-        let tone = match (checkin.view.answer, ended) {
-            (Seen::Joined, _) => Tone::Good,
-            (_, true) => Tone::Bad,
-            (_, false) => Tone::Change,
-        };
-        if *stopped {
-            record.push("this server", Cell::status("Check-in stopped", Tone::Bad));
-            record.push("last answer", Cell::status(headline, tone));
-        } else {
-            record.push("this server", Cell::status(headline, tone));
-        }
-        for blocker in &checkin.view.blockers {
-            record.push("blocked", Cell::status(&blocker.message, Tone::Bad));
-        }
-        if let Some(message) = checkin
-            .view
-            .message
-            .as_deref()
-            .filter(|_| checkin.says_why())
-        {
-            record.push("reason", message);
-        }
-        if *stopped {
-            record.push(
-                "check-in",
-                "Not running. See why with `sudo systemctl status ployz-checkin`, then run `sudo ployz server checkin --install`.",
-            );
-        }
-        record.push(
-            "checked in",
-            crate::checkin::ago(checkin.view.at, chrono::Utc::now()),
-        );
-    }
     if let Some(machine) = &status.this_machine {
         record.push("wireguard key", &machine.fingerprint);
     }
@@ -426,67 +356,10 @@ fn status_record(status: &Status) -> Fields {
 mod tests {
     use super::*;
 
-    /// The check-in record a Fleet Token host kept after `ployz server rm` reset it.
-    const JOINED: &str = r#"{
-        "answer": "joined",
-        "at": "2026-10-20T22:29:15.665202151Z",
-        "prep": {"docker": "ready", "zfs": "ready"},
-        "blockers": [],
-        "prepare_retries": 0,
-        "attempt": {"attemptId": "attempt-1", "stage": "publishing"}
-    }"#;
-
-    /// The check-in record of a host still waiting for approval.
-    const WAITING: &str = r#"{
-        "answer": "wait",
-        "at": "2026-10-22T01:21:48Z",
-        "prep": {"docker": "ready", "zfs": "ready"},
-        "blockers": [],
-        "prepare_retries": 0
-    }"#;
-
-    fn status_on(left: bool) -> String {
-        status_of(JOINED, left, false)
-    }
-
-    fn status_of(record: &str, left: bool, stopped: bool) -> String {
-        let status = Status {
-            this_server: Some(ThisServer::read(
-                serde_json::from_str(record).unwrap(),
-                left,
-                stopped,
-            )),
-            this_machine: None,
-            identity: None,
-            scope: Scope::default(),
-            environment: None,
-            staged: None,
-            deploying: Vec::new(),
-            attention: Vec::new(),
-        };
-        let mut out = Vec::new();
-        status_record(&status).write(&mut out, false).unwrap();
-        anstream::adapter::strip_str(&String::from_utf8(out).unwrap()).to_string()
-    }
-
-    #[test]
-    fn a_reset_server_is_not_in_a_cluster_whatever_its_check_in_last_saw() {
-        assert_eq!(
-            status_on(true),
-            "this server = Not in a Cluster\nsigned in as = no one\n"
-        );
-        assert!(
-            status_on(false).starts_with("this server = Joined\nchecked in = "),
-            "{}",
-            status_on(false)
-        );
-    }
-
     #[test]
     fn status_on_a_server_shows_the_fingerprint_device_enforce_prints() {
         let key = ployz_core::WireGuardPublicKey([3; 32]);
         let status = Status {
-            this_server: None,
             this_machine: Some(ThisMachine {
                 wireguard_key: key.to_string(),
                 fingerprint: key.fingerprint(),
@@ -506,68 +379,6 @@ mod tests {
                 "wireguard key = {}\nsigned in as = no one\n",
                 key.fingerprint()
             )
-        );
-    }
-
-    /// The record a loop left when it found no ployzd and exited.
-    const NO_PLOYZD: &str = r#"{
-        "answer": "no_ployzd",
-        "message": "No ployzd on PATH. Run sudo ployz server checkin --install.",
-        "at": "2026-10-22T01:21:48Z",
-        "blockers": [],
-        "prepare_retries": 0
-    }"#;
-
-    const STOPPED: &str = "check-in = Not running. See why with `sudo systemctl status ployz-checkin`, then run `sudo ployz server checkin --install`.\n";
-
-    #[test]
-    fn a_waiting_server_whose_check_in_loop_stopped_says_so_and_what_it_last_saw() {
-        assert!(
-            status_of(WAITING, false, true).starts_with(&format!(
-                "this server = Check-in stopped\nlast answer = Waiting for approval\n{STOPPED}checked in = "
-            )),
-            "{}",
-            status_of(WAITING, false, true)
-        );
-        assert!(
-            status_of(WAITING, false, false)
-                .starts_with("this server = Waiting for approval\nchecked in = "),
-            "{}",
-            status_of(WAITING, false, false)
-        );
-        assert!(status_of(JOINED, false, true).starts_with("this server = Joined\n"));
-    }
-
-    #[test]
-    fn json_says_stopped_only_where_the_text_does() {
-        let json = |record| {
-            serde_json::to_value(ThisServer::read(
-                serde_json::from_str(record).unwrap(),
-                false,
-                true,
-            ))
-            .unwrap()
-        };
-        assert_eq!(
-            json(WAITING).get("stopped"),
-            Some(&serde_json::Value::Bool(true))
-        );
-        assert!(json(JOINED).get("stopped").is_none());
-        assert!(
-            json(&WAITING.replace(r#""wait""#, r#""stop""#))
-                .get("stopped")
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn a_stopped_loop_keeps_the_reason_it_recorded() {
-        assert!(
-            status_of(NO_PLOYZD, false, true).starts_with(&format!(
-                "this server = Check-in stopped\nlast answer = No ployzd\nreason = No ployzd on PATH. Run sudo ployz server checkin --install.\n{STOPPED}checked in = "
-            )),
-            "{}",
-            status_of(NO_PLOYZD, false, true)
         );
     }
 }

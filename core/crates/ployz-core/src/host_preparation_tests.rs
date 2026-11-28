@@ -201,27 +201,15 @@ fn a_state_file_an_older_daemon_wrote_reads_with_the_later_fields_defaulted() {
         })
     );
     assert_eq!(state.zfs, PrepStep::NotStarted);
-    let steps: PrepSteps = serde_json::from_str(older).unwrap();
-    assert_eq!(steps.docker, state.docker);
-    assert_eq!(steps.zfs, PrepStep::NotStarted);
-}
-
-#[test]
-fn the_check_in_reads_the_steps_in_the_bytes_ployzd_writes() {
-    let steps: PrepSteps = serde_json::from_str(WRITTEN_BY_PLOYZD).unwrap();
-    let state = written_state();
-    assert_eq!(steps.docker, state.docker);
-    assert_eq!(steps.zfs, state.zfs);
 }
 
 const STEPS: &str = r#""docker": {"state": "ready", "finished_at": "2026-10-16T00:00:00Z"}, "zfs": {"state": "off", "finished_at": "2026-10-16T00:00:00Z"}"#;
 
-/// Shapes of `state.json` each reader takes, by what each does with them. ployzd refuses what it
-/// can't read back whole and starts from nothing; the check-in reads only the two steps, so it
-/// still reads what ployzd refuses outside them.
+/// Shapes of `state.json` ployzd takes. It refuses what it can't read back whole and starts from
+/// nothing.
 #[test]
-fn the_state_file_shapes_each_reader_accepts_and_refuses() {
-    let both = [
+fn the_state_file_shapes_ployzd_accepts_and_refuses() {
+    let read = [
         format!("{{{STEPS}, \"added_packages\": []}}"),
         format!("{{{STEPS}, \"added_packages\": [], \"zfs_build\": null}}"),
         format!("{{{STEPS}, \"added_packages\": [], \"future\": {{\"nested\": [1]}}}}"),
@@ -229,7 +217,7 @@ fn the_state_file_shapes_each_reader_accepts_and_refuses() {
         r#"{"docker": {"state": "paused"}, "zfs": {"state": "installing"}, "added_packages": []}"#
             .to_owned(),
     ];
-    let steps_only = [
+    let refused = [
         format!("{{{STEPS}}}"),
         format!("{{{STEPS}, \"added_packages\": \"dkms\"}}"),
         format!("{{{STEPS}, \"added_packages\": [], \"zfs_build\": {{\"route\": \"rpm\"}}}}"),
@@ -243,17 +231,11 @@ fn the_state_file_shapes_each_reader_accepts_and_refuses() {
         "[]",
         "",
     ];
-    for text in both.iter().map(String::as_str) {
+    for text in read.iter().map(String::as_str) {
         assert!(serde_json::from_str::<PrepState>(text).is_ok(), "{text}");
-        assert!(serde_json::from_str::<PrepSteps>(text).is_ok(), "{text}");
     }
-    for text in steps_only.iter().map(String::as_str) {
+    for text in refused.iter().map(String::as_str).chain(neither) {
         assert!(serde_json::from_str::<PrepState>(text).is_err(), "{text}");
-        assert!(serde_json::from_str::<PrepSteps>(text).is_ok(), "{text}");
-    }
-    for text in neither {
-        assert!(serde_json::from_str::<PrepState>(text).is_err(), "{text}");
-        assert!(serde_json::from_str::<PrepSteps>(text).is_err(), "{text}");
     }
 }
 
@@ -281,7 +263,6 @@ fn reading_the_state_file_tells_a_missing_file_from_one_that_does_not_read() {
         read_state::<PrepState>(&path).unwrap(),
         Some(written_state())
     );
-    assert!(read_state::<PrepSteps>(&path).unwrap().is_some());
 
     fs::write(&path, r#"{"docker": {"state": "ready"}}"#).unwrap();
     assert!(matches!(
@@ -295,36 +276,6 @@ fn reading_the_state_file_tells_a_missing_file_from_one_that_does_not_read() {
         read_state::<PrepState>(&directory),
         Err(StateError::Unreadable(_))
     ));
-}
-
-#[test]
-fn the_check_in_reader_names_the_record_it_expected_as_it_always_has() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("state.json");
-    for (bytes, expected) in [
-        (
-            "null",
-            "invalid type: null, expected struct PrepState at line 1 column 4",
-        ),
-        (
-            "123",
-            "invalid type: integer `123`, expected struct PrepState at line 1 column 3",
-        ),
-        (
-            "[]",
-            "invalid length 0, expected struct PrepState with 2 elements at line 1 column 2",
-        ),
-        (
-            "\"abc\"",
-            "invalid type: string \"abc\", expected struct PrepState at line 1 column 5",
-        ),
-    ] {
-        fs::write(&path, bytes).unwrap();
-        let Err(StateError::Malformed(error)) = read_state::<PrepSteps>(&path) else {
-            panic!("{bytes} read");
-        };
-        assert_eq!(error.to_string(), expected);
-    }
 }
 
 #[test]

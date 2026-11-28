@@ -22,9 +22,8 @@ const PREPARE_ZFS_DIR_NAME: &str = "zfs";
 
 /// The directories a Machine's files live under, and the files each holds.
 ///
-/// A Machine keeps its sockets in the run directory, its state in the data directory, and the
-/// Fleet Token in the config directory. The Machine Pool file, its device ownership marker and the
-/// check-in directory sit beside the data directory.
+/// A Machine keeps its sockets in the run directory and its state in the data directory. The
+/// Machine Pool file and its device ownership marker sit beside the data directory.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MachineLayout {
     run_dir: PathBuf,
@@ -111,14 +110,14 @@ impl MachineLayout {
         self.beside_data_dir(DEVICE_POOL_MARKER_NAME)
     }
 
-    /// The check-in loop's key, status and lock. It stays out of the data directory, which ployzd
-    /// refuses to claim when it holds foreign files.
+    /// The key, status and lock of the check-in loop that releases before Fleet Tokens were
+    /// removed ran on a waiting host, which uninstall still removes.
     #[must_use]
     pub fn checkin_dir(&self) -> PathBuf {
         self.beside_data_dir(CHECKIN_DIR_NAME)
     }
 
-    /// The Fleet Token a host checks in with.
+    /// The Fleet Token a waiting host checked in with, which uninstall still removes.
     #[must_use]
     pub fn fleet_token(&self) -> PathBuf {
         self.config_dir.join(FLEET_TOKEN_NAME)
@@ -130,7 +129,7 @@ impl MachineLayout {
         self.data_dir.join(PREPARE_DIR_NAME)
     }
 
-    /// The record of each preparation step, written by ployzd and read by the check-in loop.
+    /// The record of each preparation step, written by ployzd.
     #[must_use]
     pub fn prepare_state(&self) -> PathBuf {
         self.prepare_dir().join(PREPARE_STATE_NAME)

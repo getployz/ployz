@@ -9,7 +9,6 @@ fn an_ingress_failure_without_deploy_evidence_keeps_its_headline() {
         .try_get_matches_from(["ployz", "server", "add", "root@host"])
         .unwrap();
     let cloud = crate::enrollment::cloud::ingress_incomplete(
-        crate::cloud::enroll::Command::ServerAdd,
         &crate::enrollment::EnrollPlan::from_matches(&root),
         failure(),
     );
