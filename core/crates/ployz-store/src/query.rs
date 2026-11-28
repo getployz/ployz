@@ -238,6 +238,9 @@ queries! {
     /// A pull request's PR Environments and GitHub check.
     PullRequest(crate::PullRequestQuery) -> crate::PullRequestView
         => crate::pull_request::view(tx, who, q);
+    /// A repository's previews in a Project: each pull request's, the cap, the settings.
+    Previews(crate::PreviewsQuery) -> crate::PreviewsView
+        => crate::pull_request::previews(tx, who, trusted, q);
     /// Which of a Server's preview Namespaces are open: Cloud closes the others there.
     OpenPreviews(crate::OpenPreviewsQuery) -> crate::OpenPreviewsView
         => crate::pull_request::open_previews(tx, who, q);

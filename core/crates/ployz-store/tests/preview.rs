@@ -13,10 +13,11 @@ use ployz_store::testing::backend;
 use ployz_store::{
     Actor, Admit, AdmitRemoval, AuthorizedRepository, Automated, BranchHead, ClosePreview,
     ConfigStore, CreateBranch, CreateGitService, CreateProject, DeployPullRequestPreview,
-    DeploymentId, EnvironmentId, EnvironmentName, EnvironmentRef, OpenPreviewsQuery,
-    OrganizationId, PrPlansQuery, ProjectId, ProjectName, PullRequest, RuleQuery, RunEvidence,
-    RunnerId, SealingRecipient, ServiceLineageId, SetEnvironmentProtected, SetPrPlan, ShutDown,
-    Signers, Sweep, SystemEvent, Trusted, Written,
+    DeploymentId, EnvironmentId, EnvironmentName, EnvironmentRef, NotDeployed, OpenPreviewsQuery,
+    OrganizationId, PrPlansQuery, PreviewOutcome, PreviewsQuery, ProjectId, ProjectName,
+    PullRequest, PullRequestQuery, RuleQuery, RunEvidence, RunnerId, SealingRecipient,
+    ServiceLineageId, SetEnvironmentProtected, SetPrPlan, ShutDown, Signers, Sweep, SystemEvent,
+    Trusted, Written,
 };
 
 const HEAD: &str = "1111111111111111111111111111111111111111";
@@ -1720,6 +1721,124 @@ fn closing_a_preview_frees_its_place_and_its_pull_request_can_deploy_again() {
     let again = deploy(&store, &who, 5, &trusted).unwrap();
     assert_eq!(again.admitted.len(), 1, "{again:?}");
     assert!(previewing(&store, &who, 5));
+}
+
+/// Pull request `number`'s row in `view`.
+fn row(view: &ployz_store::PreviewsView, number: u64) -> &ployz_store::PreviewRow {
+    view.pull_requests
+        .iter()
+        .find(|row| row.number == backend::pr_number(number))
+        .unwrap()
+}
+
+/// Why pull request `number` of `view` has no preview.
+fn why_not(view: &ployz_store::PreviewsView, number: u64) -> Option<NotDeployed> {
+    match &row(view, number).preview {
+        PreviewOutcome::NotDeployed { why } => why.clone(),
+        other @ (PreviewOutcome::Deploying { .. }
+        | PreviewOutcome::Live { .. }
+        | PreviewOutcome::Closed) => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn each_pull_request_shows_its_preview_or_why_it_has_none() {
+    let (store, who) = shop();
+    previews(&store, &who, 2);
+    let trusted = homes(&['a']);
+    let query = PreviewsQuery {
+        project: None,
+        repository: backend::repo_name("acme/web"),
+        number: None,
+    };
+    let live = opened(&store, &who, (5, "main"), &trusted);
+    run(&store, &live.admitted.first().unwrap().deployment.id);
+    let mut stranger = facts(6, true, "main", "2026-01-01T00:00:00Z");
+    stranger.author = "mallory".into();
+    stranger.author_id = Some(ployz_store::GithubUserId::parse(999_999).unwrap());
+    pull(&store, &who, stranger, &trusted);
+    pull(
+        &store,
+        &who,
+        facts(7, true, "staging", "2026-01-01T00:00:00Z"),
+        &trusted,
+    );
+    let deploying = opened(&store, &who, (8, "main"), &trusted);
+    pull(
+        &store,
+        &who,
+        facts(9, true, "main", "2026-01-02T00:00:00Z"),
+        &trusted,
+    );
+
+    let view = store.read_trusted(&who, &query, &trusted).unwrap();
+
+    assert_eq!((view.live, view.limit), (2, 2));
+    let settings = view.settings.as_ref().unwrap();
+    assert_eq!(settings.start_from.as_str(), "staging");
+    let order: Vec<u64> = view
+        .pull_requests
+        .iter()
+        .map(|row| row.number.get())
+        .collect();
+    assert_eq!(order, [9, 8, 7, 6, 5], "newest change first");
+    let PreviewOutcome::Live {
+        environment,
+        head,
+        server,
+        newer,
+        ..
+    } = &row(&view, 5).preview
+    else {
+        panic!("{:?}", row(&view, 5));
+    };
+    assert_eq!(
+        (environment.as_str(), head.as_str(), server, newer),
+        ("pr-5", HEAD, &Some(machine('a')), &None)
+    );
+    assert!(matches!(
+        &row(&view, 8).preview,
+        PreviewOutcome::Deploying { deployment, .. }
+            if *deployment == deploying.admitted.first().unwrap().deployment.id
+    ));
+    let why = |number| why_not(&view, number);
+    assert_eq!(why(7), Some(NotDeployed::MergesIntoStartFrom));
+    assert_eq!(
+        why(6),
+        Some(NotDeployed::NotMember {
+            author: "mallory".into()
+        })
+    );
+    assert!(!row(&view, 6).member && row(&view, 5).member);
+    assert_eq!(why(9), Some(NotDeployed::Full { live: 2, limit: 2 }));
+
+    let pr = PullRequestQuery {
+        repository_id: backend::repo_id(11),
+        number: backend::pr_number(5),
+    };
+    let links = store.read(&who, &pr).unwrap().previews;
+    assert_eq!(links.len(), 1);
+    assert!(matches!(
+        links.first().map(|link| &link.outcome),
+        Some(PreviewOutcome::Live { .. })
+    ));
+
+    // A deploy that failed with nothing live holds no place, and says why.
+    let id = &deploying.admitted.first().unwrap().deployment.id;
+    let runner = RunnerId::parse("runner").unwrap();
+    store.claim(id, &runner).unwrap();
+    store
+        .record(id, &runner, RunEvidence::NotExecuted("no Servers".into()))
+        .unwrap();
+    let view = store.read_trusted(&who, &query, &trusted).unwrap();
+    let why = |number| why_not(&view, number);
+    assert_eq!(view.live, 1);
+    assert!(
+        matches!(why(8), Some(NotDeployed::Failed { .. })),
+        "{:?}",
+        row(&view, 8)
+    );
+    assert_eq!(why(9), None);
 }
 
 #[test]

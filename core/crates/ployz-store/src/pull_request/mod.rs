@@ -22,6 +22,7 @@ mod checks;
 pub(crate) mod on_merge;
 mod plan;
 pub(crate) mod preview;
+mod preview_view;
 pub use crate::pr_environment::PullRequestRef;
 pub(crate) use checks::*;
 pub(crate) use on_merge::view as on_merge;
@@ -32,6 +33,11 @@ pub use preview::{
     ClosePreview, DeployPullRequestPreview, OpenPreviewsQuery, OpenPreviewsView, PreviewPlan,
 };
 pub(crate) use preview::{close as close_preview, open_previews};
+pub(crate) use preview_view::previews;
+pub use preview_view::{
+    NotDeployed, PreviewLink, PreviewOutcome, PreviewRow, PreviewSettings, PreviewsQuery,
+    PreviewsView,
+};
 
 use crate::id::{
     BranchName, CommitSha, GithubUserId, PullRequestNumber, RepositoryId, RepositoryName,
@@ -456,6 +462,10 @@ pub struct PullRequestView {
     /// What its GitHub check says; none when it says nothing: closed, merged with
     /// everything landed, or without PR Environments.
     pub check: Option<OnMergeCheck>,
+    /// Its preview in each Project whose plan keeps a preview rule for its repository.
+    #[serde(default)]
+    #[ts(as = "Option<Vec<PreviewLink>>", optional)]
+    pub previews: Vec<PreviewLink>,
 }
 
 /// One PR Environment.

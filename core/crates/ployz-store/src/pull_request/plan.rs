@@ -257,8 +257,8 @@ pub(super) fn repositories(
 
 /// A repository a Project's Services deploy from through the GitHub App.
 pub(super) struct Repository {
-    id: RepositoryId,
-    name: RepositoryName,
+    pub(super) id: RepositoryId,
+    pub(super) name: RepositoryName,
     installation_id: u64,
 }
 
