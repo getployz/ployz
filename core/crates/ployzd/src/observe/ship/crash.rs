@@ -5,7 +5,7 @@
 
 use std::{
     fs, io,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, PoisonError},
     time::Duration,
 };
@@ -16,10 +16,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::Notify;
 
-use super::store::{Ledger, entry_name, exists, remove_entry, seqs};
+use super::store::{self, File, Ledger, entry_name, exists, seqs};
 use crate::{
     backoff::Doubling,
     observe::layout::{StoreRoot, create_store_dir},
+    written::{
+        Content, Digest, Encoding, Inspection, Json, Removal, Verdict, Widest, Written, inspect,
+        keep_aside, kept_index, remove_written, to_json,
+    },
 };
 
 pub(in crate::observe) const CAP: usize = 1000;
@@ -37,6 +41,93 @@ pub(in crate::observe) struct Entry {
     #[serde(with = "decimal")]
     pub(in crate::observe) seq: u64,
     pub(in crate::observe) marker: MetricMarker,
+}
+
+/// The file `name` is in the crash outbox: an entry holds its JSON under its own seq, and a
+/// reservation holds nothing until the entry is written into it. Only a crash is queued, so an
+/// entry's marker is one.
+pub(in crate::observe) fn file(name: &str) -> Option<Written> {
+    let (file, staged) = store::file(name, &["", RESERVED])?;
+    Some(match file {
+        File::Counter => Written::new(Content::U64, staged),
+        File::Entry { seq, suffix } => {
+            let entry = Written::new(
+                Content::Json(Box::new(Json {
+                    identity: |entry: &Entry| entry.seq,
+                    named: seq,
+                    retired: &[],
+                    valid: |entry: &Entry| entry.marker.is_crash(),
+                    // An entry is only ever rewritten under its own seq.
+                    widest: Entry::clone,
+                    encoding: Encoding::Compact,
+                })),
+                staged,
+            );
+            if suffix == RESERVED {
+                entry.or_empty()
+            } else {
+                entry
+            }
+        }
+    })
+}
+
+/// Whether `name` is an entry [`keep_aside`] kept aside, too large to post.
+pub(in crate::observe) fn kept(name: &str) -> bool {
+    name.split_once(".kept-").is_some_and(|(entry, _)| {
+        matches!(store::file(entry, &[""]), Some((File::Entry { .. }, false)))
+            && kept_index(name.as_ref(), &format!("{entry}.kept-")).is_some()
+    })
+}
+
+/// Whether a crash entry for `marker` fits the store under any seq it is queued under.
+pub(in crate::observe) fn fits(marker: &MetricMarker) -> bool {
+    let widest = Entry {
+        seq: u64::MAX,
+        marker: marker.clone(),
+    };
+    to_json(&widest, Widest::AsWritten).is_ok()
+}
+
+fn refuse(ledger: &mut Ledger, dir: &Path) -> io::Result<()> {
+    ledger.count_dropped(dir, 1)
+}
+
+/// Removes the outbox file `name` when it holds what the outbox writes there and, given
+/// `selected`, still the bytes selected. Anything else stays, logged.
+fn remove(dir: &Path, name: &str, selected: Option<Digest>) -> io::Result<Removal> {
+    remove_written(&dir.join(name), file(name).as_ref(), selected)
+}
+
+/// An entry as the sender selected it: the bytes an ack may remove.
+#[derive(Debug)]
+pub(in crate::observe) struct Queued {
+    pub(in crate::observe) entry: Entry,
+    digest: Digest,
+}
+
+/// The entries queued in `dir`, oldest first: the seqs and the digest of each file the outbox
+/// wrote, the only ones it posts, evicts or acks. An entry too large for this release, as a
+/// release before the cap could leave, is kept aside and logged. Anything else stays, logged.
+fn owned(dir: &Path) -> io::Result<Vec<(u64, Inspection)>> {
+    let mut owned = Vec::new();
+    for seq in seqs(dir, "")? {
+        let name = entry_name(seq, "");
+        let path = dir.join(&name);
+        let inspection = inspect(&path, file(&name).as_ref())?;
+        match inspection.verdict() {
+            Some(Verdict::Ours) => owned.push((seq, inspection)),
+            Some(Verdict::Oversized) => {
+                tracing::warn!(path = %path.display(), "a crash outbox entry is too large to post");
+                keep_aside(&path, &inspection)?;
+            }
+            Some(Verdict::Foreign) => {
+                tracing::warn!(path = %path.display(), "skipping a crash outbox entry Ployz did not write");
+            }
+            None => {}
+        }
+    }
+    Ok(owned)
 }
 
 pub struct Outbox {
@@ -79,25 +170,43 @@ impl Outbox {
     /// would only take a slot from a newer crash.
     pub fn push_at(&self, seq: u64, marker: MetricMarker) -> io::Result<bool> {
         let mut ledger = self.ledger.lock().unwrap_or_else(PoisonError::into_inner);
-        let seqs = seqs(&self.dir, "")?;
-        let queued = seqs.binary_search(&seq).is_ok();
+        let queued = seqs(&self.dir, "")?.binary_search(&seq).is_ok();
         let reserved = self.dir.join(entry_name(seq, RESERVED));
         if !queued && !exists(&reserved)? {
             return Ok(false);
         }
-        let excess = (seqs.len() + usize::from(!queued)).saturating_sub(CAP);
-        if excess > 0 {
-            for oldest in seqs.iter().filter(|queued| **queued != seq).take(excess) {
-                remove_entry(&self.dir, *oldest, "")?;
+        let entry = Entry { seq, marker };
+        let json = match to_json(&entry, Widest::AsWritten) {
+            Err(error) if error.kind() == io::ErrorKind::FileTooLarge => {
+                tracing::warn!(%error, "a crash is too large for the crash outbox; dropping it");
+                if !queued {
+                    remove(&self.dir, &entry_name(seq, RESERVED), None)?;
+                }
+                refuse(&mut ledger, &self.dir)?;
+                return Ok(false);
             }
-            ledger.count_dropped(&self.dir, excess)?;
+            json => json?,
+        };
+        // Only entries the outbox wrote take a slot, and only they are evicted and counted.
+        let others: Vec<_> = owned(&self.dir)?
+            .into_iter()
+            .filter(|(owned, _)| *owned != seq)
+            .collect();
+        let excess = (others.len() + 1).saturating_sub(CAP);
+        let mut evicted = 0;
+        for (oldest, inspection) in others.iter().take(excess) {
+            let removal = remove(&self.dir, &entry_name(*oldest, ""), inspection.digest())?;
+            if removal == Removal::Removed {
+                evicted += 1;
+            }
+        }
+        if evicted > 0 {
+            ledger.count_dropped(&self.dir, evicted)?;
             tracing::warn!(
-                dropped = excess,
+                dropped = evicted,
                 "the crash outbox is full; dropping its oldest entries"
             );
         }
-        let entry = Entry { seq, marker };
-        let json = serde_json::to_vec(&entry).map_err(io::Error::other)?;
         if queued {
             crate::filesystem::atomic_write(&self.dir.join(entry_name(seq, "")), &json, 0o600)?;
         } else {
@@ -110,6 +219,12 @@ impl Outbox {
         Ok(true)
     }
 
+    /// Counts a crash too large to queue as dropped.
+    pub fn refuse(&self) -> io::Result<()> {
+        let mut ledger = self.ledger.lock().unwrap_or_else(PoisonError::into_inner);
+        refuse(&mut ledger, &self.dir)
+    }
+
     /// Says whether `seq` is reserved and not yet queued.
     pub fn is_reserved(&self, seq: u64) -> io::Result<bool> {
         exists(&self.dir.join(entry_name(seq, RESERVED)))
@@ -120,51 +235,68 @@ impl Outbox {
         let _ledger = self.ledger.lock().unwrap_or_else(PoisonError::into_inner);
         for seq in seqs(&self.dir, RESERVED)? {
             if !keep.contains(&seq) {
-                remove_entry(&self.dir, seq, RESERVED)?;
+                remove(&self.dir, &entry_name(seq, RESERVED), None)?;
             }
         }
         Ok(())
     }
 
-    pub(in crate::observe) fn oldest(&self, limit: usize) -> io::Result<Vec<Entry>> {
-        let mut ledger = self.ledger.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut entries = Vec::new();
-        for seq in seqs(&self.dir, "")? {
-            if entries.len() == limit {
-                break;
-            }
-            let path = self.dir.join(entry_name(seq, ""));
-            let bytes = match fs::read(&path) {
-                Ok(bytes) => bytes,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(error),
+    /// The oldest `limit` entries the outbox wrote, as selected for an ack.
+    pub(in crate::observe) fn select(&self, limit: usize) -> io::Result<Vec<Queued>> {
+        let _ledger = self.ledger.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut selected = Vec::new();
+        for (_, inspection) in owned(&self.dir)?.into_iter().take(limit) {
+            let Inspection::File { bytes, .. } = &inspection else {
+                continue;
             };
-            match serde_json::from_slice::<Entry>(&bytes) {
-                Ok(entry) => entries.push(entry),
-                Err(error) => {
-                    tracing::warn!(path = %path.display(), %error, "dropping an unreadable crash outbox entry");
-                    remove_entry(&self.dir, seq, "")?;
-                    ledger.count_dropped(&self.dir, 1)?;
-                }
-            }
+            selected.push(Queued {
+                entry: serde_json::from_slice(bytes).map_err(io::Error::other)?,
+                digest: inspection.digest().unwrap_or_default(),
+            });
         }
-        Ok(entries)
+        Ok(selected)
     }
 
     #[cfg(test)]
-    fn dropped(&self) -> u64 {
+    pub(in crate::observe) fn oldest(&self, limit: usize) -> io::Result<Vec<Entry>> {
+        Ok(self
+            .select(limit)?
+            .into_iter()
+            .map(|queued| queued.entry)
+            .collect())
+    }
+
+    #[cfg(test)]
+    pub(in crate::observe) fn dropped(&self) -> u64 {
         self.ledger
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .dropped
     }
 
-    pub(in crate::observe) fn ack(&self, seqs: &[u64]) -> io::Result<()> {
+    /// Removes the entries `posted` selected, each only while it still holds the bytes
+    /// selected: one rewritten since stays to be posted again.
+    pub(in crate::observe) fn ack(&self, posted: &[Queued]) -> io::Result<()> {
         let _ledger = self.ledger.lock().unwrap_or_else(PoisonError::into_inner);
-        for seq in seqs {
-            remove_entry(&self.dir, *seq, "")?;
+        for queued in posted {
+            remove(
+                &self.dir,
+                &entry_name(queued.entry.seq, ""),
+                Some(queued.digest),
+            )?;
         }
         Ok(())
+    }
+
+    /// Acks the entries now queued under `seqs`.
+    #[cfg(test)]
+    pub(in crate::observe) fn ack_seqs(&self, seqs: &[u64]) -> io::Result<()> {
+        let posted: Vec<_> = self
+            .select(CAP)?
+            .into_iter()
+            .filter(|queued| seqs.contains(&queued.entry.seq))
+            .collect();
+        self.ack(&posted)
     }
 }
 
@@ -224,9 +356,9 @@ fn log_record(marker: &MetricMarker) -> Value {
     })
 }
 
-fn render(entries: &[Entry]) -> Vec<u8> {
+fn render<'a>(entries: impl IntoIterator<Item = &'a Entry>) -> Vec<u8> {
     let records: Vec<Value> = entries
-        .iter()
+        .into_iter()
         .map(|entry| log_record(&entry.marker))
         .collect();
     let body = json!({ "resourceLogs": [{ "scopeLogs": [{ "logRecords": records }] }] });
@@ -287,9 +419,9 @@ impl<F: Fn() -> bool> Sender<F> {
         if !(self.connected)() {
             return Sent::Idle;
         }
-        let entries = match self.outbox.oldest(BATCH) {
-            Ok(entries) if entries.is_empty() => return Sent::Idle,
-            Ok(entries) => entries,
+        let selected = match self.outbox.select(BATCH) {
+            Ok(selected) if selected.is_empty() => return Sent::Idle,
+            Ok(selected) => selected,
             Err(error) => {
                 tracing::warn!(%error, "cannot read the crash outbox");
                 return Sent::Retry;
@@ -299,20 +431,17 @@ impl<F: Fn() -> bool> Sender<F> {
             .client
             .post(&self.url)
             .header(CONTENT_TYPE, "application/json")
-            .body(render(&entries))
+            .body(render(selected.iter().map(|queued| &queued.entry)))
             .send()
             .await;
         match response {
-            Ok(response) if response.status().is_success() => {
-                let seqs: Vec<u64> = entries.iter().map(|entry| entry.seq).collect();
-                match self.outbox.ack(&seqs) {
-                    Ok(()) => Sent::Progress,
-                    Err(error) => {
-                        tracing::warn!(%error, "cannot delete posted crash entries");
-                        Sent::Retry
-                    }
+            Ok(response) if response.status().is_success() => match self.outbox.ack(&selected) {
+                Ok(()) => Sent::Progress,
+                Err(error) => {
+                    tracing::warn!(%error, "cannot delete posted crash entries");
+                    Sent::Retry
                 }
-            }
+            },
             Ok(response) => {
                 tracing::warn!(status = %response.status(), "the Collector did not take crash events; keeping them");
                 Sent::Retry

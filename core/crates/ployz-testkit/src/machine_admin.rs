@@ -1,12 +1,18 @@
 use std::time::Duration;
 
 use ployz_core::{
-    AdvertisedEndpoint, EnrollAs, EnrollRequest, ForgetRequest, Forgotten, InspectRequest,
-    ListMachinesRequest, LocalMachinePhase, Machine, MachineId, MachineName, MachineToken,
-    MachineUpdate, RegisterRequest, RttObservation, TokenRequest, UpdateMachineRequest, op,
+    AdvertisedEndpoint, ApproveJoinRequest, Claim, ConfirmJoinRequest, EnrollAs, EnrollRequest,
+    ForgetRequest, Forgotten, InspectRequest, JOIN_TRUST_CAPABILITY, JoinPin, ListMachinesRequest,
+    LocalMachinePhase, MACHINE_START_WAIT, Machine, MachineId, MachineName, MachineToken,
+    MachineUpdate, PendingJoinsRequest, RegisterRequest, Registered, RttObservation, Sealing,
+    SetDeviceRequest, TokenRequest, UpdateMachineRequest,
+    authority::{JoinApproval, Signed, SignerKey, Timestamp, join::JoinConfirmation},
+    op,
 };
 
-use super::{Cluster, TestkitError, command_error, docker_output, response};
+use super::{
+    CLUSTER_NETWORK, Cluster, TestkitError, command_error, docker_output, poll_until, response,
+};
 
 const WIREGUARD_INTERFACE: &str = "ployz-wg";
 
@@ -24,12 +30,25 @@ pub struct WireGuardDumpPeer {
     pub allowed_ips: Vec<String>,
 }
 
+/// A join its entry Machine admitted under the Cluster's Device. The joiner enrolls with
+/// `registration`, then [`Cluster::confirm`] relays its confirmation back through `request`.
+#[derive(Clone, Debug)]
+pub struct Admission {
+    entry: usize,
+    request: RegisterRequest,
+    pub registration: Registered,
+}
+
 impl Cluster {
-    pub async fn register_second(&self) -> Result<ployz_core::Registered, TestkitError> {
+    /// Admit Machine 1 through Machine 0 as `machine-2`.
+    pub async fn register_second(&self) -> Result<Admission, TestkitError> {
         let token = self.machine_token(1, vec![self.endpoint(1)?]).await?;
         self.register_machine(0, "machine-2", token).await
     }
 
+    /// Join Machine `target` through Machine `entry` as `ployz server add` does: the entry
+    /// admits it under the Cluster's Device, the joiner enrolls pinned to that Device, and
+    /// its confirmation goes back through the entry.
     pub async fn add_machine(
         &self,
         entry: usize,
@@ -39,35 +58,78 @@ impl Cluster {
         let token = self
             .machine_token(target, vec![self.endpoint(target)?])
             .await?;
-        let registration = self.register_machine(entry, name, token).await?;
-        let assigned = registration.assigned_machine.clone();
-        self.join(
-            target,
-            EnrollRequest {
-                role: EnrollAs::Member {
-                    registration,
-                    pin: None,
+        let admission = self.register_machine(entry, name, token).await?;
+        let confirmation = self
+            .join(
+                target,
+                EnrollRequest {
+                    role: EnrollAs::Member {
+                        registration: admission.registration.clone(),
+                        pin: Some(JoinPin {
+                            devices: vec![self.device()],
+                        }),
+                    },
+                    wireguard_mtu: None,
+                    pinned: Default::default(),
                 },
-                wireguard_mtu: None,
-                pinned: Default::default(),
-            },
-        )
-        .await?;
+            )
+            .await?;
+        self.confirm(&admission, target, confirmation).await?;
         self.wait_phase(
             target,
             LocalMachinePhase::Participating,
             Duration::from_secs(120),
         )
         .await?;
-        Ok(assigned)
+        Ok(admission.registration.assigned_machine)
     }
 
+    /// Relay joiner `target`'s `confirmation` to its admitting Machine, which publishes the
+    /// joiner's row and answers with the restrictions the joiner takes before it serves.
+    pub async fn confirm(
+        &self,
+        admission: &Admission,
+        target: usize,
+        confirmation: Option<JoinConfirmation>,
+    ) -> Result<(), TestkitError> {
+        let confirmation = confirmation
+            .ok_or_else(|| TestkitError::Rpc("the joiner answered no join confirmation".into()))?;
+        let answered = self
+            .register(
+                admission.entry,
+                RegisterRequest {
+                    join_confirmation: Some(confirmation),
+                    ..admission.request.clone()
+                },
+            )
+            .await?;
+        let restrictions = answered.restrictions.ok_or_else(|| {
+            TestkitError::Rpc("the admitting Machine answered no join restrictions".into())
+        })?;
+        let request =
+            op::ConfirmJoin::into_request(ConfirmJoinRequest { restrictions }).encode()?;
+        // The joiner's daemon restarts after it enrolls, so this dials it until it answers.
+        poll_until(
+            MACHINE_START_WAIT,
+            "the joiner takes its restrictions",
+            async || {
+                let mut client = self.client(target).await?;
+                response(client.confirm_join(request.clone()).await?.into_inner())
+            },
+        )
+        .await
+        .map(drop)
+        .map_err(|_| self.readiness_timeout(target))
+    }
+
+    /// Register `token` through Machine `entry` as `name`. A join waiting for approval is
+    /// approved with the Cluster's Device, after the entry is told to trust it, and sent again.
     pub(super) async fn register_machine(
         &self,
         entry: usize,
         name: &str,
         token: MachineToken,
-    ) -> Result<ployz_core::Registered, TestkitError> {
+    ) -> Result<Admission, TestkitError> {
         let mut client = self.client(entry).await?;
         let snapshot = response(
             client
@@ -78,6 +140,11 @@ impl Cluster {
         .decode::<op::ListMachines>()?
         .enrollment
         .ok_or_else(|| TestkitError::Rpc("missing enrollment snapshot".into()))?;
+        // The joiner takes its restrictions from ConfirmJoin, which `confirm` relays.
+        let capabilities = (token.runtime.claim(JOIN_TRUST_CAPABILITY) == Claim::Advertises)
+            .then(|| JOIN_TRUST_CAPABILITY.to_owned())
+            .into_iter()
+            .collect();
         let mut request = RegisterRequest {
             join_approval: None,
             join_confirmation: None,
@@ -90,12 +157,35 @@ impl Cluster {
             public_ip: token.public_ip,
             advertised_endpoints: token.advertised_endpoints,
             runtime: token.runtime,
-            capabilities: Vec::new(),
+            capabilities,
             first_key: None,
         };
         let assignment = ployz_core::allocate_enrollment(&request, &snapshot, &[])
             .map_err(|error| TestkitError::Rpc(error.to_string()))?;
         request.assigned_subnet = Some(assignment.machine.subnet);
+        self.approve_device(entry).await?;
+        let registration = match self.register(entry, request.clone()).await {
+            Ok(registration) => registration,
+            Err(refused) => {
+                if !self.approve_waiting_join(entry, &request).await? {
+                    return Err(refused);
+                }
+                self.register(entry, request.clone()).await?
+            }
+        };
+        Ok(Admission {
+            entry,
+            request,
+            registration,
+        })
+    }
+
+    async fn register(
+        &self,
+        entry: usize,
+        request: RegisterRequest,
+    ) -> Result<Registered, TestkitError> {
+        let mut client = self.client(entry).await?;
         Ok(response(
             client
                 .register(op::Register::into_request(request).encode()?)
@@ -103,6 +193,63 @@ impl Cluster {
                 .into_inner(),
         )?
         .decode::<op::Register>()?)
+    }
+
+    /// Have Machine `entry` trust the Cluster's Device, as `ployz init` approves the
+    /// person's own. Approving it again changes nothing.
+    async fn approve_device(&self, entry: usize) -> Result<(), TestkitError> {
+        let mut client = self.client(entry).await?;
+        response(
+            client
+                .set_device(
+                    op::SetDevice::into_request(SetDeviceRequest::Approve { key: self.device() })
+                        .encode()?,
+                )
+                .await?
+                .into_inner(),
+        )?;
+        Ok(())
+    }
+
+    /// Sign the join waiting on Machine `entry` for `request` with the Cluster's Device and
+    /// hand it back, as `ployz server add` does. False when no join waits for it.
+    async fn approve_waiting_join(
+        &self,
+        entry: usize,
+        request: &RegisterRequest,
+    ) -> Result<bool, TestkitError> {
+        let mut client = self.client(entry).await?;
+        let pending = response(
+            client
+                .pending_joins(op::PendingJoins::into_request(PendingJoinsRequest {}).encode()?)
+                .await?
+                .into_inner(),
+        )?
+        .decode::<op::PendingJoins>()?;
+        let Some(mut body) = pending
+            .joins
+            .into_iter()
+            .find(|body| body.machine.id == request.machine_id)
+        else {
+            return Ok(false);
+        };
+        if !body.machine.matches_request(request) {
+            return Err(TestkitError::Rpc(
+                "the waiting join does not match the registration".into(),
+            ));
+        }
+        body.signer = SignerKey::Device(self.device());
+        let approval = Signed::sign(&body, &self.device)
+            .map_err(|error| TestkitError::Rpc(error.to_string()))?;
+        response(
+            client
+                .approve_join(
+                    op::ApproveJoin::into_request(ApproveJoinRequest { approval }).encode()?,
+                )
+                .await?
+                .into_inner(),
+        )?;
+        Ok(true)
     }
 
     pub async fn machines(
@@ -257,20 +404,53 @@ impl Cluster {
         )
     }
 
-    pub fn seed_machine_collision(
+    /// Seed, on Machine `index` alone, a row copying `source` under `id` and `name`. Its
+    /// approval is signed by the Cluster's Device, as every admitted Member's row carries
+    /// one, so a Machine lists it.
+    pub async fn seed_machine_collision(
         &self,
         index: usize,
         source: &Machine,
         id: &MachineId,
         name: &MachineName,
     ) -> Result<(), TestkitError> {
-        self.corrosion_transaction(
-            index,
-            &format!(
-                r#"[{{"query":"INSERT INTO machines (id, info) SELECT ?, json_set(info, '$.id', ?, '$.name', ?) FROM machines WHERE id = ?","params":["{id}","{id}","{name}","{}"]}}]"#,
-                source.id
-            ),
+        let Some(Sealing::Held {
+            public_key: cluster,
+        }) = self.inspect(index).await?.sealing
+        else {
+            return Err(TestkitError::Rpc("the Machine holds no Sealing Key".into()));
+        };
+        let row = Machine {
+            id: *id,
+            name: name.clone(),
+            ..source.clone()
+        };
+        let issued_at = Timestamp::now();
+        let body = JoinApproval {
+            cluster,
+            machine: (&row).into(),
+            network: CLUSTER_NETWORK.parse().expect("static network is valid"),
+            sealing_recipient: row.public_key,
+            devices: vec![self.device()],
+            passkeys: Vec::new(),
+            grants: Vec::new(),
+            admitting_machines: vec![source.id],
+            bootstrap: Vec::new(),
+            issued_at,
+            expires_at: issued_at.plus(60 * 60 * 1000),
+            signer: SignerKey::Device(self.device()),
+            proposal: None,
+        };
+        let approval = serde_json::to_string(
+            &Signed::sign(&body, &self.device)
+                .map_err(|error| TestkitError::Rpc(error.to_string()))?,
         )
+        .map_err(|error| TestkitError::Rpc(error.to_string()))?;
+        let query = serde_json::json!([{
+            "query": "INSERT INTO machines (id, info) SELECT ?, json_set(info, '$.id', ?, '$.name', ?, '$.join_approval', json(?)) FROM machines WHERE id = ?",
+            "params": [id, id, name, approval, source.id],
+        }]);
+        self.corrosion_transaction(index, &query.to_string())
     }
 
     pub fn replicated_row_exists(

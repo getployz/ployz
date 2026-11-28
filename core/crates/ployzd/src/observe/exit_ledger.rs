@@ -24,7 +24,7 @@ use super::{
     clock::rfc3339_nanos,
     layout::StoreRoot,
     settled::{Key, Settlement, Settlements, Unfinished},
-    ship::Outbox,
+    ship::{Outbox, crash_fits},
     signal::{Signal, is_stop_signal},
 };
 
@@ -277,10 +277,24 @@ impl Settler {
         };
         match self.settlements.get(&key) {
             Ok(Settlement::New) => {
-                let unfinished = Unfinished { marker, seq: None };
-                if let Err(error) = self.settlements.save(&key, &unfinished) {
-                    tracing::warn!(container = %key.container(), %error, "cannot record an exit before settling it");
+                // A crash's entry is checked before anything is saved or reserved for it, and
+                // a settlement's save checks it at any seq it can take, so a settlement that
+                // started fits each later step.
+                if marker.is_crash() && !crash_fits(&marker) {
+                    self.refuse(&key);
                     return;
+                }
+                let unfinished = Unfinished { marker, seq: None };
+                match self.settlements.save(&key, &unfinished) {
+                    Err(error) if error.kind() == io::ErrorKind::FileTooLarge => {
+                        self.refuse(&key);
+                        return;
+                    }
+                    Err(error) => {
+                        tracing::warn!(container = %key.container(), %error, "cannot record an exit before settling it");
+                        return;
+                    }
+                    Ok(()) => {}
                 }
                 self.advance(&key, unfinished);
             }
@@ -289,6 +303,14 @@ impl Settler {
             Err(error) => {
                 tracing::warn!(container = %key.container(), %error, "cannot read whether an exit was settled");
             }
+        }
+    }
+
+    /// Drops an exit too large for the observe store, counted with the crashes dropped.
+    fn refuse(&self, key: &Key) {
+        tracing::warn!(container = %key.container(), "an exit is too large for the observe store; dropping it");
+        if let Err(error) = self.crashes.refuse() {
+            tracing::warn!(%error, "cannot count a dropped exit");
         }
     }
 

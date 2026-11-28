@@ -1,6 +1,12 @@
 mod test_dir;
 
-use std::{collections::BTreeMap, fs, net::SocketAddr, os::unix::fs::PermissionsExt};
+use std::{
+    collections::BTreeMap,
+    fs,
+    net::SocketAddr,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+};
 
 use ployz_core::{
     AdvertisedEndpoint, ClientKey, EnrollAs, EnrollRequest, Enrolled, InspectRequest, LeaveRequest,
@@ -588,6 +594,99 @@ fn directory_holding_only_host_preparation_is_claimed() {
     assert_eq!(fs::read(prepare.join("state.json")).unwrap(), b"{}");
 }
 
+/// A container id as Docker writes one, for settled names.
+const CONTAINER: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+#[test]
+fn directory_holding_only_the_observe_store_is_claimed() {
+    // The daemon starts `ployzd observe` before it opens its store, and observe makes its
+    // store first on a fresh Machine.
+    let dir = TestDir::new("ployzd-state");
+    let observe = dir.0.join(ployz_core::OBSERVE_DIR_NAME);
+    let (crash, settled) = (observe.join("v1/outbox/crash"), observe.join("v1/settled"));
+    fs::create_dir_all(&crash).unwrap();
+    fs::create_dir_all(&settled).unwrap();
+    for (name, bytes) in [
+        ("00000000000000000043.reserved", &b""[..]),
+        ("00000000000000000043.tmp", b""),
+        ("last_seq", b"43"),
+        ("last_seq.tmp", b"4"),
+        ("dropped", b"0"),
+    ] {
+        fs::write(crash.join(name), bytes).unwrap();
+    }
+    fs::write(settled.join(format!("{CONTAINER}-exit-7.tmp")), b"").unwrap();
+    fs::write(observe.join("v1/resume-from"), b"1").unwrap();
+    fs::write(observe.join("harvester.lock"), b"").unwrap();
+    fs::create_dir_all(dir.0.join(ployz_core::PREPARE_DIR_NAME)).unwrap();
+
+    LocalMachineStore::open(&dir.0).unwrap();
+    assert_eq!(fs::read(observe.join("v1/resume-from")).unwrap(), b"1");
+}
+
+/// Opens a data directory whose `observe` entry `foreign` made, given the data directory
+/// and a directory outside it, and checks the claim refused it and left the file `foreign`
+/// returns as it was.
+fn refuses_foreign_observe(foreign: impl FnOnce(&Path, &Path) -> PathBuf) {
+    let (dir, outside) = (TestDir::new("ployzd-state"), TestDir::new("ployzd-outside"));
+    fs::create_dir_all(&dir.0).unwrap();
+    fs::create_dir_all(&outside.0).unwrap();
+    let kept = foreign(&dir.0, &outside.0);
+    let before = fs::read(&kept).unwrap();
+
+    assert!(matches!(
+        LocalMachineStore::open(&dir.0),
+        Err(StoreError::UnownedDataDirectory(_))
+    ));
+    assert_eq!(fs::read(&kept).unwrap(), before);
+}
+
+#[test]
+fn a_file_named_observe_is_not_claimed() {
+    refuses_foreign_observe(|dir, _| {
+        fs::write(dir.join("observe"), b"unrelated").unwrap();
+        dir.join("observe")
+    });
+}
+
+#[test]
+fn an_observe_symlink_is_not_claimed() {
+    refuses_foreign_observe(|dir, outside| {
+        fs::create_dir_all(outside.join("v1")).unwrap();
+        fs::write(outside.join("v1/resume-from"), b"1").unwrap();
+        std::os::unix::fs::symlink(outside, dir.join("observe")).unwrap();
+        outside.join("v1/resume-from")
+    });
+}
+
+#[test]
+fn an_observe_dir_holding_something_else_is_not_claimed() {
+    refuses_foreign_observe(|dir, _| {
+        fs::create_dir_all(dir.join("observe/v1")).unwrap();
+        fs::write(dir.join("observe/notes.txt"), b"unrelated").unwrap();
+        dir.join("observe/notes.txt")
+    });
+}
+
+#[test]
+fn an_observe_store_holding_something_else_is_not_claimed() {
+    refuses_foreign_observe(|dir, _| {
+        fs::create_dir_all(dir.join("observe/v1/settled")).unwrap();
+        fs::write(dir.join("observe/v1/data.db"), b"unrelated").unwrap();
+        dir.join("observe/v1/data.db")
+    });
+}
+
+#[test]
+fn a_store_file_holding_what_observe_never_writes_is_not_claimed() {
+    refuses_foreign_observe(|dir, _| {
+        let resume = dir.join("observe/v1/resume-from");
+        fs::create_dir_all(resume.parent().unwrap()).unwrap();
+        fs::write(&resume, b"user's only copy").unwrap();
+        resume
+    });
+}
+
 #[test]
 fn reset_keeps_host_preparation() {
     let dir = TestDir::new("ployzd-state");
@@ -660,15 +759,101 @@ fn machine_store_is_process_exclusive() {
     LocalMachineStore::open(&dir.0).unwrap();
 }
 
-#[test]
-fn interrupted_initial_write_is_recovered() {
+/// What a Machine's first write stages: a new record, written whole.
+fn new_record() -> Vec<u8> {
+    let first = TestDir::new("ployzd-state");
+    drop(LocalMachineStore::open(&first.0).unwrap());
+    fs::read(first.0.join("machine.json")).unwrap()
+}
+
+/// Opens a data dir holding only `staged` in `.machine.json.tmp`, and returns what was kept
+/// aside: `.machine.json.tmp.kept-1`, if anything was.
+fn open_with_staged(staged: &[u8]) -> Option<Vec<u8>> {
     let dir = TestDir::new("ployzd-state");
     fs::create_dir_all(&dir.0).unwrap();
-    fs::write(dir.0.join(".machine.json.tmp"), b"partial").unwrap();
+    fs::write(dir.0.join(".machine.json.tmp"), staged).unwrap();
 
     let store = LocalMachineStore::open(&dir.0).unwrap();
     assert_eq!(store.record().phase(), LocalMachinePhase::Uninitialized);
     assert!(!dir.0.join(".machine.json.tmp").exists());
+    fs::read(dir.0.join(".machine.json.tmp.kept-1")).ok()
+}
+
+/// The `.machine.json.tmp.kept-<n>` files in `dir`, sorted by name, with their bytes.
+fn kept_records(dir: &Path) -> Vec<(String, Vec<u8>)> {
+    let mut kept: Vec<_> = fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().unwrap();
+            name.starts_with(".machine.json.tmp.kept-")
+                .then(|| (name, fs::read(entry.path()).unwrap()))
+        })
+        .collect();
+    kept.sort();
+    kept
+}
+
+#[test]
+fn a_record_kept_aside_takes_no_restart_down_and_is_kept_once() {
+    let dir = TestDir::new("ployzd-state");
+    fs::create_dir_all(&dir.0).unwrap();
+    let written = new_record();
+    let cut = written.get(..written.len() / 2).unwrap().to_vec();
+    fs::write(dir.0.join(".machine.json.tmp.kept-1"), &cut).unwrap();
+    fs::write(dir.0.join(".ployzd.lock"), b"").unwrap();
+
+    drop(LocalMachineStore::open(&dir.0).unwrap());
+
+    for _ in 0..3 {
+        fs::remove_file(dir.0.join("machine.json")).unwrap();
+        fs::write(dir.0.join(".machine.json.tmp"), &cut).unwrap();
+        drop(LocalMachineStore::open(&dir.0).unwrap());
+        assert!(!dir.0.join(".machine.json.tmp").exists());
+        assert_eq!(
+            kept_records(&dir.0),
+            [(".machine.json.tmp.kept-1".to_owned(), cut.clone())]
+        );
+    }
+}
+
+#[test]
+fn a_second_interrupted_write_is_kept_beside_the_first() {
+    let dir = TestDir::new("ployzd-state");
+    fs::create_dir_all(&dir.0).unwrap();
+    fs::write(dir.0.join(".machine.json.tmp.kept-1"), b"notes").unwrap();
+    fs::write(dir.0.join(".machine.json.tmp"), b"other notes").unwrap();
+
+    drop(LocalMachineStore::open(&dir.0).unwrap());
+
+    assert!(!dir.0.join(".machine.json.tmp").exists());
+    assert_eq!(
+        kept_records(&dir.0),
+        [
+            (".machine.json.tmp.kept-1".to_owned(), b"notes".to_vec()),
+            (
+                ".machine.json.tmp.kept-2".to_owned(),
+                b"other notes".to_vec()
+            ),
+        ]
+    );
+}
+
+#[test]
+fn interrupted_initial_write_is_recovered_and_kept_aside() {
+    let written = new_record();
+    let cut = written.get(..written.len() / 2).unwrap();
+    assert_eq!(open_with_staged(cut).as_deref(), Some(cut));
+}
+
+#[test]
+fn a_new_record_staged_whole_is_cleared() {
+    assert_eq!(open_with_staged(&new_record()), None);
+}
+
+#[test]
+fn a_staged_record_holding_what_ployz_never_writes_is_kept_aside() {
+    assert_eq!(open_with_staged(b"notes").as_deref(), Some(&b"notes"[..]));
 }
 
 #[test]

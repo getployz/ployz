@@ -1469,7 +1469,10 @@ mod tests {
         running.settle_exits(|| Inspected::Gone);
         let shipped = queued(&host);
         assert_eq!(shipped.len(), 1);
-        Outbox::open(&host.store).unwrap().ack(&shipped).unwrap();
+        Outbox::open(&host.store)
+            .unwrap()
+            .ack_seqs(&shipped)
+            .unwrap();
         running.harvester.finish_settlements();
         assert!(queued(&host).is_empty());
         assert_eq!(unfinished(&host), 1);

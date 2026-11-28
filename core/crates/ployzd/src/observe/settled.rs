@@ -18,9 +18,32 @@ use ployz_core::{
 use serde::{Deserialize, Serialize};
 
 use super::layout::{StoreRoot, create_store_dir};
+use crate::written::{Content, Encoding, Json, Widest, Written, remove_written, staging, to_json};
 
 const PENDING: &str = "pending";
 const TEMP: &str = "tmp";
+
+/// The file `name` is in the settled dir: a settlement as [`Key`] spells it, its pending copy,
+/// or that copy staged by `atomic_write`, each holding the [`Unfinished`] saved under that key.
+pub(super) fn file(name: &str) -> Option<Written> {
+    let stem = name.split_once('.').map_or(name, |(stem, _)| stem);
+    let key = Key::parse(stem)?;
+    let settled = key.name();
+    let staged =
+        staging(name, &settled).or_else(|| staging(name, &format!("{settled}.{PENDING}")))?;
+    Some(Written::new(
+        Content::Json(Box::new(Json {
+            identity: |unfinished: &Unfinished| Key::of(&unfinished.marker),
+            named: Some(key),
+            // Releases through v0.4.0-beta.2 also wrote whether the crash was appended.
+            retired: &[("appended", serde_json::Value::is_boolean)],
+            valid: Unfinished::valid,
+            widest: Unfinished::widest,
+            encoding: Encoding::Compact,
+        })),
+        staged,
+    ))
+}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum Kind {
@@ -89,12 +112,27 @@ impl Key {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub(super) struct Unfinished {
     pub(super) marker: MetricMarker,
     /// The crash's outbox seq, taken once so queuing it again rewrites the
     /// same entry.
     pub(super) seq: Option<u64>,
+}
+
+impl Unfinished {
+    /// Only a crash is queued, so only a crash's settlement takes a seq.
+    fn valid(&self) -> bool {
+        self.seq.is_none() || self.marker.is_crash()
+    }
+
+    /// The settlement as wide as it gets: a crash's, once its seq is as wide as a u64 gets.
+    fn widest(&self) -> Self {
+        Self {
+            seq: self.marker.is_crash().then_some(u64::MAX),
+            ..self.clone()
+        }
+    }
 }
 
 pub(super) enum Settlement {
@@ -132,9 +170,21 @@ impl Settlements {
         }
     }
 
+    /// Saves `unfinished` pending under `key`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error of kind [`io::ErrorKind::FileTooLarge`], before anything is written,
+    /// when the settlement is too large for the store at any seq it can take.
     pub(super) fn save(&self, key: &Key, unfinished: &Unfinished) -> io::Result<()> {
+        // A crash's settlement takes a seq later, so it is measured as if it had one now.
+        let widest = if unfinished.marker.is_crash() {
+            Widest::WithSeq(unfinished.seq)
+        } else {
+            Widest::AsWritten
+        };
+        let json = to_json(unfinished, widest)?;
         create_store_dir(&self.dir)?;
-        let json = serde_json::to_vec(unfinished).map_err(io::Error::other)?;
         crate::filesystem::atomic_write(&self.pending(key), &json, 0o600)
     }
 
@@ -145,10 +195,12 @@ impl Settlements {
 
     /// Gives up an unfinished settlement.
     pub(super) fn forget(&self, key: &Key) -> io::Result<()> {
-        match fs::remove_file(self.pending(key)) {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
-            _ => Ok(()),
-        }
+        self.remove(&format!("{}.{PENDING}", key.name()))
+    }
+
+    /// Removes the settled file `name` when it holds what a settlement writes there.
+    fn remove(&self, name: &str) -> io::Result<()> {
+        remove_written(&self.dir.join(name), file(name).as_ref(), None).map(drop)
     }
 
     pub(super) fn count(&self) -> io::Result<usize> {
@@ -178,10 +230,7 @@ impl Settlements {
                 Some(TEMP) => format!("{}.{TEMP}", key.name()),
                 Some(_) => continue,
             };
-            match fs::remove_file(self.dir.join(name)) {
-                Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
-                _ => {}
-            }
+            self.remove(&name)?;
         }
         Ok(())
     }

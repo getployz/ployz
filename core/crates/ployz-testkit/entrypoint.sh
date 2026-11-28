@@ -1,6 +1,9 @@
 #!/bin/sh
 set -eu
 
+# Every ployzd here runs without the Ployz Relay, so a test Cluster never dials it.
+set -- --relay none "$@"
+
 # /var/run survives a container restart. A stale containerd pid that a new
 # process reuses makes dockerd wait on it instead of starting containerd.
 rm -f /var/run/docker.pid /var/run/docker.sock /var/run/docker/containerd/containerd.pid
@@ -20,7 +23,9 @@ if [ -f /opt/ployz/docker-graph.tar ] && [ -z "$(ls -A /var/lib/docker)" ]; then
   tar -C /var/lib/docker -xf /opt/ployz/docker-graph.tar
 fi
 # ponytail: Corrosion uses host networking; enable a bridge when workload tests need one.
-dockerd --bridge=none --iptables=false --ip6tables=false >/var/log/dockerd.log 2>&1 &
+# ployzd refuses a dockerd that leaves iptables or ip6tables off: its fence hangs off
+# Docker's DOCKER-USER chains.
+dockerd --bridge=none >/var/log/dockerd.log 2>&1 &
 deadline=60
 until docker info >/dev/null 2>&1; do
   deadline=$((deadline - 1))

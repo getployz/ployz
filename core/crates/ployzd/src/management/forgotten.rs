@@ -8,12 +8,13 @@
 use std::future::Future;
 
 use iroh::{
-    Endpoint, EndpointAddr, PublicKey, RelayUrl,
+    Endpoint, EndpointAddr, PublicKey,
     endpoint::{Connection, ConnectionError, VarInt},
 };
 use ployz_core::{FORGOTTEN_ALPN, ForgottenAnswer, LocalMachinePhase, ManagementIdentity};
 use tokio::sync::Semaphore;
 
+use super::Relay;
 use crate::corrosion::{Error as CorrosionError, ReplicatedStore};
 
 /// How many askers may hold a store read at once. Anyone holding a key can ask, so
@@ -104,14 +105,18 @@ pub(super) async fn serve<R: Roster>(
     connection.close(VarInt::from_u32(answer.close_code()), b"forgotten answered");
 }
 
-/// Ask `member` whether the Cluster forgot the identity `endpoint` dials with. None
-/// when the member cannot be reached, runs a daemon without this ALPN, or closes with
-/// a code that is not an answer. The caller bounds how long this may take.
+/// Ask `member` over `relay` whether the Cluster forgot the identity `endpoint` dials
+/// with. None when there is no relay, the member cannot be reached, runs a daemon
+/// without this ALPN, or closes with a code that is not an answer. The caller bounds
+/// how long this may take.
 pub async fn ask(
     endpoint: &Endpoint,
     member: ManagementIdentity,
-    relay: &RelayUrl,
+    relay: &Relay,
 ) -> Option<ForgottenAnswer> {
+    let Relay::Only(relay) = relay else {
+        return None;
+    };
     let member = PublicKey::from_bytes(member.as_bytes()).ok()?;
     let address = EndpointAddr::new(member).with_relay_url(relay.clone());
     let connection = endpoint.connect(address, FORGOTTEN_ALPN).await.ok()?;

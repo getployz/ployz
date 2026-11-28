@@ -68,7 +68,7 @@ async fn two_holders_of_one_capability_stay_independent_through_the_relay() {
     let endpoint = management::bind(
         local.record().management_secret(),
         &ManagementConfig {
-            relay_url: relay_url.clone(),
+            relay: management::Relay::Only(relay_url.clone()),
             port: 0,
             relay_tls: CaTlsConfig::insecure_skip_verify(),
         },
@@ -131,7 +131,7 @@ async fn a_held_session_with_a_silent_relay_does_not_stall_the_next_dial() {
     let endpoint = management::bind(
         local.record().management_secret(),
         &ManagementConfig {
-            relay_url: relay_url.clone(),
+            relay: management::Relay::Only(relay_url.clone()),
             port: 0,
             relay_tls: CaTlsConfig::insecure_skip_verify(),
         },
@@ -283,7 +283,7 @@ async fn a_management_proof_admits_only_the_connection_it_was_made_on() {
     let endpoint = management::bind(
         local.record().management_secret(),
         &ManagementConfig {
-            relay_url: relay_url.clone(),
+            relay: management::Relay::Only(relay_url.clone()),
             port: 0,
             relay_tls: CaTlsConfig::insecure_skip_verify(),
         },
@@ -353,7 +353,7 @@ async fn a_reply_finished_as_shutdown_drains_reaches_the_caller() {
     let endpoint = management::bind(
         local.record().management_secret(),
         &ManagementConfig {
-            relay_url: relay_url.clone(),
+            relay: management::Relay::Only(relay_url.clone()),
             port: 0,
             relay_tls: CaTlsConfig::insecure_skip_verify(),
         },
@@ -422,7 +422,7 @@ async fn shutdown_ends_open_streams_while_replies_and_builds_drain() {
     let endpoint = management::bind(
         local.record().management_secret(),
         &ManagementConfig {
-            relay_url: relay_url.clone(),
+            relay: management::Relay::Only(relay_url.clone()),
             port: 0,
             relay_tls: CaTlsConfig::insecure_skip_verify(),
         },
@@ -528,7 +528,7 @@ async fn verification_racing_removal_does_not_revoke_the_saved_candidate() {
     let endpoint = management::bind(
         local.record().management_secret(),
         &ManagementConfig {
-            relay_url: relay_url.clone(),
+            relay: management::Relay::Only(relay_url.clone()),
             port: 0,
             relay_tls: CaTlsConfig::insecure_skip_verify(),
         },
@@ -606,7 +606,7 @@ async fn rotating_or_clearing_one_slot_revokes_only_its_holder() {
     let endpoint = management::bind(
         local.record().management_secret(),
         &ManagementConfig {
-            relay_url: relay_url.clone(),
+            relay: management::Relay::Only(relay_url.clone()),
             port: 0,
             relay_tls: CaTlsConfig::insecure_skip_verify(),
         },
@@ -712,7 +712,7 @@ async fn only_a_device_execs_or_tunnels() {
     let endpoint = management::bind(
         local.record().management_secret(),
         &ManagementConfig {
-            relay_url: relay_url.clone(),
+            relay: management::Relay::Only(relay_url.clone()),
             port: 0,
             relay_tls: CaTlsConfig::insecure_skip_verify(),
         },
@@ -820,7 +820,7 @@ async fn a_device_removing_itself_receives_the_outcome() {
     let endpoint = management::bind(
         local.record().management_secret(),
         &ManagementConfig {
-            relay_url: relay_url.clone(),
+            relay: management::Relay::Only(relay_url.clone()),
             port: 0,
             relay_tls: CaTlsConfig::insecure_skip_verify(),
         },
@@ -959,7 +959,7 @@ async fn contract() {
         .unwrap();
 
     let config = ManagementConfig {
-        relay_url: relay_url.clone(),
+        relay: management::Relay::Only(relay_url.clone()),
         port: 0,
         relay_tls: CaTlsConfig::insecure_skip_verify(),
     };
@@ -1453,7 +1453,7 @@ impl Tunnels {
         let endpoint = management::bind(
             local.record().management_secret(),
             &ManagementConfig {
-                relay_url: relay_url.clone(),
+                relay: management::Relay::Only(relay_url.clone()),
                 port: 0,
                 relay_tls: CaTlsConfig::insecure_skip_verify(),
             },
@@ -1757,7 +1757,7 @@ impl GrantMachine {
         let endpoint = management::bind(
             local.record().management_secret(),
             &ManagementConfig {
-                relay_url: relay_url.clone(),
+                relay: management::Relay::Only(relay_url.clone()),
                 port: 0,
                 relay_tls: CaTlsConfig::insecure_skip_verify(),
             },
@@ -1874,7 +1874,7 @@ async fn forgotten_question_is_answered_by_the_asking_key_alone() {
     let endpoint = management::bind(
         local.record().management_secret(),
         &ManagementConfig {
-            relay_url: relay_url.clone(),
+            relay: management::Relay::Only(relay_url.clone()),
             port: 0,
             relay_tls: CaTlsConfig::insecure_skip_verify(),
         },
@@ -1897,7 +1897,11 @@ async fn forgotten_question_is_answered_by_the_asking_key_alone() {
             let asker = keyed_endpoint(&relay_url, key).await;
             let answer = tokio::time::timeout(
                 Duration::from_secs(30),
-                management::forgotten::ask(&asker, member, &relay_url),
+                management::forgotten::ask(
+                    &asker,
+                    member,
+                    &management::Relay::Only(relay_url.clone()),
+                ),
             )
             .await
             .expect("the member answers promptly");
@@ -1927,7 +1931,7 @@ async fn forgotten_question_without_a_roster_or_an_older_member_gives_nothing() 
     let endpoint = management::bind(
         local.record().management_secret(),
         &ManagementConfig {
-            relay_url: relay_url.clone(),
+            relay: management::Relay::Only(relay_url.clone()),
             port: 0,
             relay_tls: CaTlsConfig::insecure_skip_verify(),
         },
@@ -1947,7 +1951,7 @@ async fn forgotten_question_without_a_roster_or_an_older_member_gives_nothing() 
     assert_eq!(
         tokio::time::timeout(
             Duration::from_secs(30),
-            management::forgotten::ask(&asker, member, &relay_url)
+            management::forgotten::ask(&asker, member, &management::Relay::Only(relay_url.clone()))
         )
         .await
         .unwrap(),
@@ -1974,7 +1978,7 @@ async fn forgotten_question_without_a_roster_or_an_older_member_gives_nothing() 
     assert_eq!(
         tokio::time::timeout(
             Duration::from_secs(30),
-            management::forgotten::ask(&asker, older, &relay_url)
+            management::forgotten::ask(&asker, older, &management::Relay::Only(relay_url.clone()))
         )
         .await
         .unwrap(),
@@ -1998,7 +2002,7 @@ async fn forgotten_question_to_a_machine_outside_a_cluster_gives_nothing() {
     let endpoint = management::bind(
         local.record().management_secret(),
         &ManagementConfig {
-            relay_url: relay_url.clone(),
+            relay: management::Relay::Only(relay_url.clone()),
             port: 0,
             relay_tls: CaTlsConfig::insecure_skip_verify(),
         },
@@ -2018,7 +2022,7 @@ async fn forgotten_question_to_a_machine_outside_a_cluster_gives_nothing() {
     assert_eq!(
         tokio::time::timeout(
             Duration::from_secs(30),
-            management::forgotten::ask(&asker, member, &relay_url)
+            management::forgotten::ask(&asker, member, &management::Relay::Only(relay_url.clone()))
         )
         .await
         .unwrap(),
@@ -2041,7 +2045,7 @@ async fn forgotten_question_for_one_key_is_never_answered_by_another() {
     let endpoint = management::bind(
         local.record().management_secret(),
         &ManagementConfig {
-            relay_url: relay_url.clone(),
+            relay: management::Relay::Only(relay_url.clone()),
             port: 0,
             relay_tls: CaTlsConfig::insecure_skip_verify(),
         },
@@ -2067,7 +2071,11 @@ async fn forgotten_question_for_one_key_is_never_answered_by_another() {
     let asker = keyed_endpoint(&relay_url, asker_key.clone()).await;
     let through_relay = tokio::time::timeout(
         Duration::from_secs(15),
-        management::forgotten::ask(&asker, asked_about, &relay_url),
+        management::forgotten::ask(
+            &asker,
+            asked_about,
+            &management::Relay::Only(relay_url.clone()),
+        ),
     )
     .await;
     assert!(

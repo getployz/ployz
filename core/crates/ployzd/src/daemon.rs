@@ -386,10 +386,11 @@ impl Daemon {
             management::bind(local_record.management_secret(), &config.management)
                 .await
                 .map_err(io::Error::other)?;
+        tracing::info!(relay = %config.management.relay, "management endpoint bound");
         let roster = link.as_ref().map(|link| link.context.replicated.clone());
         let fence_endpoint = management_endpoint.clone();
         let endpoint = management_endpoint.clone();
-        let fence_relay = config.management.relay_url.clone();
+        let fence_relay = config.management.relay.clone();
         let socket_path = config.socket.clone();
         let local_for_servers = local.clone();
         let shutdown_for_servers = shutdown.clone();
@@ -845,6 +846,7 @@ mod tests {
     /// Ephemeral management port so parallel daemons never contend for the fixed one.
     fn test_management() -> ManagementConfig {
         ManagementConfig {
+            relay: crate::management::Relay::Disabled,
             port: 0,
             ..ManagementConfig::default()
         }
@@ -1272,7 +1274,7 @@ exit 0
         let root = TestDir::new("ployzd-daemon-leave-reply");
         let (mut config, _) = test_config(&root.0, ContainerMode::Absent);
         config.management = ManagementConfig {
-            relay_url: relay_url.clone(),
+            relay: crate::management::Relay::Only(relay_url.clone()),
             port: 0,
             relay_tls: iroh::tls::CaTlsConfig::insecure_skip_verify(),
         };

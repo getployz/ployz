@@ -3,12 +3,15 @@
 //! signs its request with the Machine's Management Identity.
 
 mod crash;
+pub(super) use crash::{file as crash_file, fits as crash_fits, kept as crash_kept};
 mod push;
 mod store;
 
 #[cfg(test)]
 pub(super) use crash::CAP;
 pub(super) use crash::{Outbox, Sender as CrashSender};
+#[cfg(test)]
+pub(super) use fixtures::crash as crash_marker;
 pub use push::push_target;
 
 #[cfg(test)]
@@ -31,7 +34,7 @@ mod fixtures {
         (root, store)
     }
 
-    pub(super) fn crash(ts: i64) -> MetricMarker {
+    pub(in crate::observe) fn crash(ts: i64) -> MetricMarker {
         MetricMarker {
             machine_id: MachineId::parse("a".repeat(32)).unwrap(),
             container_id: ContainerId::parse("b".repeat(64)).unwrap(),

@@ -11,8 +11,8 @@ use std::{
 use ployz_core::{
     ClientKey, DeviceCode, DeviceKey, EnrollAs, EnrollRequest, LocalMachinePhase, Machine,
     MachineId, MachineNow, MachineUpdate, MachineUpdateError, ManagementClientLabel,
-    PREPARE_DIR_NAME, PinnedAddresses, PublicIpUpdate, RecoverySeed, Registered, Retired,
-    SelectedEndpoint, apply_machine_update,
+    OBSERVE_DIR_NAME, PREPARE_DIR_NAME, PinnedAddresses, PublicIpUpdate, RecoverySeed, Registered,
+    Retired, SelectedEndpoint, apply_machine_update,
     authority::{KeyRef, SigningPublicKey},
 };
 use reqwest::Url;
@@ -25,6 +25,10 @@ use super::{
 use crate::management::ManagementSecret;
 use crate::network::{DiscoveredNetwork, WireGuardPrivateKey, allocate_machine_subnet};
 use crate::sealing_key::{Floors, KeyFile, OpenError, SealingKey};
+use crate::written::{
+    Content, Encoding, Json, Verdict, Written, file_holds, inspect, keep_aside, kept_index,
+    plain_file, remove_written,
+};
 use ployz_core::first_key::{FirstKey, FirstKeyError, FirstKeyFile};
 
 pub(crate) const STATE_FILE_NAME: &str = "machine.json";
@@ -268,11 +272,7 @@ impl LocalMachineStore {
         let record = match fs::read(path(&data_dir)) {
             Ok(data) => vet_device_slots(&data_dir, serde_json::from_slice(&data)?)?,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                match fs::remove_file(data_dir.join(TEMPORARY_FILE_NAME)) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error.into()),
-                }
+                clear_temporary(&data_dir)?;
                 let record = LocalMachineRecord::fresh(
                     LocalMachineBody::Uninitialized {
                         id: MachineId::random(),
@@ -1481,11 +1481,7 @@ fn claim_data_dir(data_dir: &Path) -> Result<(), StoreError> {
                 .map(|entry| Ok(entry?.file_name()))
                 .collect::<io::Result<Vec<_>>>()?;
             let owns_directory = names.iter().any(|name| name == STATE_FILE_NAME)
-                || names.iter().all(|name| {
-                    name == TEMPORARY_FILE_NAME
-                        || name == LOCK_FILE_NAME
-                        || name == PREPARE_DIR_NAME
-                });
+                || holds_only_ours(data_dir, &names)?;
             if owns_directory {
                 Ok(())
             } else {
@@ -1495,6 +1491,88 @@ fn claim_data_dir(data_dir: &Path) -> Result<(), StoreError> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
     }
+}
+
+/// Whether every entry is one the daemon, host preparation or the Observe Store writes.
+fn holds_only_ours(data_dir: &Path, names: &[std::ffi::OsString]) -> io::Result<bool> {
+    for name in names {
+        // The daemon starts `ployzd observe` before it claims this directory, so the
+        // Observe Store can already be here on a Machine's first start.
+        let path = data_dir.join(name);
+        // First open keeps whatever a staged record holds that Ployz didn't write aside, and
+        // never removes what it kept.
+        let ours = ((name == TEMPORARY_FILE_NAME || kept_temporary(name)) && plain_file(&path)?)
+            || (name == LOCK_FILE_NAME && holds(&path, &Written::new(Content::Empty, false))?)
+            || name == PREPARE_DIR_NAME
+            || (name == OBSERVE_DIR_NAME && crate::observe::layout::holds_only_store(data_dir)?);
+        if !ours {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Whether the file at `path` holds what `written` describes, or is gone.
+fn holds(path: &Path, written: &Written) -> io::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => file_holds(metadata.file_type(), path, Some(written)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(error),
+    }
+}
+
+/// What [`save`] stages a record in before a Machine has one: a new record, as any release
+/// writes one, or nothing yet.
+fn temporary_record() -> Written {
+    Written::new(
+        Content::Json(Box::new(Json {
+            identity: |_: &LocalMachineRecord| (),
+            named: (),
+            retired: &[("trusted_snapshot", new_trusted_snapshot)],
+            valid: LocalMachineRecord::is_new,
+            widest: LocalMachineRecord::clone,
+            encoding: Encoding::PrettyLine,
+        })),
+        true,
+    )
+}
+
+/// Whether `value` is the `trusted_snapshot` v0.4.0-beta.2 wrote in a new record: its
+/// `TrustedSnapshot`, holding no members and no keys.
+fn new_trusted_snapshot(value: &serde_json::Value) -> bool {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct TrustedSnapshot {
+        #[serde(default)]
+        members: Vec<serde_json::Value>,
+        #[serde(default)]
+        keys: std::collections::BTreeMap<String, serde_json::Value>,
+    }
+    serde_json::from_value::<TrustedSnapshot>(value.clone())
+        .is_ok_and(|snapshot| snapshot.members.is_empty() && snapshot.keys.is_empty())
+}
+
+/// Clears what a first write a stop cut short left staged, under the store's lock. A new record
+/// is removed. Anything else, a cut record included, is never removed: [`keep_aside`] keeps it
+/// as `.machine.json.tmp.kept-<n>`, once per distinct file, and the record is written fresh.
+fn clear_temporary(data_dir: &Path) -> Result<(), StoreError> {
+    let temporary = data_dir.join(TEMPORARY_FILE_NAME);
+    let inspection = inspect(&temporary, Some(&temporary_record()))?;
+    match inspection.verdict() {
+        None => {}
+        Some(Verdict::Ours) => {
+            remove_written(&temporary, Some(&temporary_record()), inspection.digest())?;
+        }
+        Some(Verdict::Oversized | Verdict::Foreign) => {
+            keep_aside(&temporary, &inspection)?;
+        }
+    }
+    Ok(())
+}
+
+/// Whether `name` is one [`clear_temporary`] keeps a staged record aside under.
+fn kept_temporary(name: &std::ffi::OsStr) -> bool {
+    kept_index(name, &format!("{TEMPORARY_FILE_NAME}.kept-")).is_some()
 }
 
 /// Mixed-version handling, deletable once no Machine runs a record from before Devices

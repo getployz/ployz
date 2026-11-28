@@ -12,7 +12,7 @@ pub mod rotation;
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsStr,
-    io,
+    io::{self, Read as _},
     net::{Ipv4Addr, TcpListener},
     process::{Command, Output},
     sync::{LazyLock, Mutex},
@@ -21,19 +21,23 @@ use std::{
 
 use ployz_core::{
     AdvertisedEndpoint, CORROSION_API_PORT, CORROSION_GOSSIP_PORT, ContainerId,
-    DescribeContractRequest, DockerVolumeName, EnrollAs, EnrollRequest, Enrolled, InspectRequest,
-    LeaveRequest, Left, ListImagesRequest, LocalMachinePhase, MACHINE_API_PORT, Machine,
-    MachineName, MachineRpcClient, MembershipObservation, OpaquePayload, Registered, RpcResponse,
-    RpcResponseBody, op, shell,
+    DescribeContractRequest, DeviceKey, DockerVolumeName, EnrollAs, EnrollRequest, Enrolled,
+    InspectRequest, JoinPin, LeaveRequest, Left, ListImagesRequest, LocalMachinePhase,
+    MACHINE_API_PORT, Machine, MachineName, MachineRpcClient, MembershipObservation, OpaquePayload,
+    Registered, RpcResponse, RpcResponseBody,
+    authority::{Signer, join::JoinConfirmation},
+    op, shell,
 };
 use thiserror::Error;
 
+pub use machine_admin::Admission;
 pub use poll::{Attempt, WaitError, hold_for, poll_until};
 
 pub const SERVICE_CONTAINER_IMAGE: &str = "alpine:3.23.3";
 pub(crate) const OWNER_LABEL: &str = "dev.ployz.testkit";
 pub(crate) const CLUSTER_LABEL: &str = "dev.ployz.testkit.cluster";
 const HOST_ENTRY_API_PORT: u16 = 51003;
+const CLUSTER_NETWORK: &str = "10.210.0.0/16";
 static RESERVED_PORTS: LazyLock<Mutex<BTreeSet<u16>>> =
     LazyLock::new(|| Mutex::new(BTreeSet::new()));
 
@@ -125,15 +129,23 @@ impl ClusterPlan {
     }
 }
 
+/// The Enroll a joiner takes `registration` with, pinned to `device` as `ployz server add`
+/// pins the person's own Device: the joiner takes only an approval that Device signed.
 #[must_use]
-pub fn join_request(first: &Machine, registration: &Registered) -> EnrollRequest {
+pub fn join_request(
+    first: &Machine,
+    registration: &Registered,
+    device: DeviceKey,
+) -> EnrollRequest {
     let mut visible_peers = registration.visible_peers.clone();
     if !visible_peers.iter().any(|machine| machine.id == first.id) {
         visible_peers.push(first.clone());
     }
     EnrollRequest {
         role: EnrollAs::Member {
-            pin: None,
+            pin: Some(JoinPin {
+                devices: vec![device],
+            }),
             registration: Registered {
                 visible_peers,
                 ..registration.clone()
@@ -168,6 +180,8 @@ fn reserve_loopback_port() -> io::Result<u16> {
 
 pub struct Cluster {
     plan: ClusterPlan,
+    /// The Device that approves every join, as a person's own computer does.
+    device: Signer,
 }
 
 impl Cluster {
@@ -181,7 +195,7 @@ impl Cluster {
         }
         network_args.push(network.clone());
         docker(network_args)?;
-        let cluster = Self { plan };
+        let cluster = Self::planned(plan)?;
         for (index, machine) in cluster.plan.machines.iter().enumerate() {
             let mut args = vec![
                 "run".to_owned(),
@@ -214,6 +228,23 @@ impl Cluster {
             }
         }
         Ok(cluster)
+    }
+
+    fn planned(plan: ClusterPlan) -> Result<Self, TestkitError> {
+        let mut seed = [0; 32];
+        std::fs::File::open("/dev/urandom")
+            .and_then(|mut random| random.read_exact(&mut seed))
+            .map_err(TestkitError::DeviceKey)?;
+        Ok(Self {
+            plan,
+            device: Signer::from_seed(&seed),
+        })
+    }
+
+    /// The Device this Cluster's joins are approved with.
+    #[must_use]
+    pub fn device(&self) -> DeviceKey {
+        self.device.public().into()
     }
 
     pub async fn wait_ready(&self, timeout: Duration) -> Result<(), TestkitError> {
@@ -319,10 +350,13 @@ impl Cluster {
         }
         let first = self.initialize_entry().await?;
         self.seed_observation(0)?;
-        let token = self.machine_token(1, vec![self.endpoint(1)?]).await?;
-        let registered = self.register_machine(0, "machine-2", token).await?;
+        let admission = self.register_second().await?;
+        let registered = admission.registration.clone();
         self.gossip_rule(1, "--insert")?;
-        self.join(1, join_request(&first, &registered)).await?;
+        let confirmation = self
+            .join(1, join_request(&first, &registered, self.device()))
+            .await?;
+        self.confirm(&admission, 1, confirmation).await?;
         self.wait_for_join_barrier(1, &registered).await?;
         self.wait_machine_count(0, 2, Duration::from_secs(60))
             .await?;
@@ -381,13 +415,13 @@ impl Cluster {
     /// Returns when the Machine RPC is unavailable or rejects initialization.
     pub async fn initialize_first(&self) -> Result<Machine, TestkitError> {
         let mut client = self.client(0).await?;
-        enroll(
+        let (machine, _) = enroll(
             &mut client,
             EnrollRequest {
                 role: EnrollAs::Founder {
                     initial_policy: Default::default(),
                     name: MachineName::parse("machine-1")?,
-                    cluster_network: "10.210.0.0/16".parse().expect("static network is valid"),
+                    cluster_network: CLUSTER_NETWORK.parse().expect("static network is valid"),
                     public_ip: None,
                     advertised_endpoints: vec![self.endpoint(0)?],
                     grant: None,
@@ -396,13 +430,20 @@ impl Cluster {
                 pinned: Default::default(),
             },
         )
-        .await
+        .await?;
+        Ok(machine)
     }
 
-    pub async fn join(&self, index: usize, request: EnrollRequest) -> Result<(), TestkitError> {
+    /// Enroll Machine `index` with `request`. A joiner admitted under an approval answers
+    /// with the confirmation [`Self::confirm`] relays to its admitting Machine.
+    pub async fn join(
+        &self,
+        index: usize,
+        request: EnrollRequest,
+    ) -> Result<Option<JoinConfirmation>, TestkitError> {
         enroll(&mut self.client(index).await?, request)
             .await
-            .map(|_| ())
+            .map(|(_, confirmation)| confirmation)
     }
 
     fn seed_observation(&self, index: usize) -> Result<(), TestkitError> {
@@ -1060,6 +1101,8 @@ pub enum TestkitError {
     MachineIndex(usize),
     #[error("Machine API failed: {0}")]
     Rpc(String),
+    #[error("could not make the testkit Device key: {0}")]
+    DeviceKey(io::Error),
 }
 
 impl From<ployz_core::CodecError> for TestkitError {
@@ -1092,7 +1135,7 @@ fn response(payload: OpaquePayload) -> Result<RpcResponse, TestkitError> {
 async fn enroll(
     client: &mut MachineRpcClient<tonic::transport::Channel>,
     request: EnrollRequest,
-) -> Result<Machine, TestkitError> {
+) -> Result<(Machine, Option<JoinConfirmation>), TestkitError> {
     match response(
         client
             .enroll(op::Enroll::into_request(request).encode()?)
@@ -1101,7 +1144,10 @@ async fn enroll(
     )?
     .decode::<op::Enroll>()?
     {
-        Enrolled::Enrolled { machine, .. } => Ok(machine),
+        Enrolled::Enrolled {
+            machine,
+            join_confirmation,
+        } => Ok((machine, join_confirmation)),
         Enrolled::Refused { error, .. } => Err(TestkitError::Rpc(error.message)),
     }
 }
@@ -1138,9 +1184,7 @@ mod tests {
 
     #[tokio::test]
     async fn join_barrier_init_rejects_the_wrong_machine_count() {
-        let cluster = Cluster {
-            plan: ClusterPlan::new("l3-barrier", 1).unwrap(),
-        };
+        let cluster = Cluster::planned(ClusterPlan::new("l3-barrier", 1).unwrap()).unwrap();
         assert!(matches!(
             cluster.initialize_two_with_join_barrier().await,
             Err(TestkitError::MachineCount {
@@ -1152,9 +1196,8 @@ mod tests {
 
     #[tokio::test]
     async fn initialize_first_reports_an_unavailable_machine() {
-        let cluster = Cluster {
-            plan: ClusterPlan::new("l3-init-unavailable", 1).unwrap(),
-        };
+        let cluster =
+            Cluster::planned(ClusterPlan::new("l3-init-unavailable", 1).unwrap()).unwrap();
 
         assert!(matches!(
             cluster.initialize_first().await,
@@ -1199,13 +1242,15 @@ mod tests {
             grants: Vec::new(),
             restrictions: None,
         };
+        let device = DeviceKey::from_bytes([3; 32]);
         let EnrollAs::Member {
             registration: join,
-            pin: None,
-        } = join_request(&first, &registration).role
+            pin: Some(pin),
+        } = join_request(&first, &registration, device).role
         else {
             panic!("join_request enrolls a member");
         };
+        assert_eq!(pin.devices, vec![device]);
         assert_eq!(join.assigned_machine, second);
         assert_eq!(join.visible_peers, vec![first]);
         assert_eq!(join.target_versions.get("actor"), Some(&7));
