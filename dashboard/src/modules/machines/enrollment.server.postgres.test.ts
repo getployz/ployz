@@ -1070,6 +1070,20 @@ describe("organization enrollment coordinator", () => {
       },
     );
 
+    it.each([["device-zigo3nykdy", true], ["device-otherorgxx", false]])(
+      "takes a first publication while the Server holds %s, with a token minted for device zigo3nykdy: %s", async (label, taken) => {
+        await harness.pool.query("update machine_enrollment_token set first_key_code = 'zigo3nykdy' where token_hash = $1", [
+          hashEnrollmentToken(tokens[0] ?? ""),
+        ]);
+        const fake = fakeSession(harness.database);
+        const attempt = await pendingFounder(fake);
+        fake.cluster.managementClients = ["cloud", label];
+        expect(await fake.coordinator.publish({ ...attempt, capability })).toMatchObject(taken
+          ? { success: { machineId: attempt.machineId } }
+          : { failure: { _tag: "Conflict", message: CLUSTER_NOT_FRESH } });
+      },
+    );
+
     it("keeps the claim when a token that only resumed it is refused", async () => {
       const fake = fakeSession(harness.database);
       const attempt = await pendingFounder(fake);

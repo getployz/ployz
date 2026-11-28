@@ -115,6 +115,7 @@ export const insertEnrollmentToken = Effect.fn("MachineEnrollment.insertToken")(
     readonly organizationId: string;
     readonly userId: string;
     readonly attempt?: { readonly role: EnrollmentRole; readonly serverEnrollmentId: string };
+    readonly firstKeyCode?: string;
   }) {
     const { drizzle } = yield* Database;
     const token = yield* Effect.sync(() => randomSecret(TOKEN_PREFIX));
@@ -125,6 +126,7 @@ export const insertEnrollmentToken = Effect.fn("MachineEnrollment.insertToken")(
       expiresAt: sql`now() + make_interval(secs => ${ENROLLMENT_TOKEN_TTL_MS / 1000})`,
       enrollmentRole: input.attempt?.role ?? null,
       serverEnrollmentId: input.attempt?.serverEnrollmentId ?? null,
+      firstKeyCode: input.firstKeyCode ?? null,
     }).returning({ id: schemaMachineEnrollmentToken.id, expiresAt: schemaMachineEnrollmentToken.expiresAt });
     if (!issued) return yield* Effect.die("Enrollment token insert returned no row");
     return { id: issued.id, token, expiresAt: issued.expiresAt };
@@ -132,11 +134,12 @@ export const insertEnrollmentToken = Effect.fn("MachineEnrollment.insertToken")(
 );
 
 const issueEnrollmentToken = Effect.fn("MachineEnrollment.issue")(
-  function* (actor: Actor, named: OrganizationRef) {
+  function* (actor: Actor, named: OrganizationRef, firstKeyCode?: string) {
     const authorization = yield* authorizeEnrollmentOrganization(actor, named);
     const issued = yield* insertEnrollmentToken({
       organizationId: authorization.organization.id,
       userId: authorization.userId,
+      firstKeyCode,
     });
     yield* (yield* PostHog).capture({
       userId: authorization.userId,
@@ -148,10 +151,13 @@ const issueEnrollmentToken = Effect.fn("MachineEnrollment.issue")(
   },
 );
 
-/** The CLI builds its own pasted command, pinned to its own release. */
+/**
+ * The CLI builds its own pasted command, pinned to its own release. The Device its line names with `--key` is kept on the
+ * token, so the founder's slot for that Device counts as the Organization's own.
+ */
 export const mintCliMachineEnrollment = Effect.fn("MachineEnrollment.mintForCli")(
   function* (actor: Actor, input: CliMintMachineEnrollmentInput) {
-    const { id, token, expiresAt } = yield* issueEnrollmentToken(actor, input);
+    const { id, token, expiresAt } = yield* issueEnrollmentToken(actor, input, input.firstKey?.code);
     return { id, token, expiresAt: expiresAt.toISOString() };
   },
 );
@@ -261,6 +267,7 @@ const loadEnrollmentToken = Effect.fn("MachineEnrollment.loadToken")(
         claimedMachineId: schemaMachineEnrollmentToken.claimedMachineId,
         claimedPublicKey: schemaMachineEnrollmentToken.claimedPublicKey,
         claimedName: schemaMachineEnrollmentToken.claimedName,
+        firstKeyCode: schemaMachineEnrollmentToken.firstKeyCode,
         joinedMachineId: schemaMachineEnrollmentToken.joinedMachineId,
         enrollmentRole: schemaMachineEnrollmentToken.enrollmentRole,
         serverEnrollmentId: schemaMachineEnrollmentToken.serverEnrollmentId,
@@ -291,6 +298,7 @@ const requireTokenClaimedBy = Effect.fn("MachineEnrollment.requireTokenClaim")(
       organizationId: row.organizationId,
       claimedPublicKey: row.claimedPublicKey,
       claimedName: row.claimedName,
+      firstKeyCode: row.firstKeyCode,
       spent: row.joinedMachineId !== null,
       serverEnrollmentId: row.serverEnrollmentId,
     };
@@ -860,13 +868,18 @@ const readCluster = Effect.fn("MachineEnrollment.readCluster")(function* (sessio
 
 /**
  * Whether a founder's Cluster is new: the Server is its only Machine, and only Cloud manages it. Once Cloud holds a
- * connection to the Server, the `cli-` and `device-` slots Cloud fills through it count as Cloud's too.
+ * connection to the Server, the `cli-` and `device-` slots Cloud fills through it count as Cloud's too. Before then, the
+ * one other slot that counts is the First Key's: the Device the token's minting CLI named with `--key`, which its Server
+ * trusts from its install line before Cloud ever connects.
  */
 const isFreshCluster = (
   { details, snapshot }: Effect.Success<ReturnType<typeof readCluster>>, machineId: MachineId, connected: boolean,
+  firstKeyCode: string | null,
 ) => {
   // A Server's own operator can approve a `device-` slot too; on a Server that is its Cluster's only Machine, that's theirs to do.
-  const cloudFilled = (label: string) => label === "cloud" || (connected && (label.startsWith("cli-") || label.startsWith("device-")));
+  const cloudFilled = (label: string) => label === "cloud"
+    || (firstKeyCode !== null && label === `device-${firstKeyCode}`)
+    || (connected && (label.startsWith("cli-") || label.startsWith("device-")));
   return details.id === machineId
     && details.management_clients.every(cloudFilled)
     && snapshot.machines.every((machine) => machine.id === machineId);
@@ -1089,7 +1102,7 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
             ? publish(saving).pipe(Effect.ignoreCause({ log: true, message: "Founder's credential not saved after a failed read" }))
             : Effect.void),
         );
-        if (isFreshCluster(cluster, input.machineId, connected)) {
+        if (isFreshCluster(cluster, input.machineId, connected, token.firstKeyCode)) {
           yield* publish(saving);
           return false;
         }
@@ -1100,7 +1113,7 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
         }
         const release = yield* releaseRefusedClaim(token.organizationId, input.machineId, verify.encryptedPairingSecret, input.token);
         // A racing publication saved Cloud's connection since: the slots Cloud fills through it are Cloud's.
-        if (release === "connected" && isFreshCluster(cluster, input.machineId, true)) {
+        if (release === "connected" && isFreshCluster(cluster, input.machineId, true, token.firstKeyCode)) {
           yield* publish(saving);
           return false;
         }
@@ -1174,7 +1187,7 @@ export const completeMachineEnrollment = Effect.fn(
       }
       if (opened.status !== "connected") return yield* cantReachServer(opened);
       if (isFounding(row, machineId)
-        && !isFreshCluster(yield* readCluster(opened.connected).pipe(withClusterBudget(FRESHNESS_CLUSTER_MS)), machineId, true)) {
+        && !isFreshCluster(yield* readCluster(opened.connected).pipe(withClusterBudget(FRESHNESS_CLUSTER_MS)), machineId, true, token.firstKeyCode)) {
         // A racing completion may have committed this founder since `row` was read; its Cluster may grow from then on.
         // Otherwise Cloud keeps its connection, for resetting the attempt to revoke.
         const [current] = yield* loadPairingRow(token.organizationId);

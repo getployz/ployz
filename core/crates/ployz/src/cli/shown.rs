@@ -385,6 +385,7 @@ public!(
     SettingPath,
     PlainValue,
     PlainPatch,
+    ployz_core::first_key::LineKey,
 );
 
 #[cfg(test)]
