@@ -41,8 +41,8 @@ impl Session {
             let observed = crate::cluster::visible_machine(&target, &machines)?;
             if observed.machine.runtime.claim(TRASH_APPROVAL_CAPABILITY) == Claim::Lacks {
                 return Err(RpcError::unsupported(format!(
-                    "{} runs a Ployz that shows its Trash only on the Server. Upgrade it to \
-                     manage its Trash here.",
+                    "{} runs an older Ployz that shows its Trash only on the Server. Upgrade \
+                     it to see its Trash here.",
                     observed.machine.name
                 )));
             }
@@ -74,7 +74,7 @@ impl Session {
             .map_err(|refusal| RpcError::invalid_argument(refusal.to_string()))?;
         if body.action != TrashAction::Restore {
             return Err(RpcError::invalid_argument(
-                "This approval empties, not restores",
+                "This approval is for deleting, not restoring.",
             ));
         }
         let mut client = self.client()?;
@@ -113,7 +113,7 @@ impl Session {
             .map_err(|refusal| RpcError::invalid_argument(refusal.to_string()))?;
         if body.action != TrashAction::Empty {
             return Err(RpcError::invalid_argument(
-                "This approval restores, not empties",
+                "This approval is for restoring, not deleting.",
             ));
         }
         let client = self.client()?;

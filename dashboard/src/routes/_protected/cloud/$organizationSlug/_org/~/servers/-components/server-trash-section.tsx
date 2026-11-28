@@ -15,17 +15,21 @@ import { approvedTrash } from "#/modules/trash/trash-approval";
 import { emptyServerTrashServerFn, restoreServerTrashServerFn } from "#/modules/trash/trash.functions";
 import { serverTrash, serverTrashKey } from "#/modules/trash/trash.queries";
 
-const KIND = { root: "Volume", slot: "Mirror or old copy", copy: "Mirror's old data" } as const;
+const KIND = { root: "Volume", slot: "Mirror or old copy", copy: "Mirror's earlier data" } as const;
 
 const entries = (count: number) => (count === 1 ? "1 entry" : `${count} entries`);
+
+/** The names of `ids` in `trash`, as a toast or a dialog names them: one by its name, more by their count. */
+const nameOf = (trash: TrashList, ids: readonly string[]) =>
+  ids.length === 1 ? (trash.entries.find((entry) => entry.id === ids[0])?.name ?? ids[0]) : entries(ids.length);
 
 const when = (unixSeconds: number) =>
   new Date(unixSeconds * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 
 /** What an entry is, its size, when it was deleted and when the Trash deletes it for good. */
 function entryHint(entry: TrashEntry) {
-  const kind = entry.restoring ? `${KIND[entry.place]}, being restored` : KIND[entry.place];
-  return `${kind} · ${bytesText(entry.used_bytes)} · Deleted ${when(entry.trashed_at)} · Gone for good ${when(entry.expires_at)}`;
+  const kind = entry.restoring ? `${KIND[entry.place]} · Restoring` : KIND[entry.place];
+  return `${kind} · ${bytesText(entry.used_bytes)} · Deleted ${when(entry.trashed_at)} · Kept until ${when(entry.expires_at)}`;
 }
 
 /**
@@ -38,14 +42,14 @@ export function ServerTrashSection({ organizationSlug, server }: { organizationS
   if (data.kind === "unread") {
     return (
       <SettingsSection id="server-trash" title="Trash" description={DESCRIPTION}>
-        <SettingsRow label="Couldn't read the trash" hint={data.message} commit="none" />
+        <SettingsRow label="Trash couldn't load" hint={data.message} commit="none" />
       </SettingsSection>
     );
   }
   return <TrashEntries organizationSlug={organizationSlug} server={server} trash={data.trash} />;
 }
 
-const DESCRIPTION = "Deleted volume data this server keeps for 7 days. Your passkey approves exactly the entries you pick.";
+const DESCRIPTION = "Deleted volume data, kept for 7 days.";
 
 function TrashEntries({ organizationSlug, server, trash }: { organizationSlug: string; server: { id: string; name: string }; trash: TrashList }) {
   const queryClient = useQueryClient();
@@ -63,8 +67,8 @@ function TrashEntries({ organizationSlug, server, trash }: { organizationSlug: s
       data: { organizationSlug, machineId: server.id, approval: await approvedTrash(queryClient, organizationSlug, server.id, "restore", ids) },
     }),
     onSuccess: async ({ restored, failed }) => {
-      if (restored.length > 0) toast(`Restored ${entries(restored.length)} on ${server.name}`);
-      for (const failure of failed) toast.error(`${failure.id} wasn't restored`, { description: failure.reason });
+      if (restored.length > 0) toast(restored.length === 1 ? `${restored[0]?.name} restored` : `${entries(restored.length)} restored`);
+      for (const failure of failed) toast.error(`Couldn't restore ${nameOf(trash, [failure.id])}`, { description: failure.reason });
       await settle();
     },
   });
@@ -85,20 +89,20 @@ function TrashEntries({ organizationSlug, server, trash }: { organizationSlug: s
         <>
           <Button variant="outline" size="sm" disabled={idle} title={gate.reason} onClick={() => restore.mutate()}>
             <ArchiveRestoreIcon data-icon="inline-start" />
-            {restore.isPending ? "Waiting for your passkey…" : ids.length === 0 ? "Restore" : `Restore ${entries(ids.length)}`}
+            {restore.isPending ? "Waiting for your passkey…" : "Restore"}
           </Button>
           <Button variant="destructive" size="sm" disabled={idle} title={gate.reason} onClick={() => setEmptying(true)}>
             <Trash2Icon data-icon="inline-start" />
-            Delete for good
+            Delete
           </Button>
         </>
       )}
     >
       {restore.isError ? (
-        <SettingsRow label="Nothing restored" hint={<span role="alert">{restore.error.message}</span>} commit="none" />
+        <SettingsRow label="Couldn't restore" hint={<span role="alert">{restore.error.message}</span>} commit="none" />
       ) : null}
-      {empty ? <SettingsEmpty title="Nothing in the trash" /> : (
-        <SettingsList label={`${server.name}'s trash`}>
+      {empty ? <SettingsEmpty title="Trash is empty" /> : (
+        <SettingsList label="Trash entries">
           {trash.entries.map((entry) => (
             <SettingsListItem
               key={entry.id}
@@ -121,7 +125,7 @@ function TrashEntries({ organizationSlug, server, trash }: { organizationSlug: s
               key={entry.id}
               media={<FileQuestionIcon />}
               label={<span className="font-mono">{entry.id}</span>}
-              hint={`Ployz can't read this entry, so only root on ${server.name} can delete it · ${bytesText(entry.used_bytes)} · ${entry.reason}`}
+              hint={`Unreadable · ${bytesText(entry.used_bytes)} · ${entry.reason}`}
               commit="none"
             />
           ))}
@@ -130,19 +134,18 @@ function TrashEntries({ organizationSlug, server, trash }: { organizationSlug: s
       <DeletionDialog
         open={emptying}
         onOpenChange={setEmptying}
-        title={`Delete ${entries(chosen.length)} for good?`}
+        title={`Delete ${nameOf(trash, ids)}?`}
         place={server.name}
-        confirmLabel="Delete for good"
+        confirmLabel="Delete"
         pendingLabel="Waiting for your passkey"
-        sentence={<>This deletes from <span className="font-medium">{server.name}</span>&rsquo;s trash, and can&rsquo;t be undone:</>}
         callbacks={{
           load: async () => ({ items: chosen.map((entry) => ({ kind: "volume" as const, name: entry.name, detail: bytesText(entry.used_bytes) })), evidence: ids }),
           confirm: async (named) => {
             const approval = await approvedTrash(queryClient, organizationSlug, server.id, "empty", named);
             const emptied = await emptyServerTrashServerFn({ data: { organizationSlug, machineId: server.id, approval } });
             await settle();
-            if (emptied.failed.length > 0) throw new Error(emptied.failed.map((failure) => `${failure.id}: ${failure.reason}`).join(" "));
-            toast(`Deleted ${entries(emptied.emptied.length)} from ${server.name}'s trash`);
+            if (emptied.failed.length > 0) throw new Error(emptied.failed.map((failure) => `Couldn't delete ${nameOf(trash, [failure.id])}: ${failure.reason}`).join(" "));
+            toast(`${nameOf(trash, emptied.emptied)} deleted`);
           },
         }}
       />

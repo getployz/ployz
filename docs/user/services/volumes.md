@@ -333,12 +333,10 @@ already have created it. Saving or deploying its deletion asks first, the same w
 
 ### Get deleted data back
 
-Each server keeps its own trash. In Ployz Cloud, open the server under **Servers**: **Trash**
-lists each entry with what it was, its size, when it was deleted and when it's gone for good.
-Pick entries, then click **Restore**, or **Delete for good** and type the server's name. Your
-passkey approves exactly the entries you picked on that server, and the server checks that
-itself, so the approval can't be used for any other entry or server. A server whose Ployz is
-older shows its trash only on the server, and says to upgrade it.
+Each server keeps its own trash. In Ployz Cloud, open the server under **Servers** and find
+**Trash**. Pick entries, then click **Restore**, or **Delete** and type the server's name. Your
+passkey approves only the entries you picked, on that server. A server on an older Ployz shows
+its trash only on the server.
 
 From a terminal, run these on the server with `sudo`, or from your computer with
 `--connect ssh://USER@HOST`. A context that reaches several servers is refused: pick one with

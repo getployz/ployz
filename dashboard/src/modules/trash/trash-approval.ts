@@ -15,7 +15,7 @@ import { freshSealing } from "#/modules/sealing/sealing.queries";
 /** Why the approval couldn't be made, in words the page shows as they are. */
 export class TrashNotApproved extends Error {}
 
-const UNREAD = "Couldn't read your cluster, so nothing changed. Try again.";
+const UNREAD = "Couldn't read your cluster. Try again.";
 
 /** The person's passkey approval of `action` on exactly `ids` in the Trash of `machine`, in the Cluster `cluster`. */
 export async function approveTrash(
@@ -30,7 +30,7 @@ export async function approveTrash(
     return await signWithPasskey(body, "workflow");
   } catch (error) {
     if (error instanceof PasskeyDeclined) throw new TrashNotApproved(error.message);
-    if (error instanceof Error && error.name === "NotAllowedError") throw new TrashNotApproved("Your passkey didn't answer. Nothing changed.");
+    if (error instanceof Error && error.name === "NotAllowedError") throw new TrashNotApproved("Your passkey didn't answer. Try again.");
     throw new TrashNotApproved("Your browser couldn't use a passkey here.");
   }
 }

@@ -41,9 +41,9 @@ it("lists each entry with what it is, its size and when it was deleted, and an e
   renderTrash({ kind: "listed", trash: listed });
   expect(await screen.findByText("shop-production_vol-pg")).toBeTruthy();
   const pg = screen.getByText("shop-production_vol-pg").closest("[role=listitem]");
-  expect(pg?.textContent).toMatch(/Volume · 2\.4 GB · Deleted .+ · Gone for good .+/);
+  expect(pg?.textContent).toMatch(/Volume · 2\.4 GB · Deleted .+ · Kept until .+/);
   expect(screen.getByText("shop-production_vol-uploads").closest("[role=listitem]")?.textContent).toContain("Mirror or old copy · 51 MB");
-  expect(screen.getByText(/only root on web-1 can delete it/)).toBeTruthy();
+  expect(screen.getByText(/^Unreadable · /)).toBeTruthy();
   expect(screen.queryByRole("checkbox", { name: new RegExp("c".repeat(26)) })).toBeNull();
 });
 
@@ -55,7 +55,7 @@ it("restores only the picked entries, with a passkey approval of exactly those o
   expect(restore.hasAttribute("disabled")).toBe(true);
 
   fireEvent.click(screen.getByRole("checkbox", { name: /shop-production_vol-uploads/ }));
-  fireEvent.click(screen.getByRole("button", { name: "Restore 1 entry" }));
+  fireEvent.click(screen.getByRole("button", { name: "Restore" }));
 
   await waitFor(() => expect(restoreFn).toHaveBeenCalled());
   expect(approve).toHaveBeenCalledWith(expect.anything(), "ada", server.id, "restore", [second]);
@@ -63,26 +63,26 @@ it("restores only the picked entries, with a passkey approval of exactly those o
 });
 
 it("sends nothing when the passkey doesn't answer, and says so", async () => {
-  vi.spyOn(approval, "approvedTrash").mockRejectedValue(new approval.TrashNotApproved("Your passkey didn't answer. Nothing changed."));
+  vi.spyOn(approval, "approvedTrash").mockRejectedValue(new approval.TrashNotApproved("Your passkey didn't answer. Try again."));
   const restoreFn = vi.spyOn(functions, "restoreServerTrashServerFn");
   renderTrash({ kind: "listed", trash: listed });
   fireEvent.click(await screen.findByRole("checkbox", { name: /shop-production_vol-pg/ }));
-  fireEvent.click(screen.getByRole("button", { name: "Restore 1 entry" }));
-  expect((await screen.findByRole("alert")).textContent).toBe("Your passkey didn't answer. Nothing changed.");
+  fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+  expect((await screen.findByRole("alert")).textContent).toBe("Your passkey didn't answer. Try again.");
   expect(restoreFn).not.toHaveBeenCalled();
 });
 
-it("deletes the picked entries for good only once the server's name is typed, approving exactly those", async () => {
+it("deletes the picked entries only once the server's name is typed, approving exactly those", async () => {
   const approve = vi.spyOn(approval, "approvedTrash").mockResolvedValue("signed");
   const emptyFn = vi.spyOn(functions, "emptyServerTrashServerFn").mockResolvedValue({ emptied: [first], missing: [], failed: [], restoring: [] });
   renderTrash({ kind: "listed", trash: listed });
   fireEvent.click(await screen.findByRole("checkbox", { name: /shop-production_vol-pg/ }));
-  fireEvent.click(screen.getByRole("button", { name: "Delete for good" }));
+  fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 
-  const dialog = await screen.findByRole("alertdialog", { name: "Delete 1 entry for good?" });
+  const dialog = await screen.findByRole("alertdialog", { name: "Delete shop-production_vol-pg?" });
   expect(dialog.textContent).toContain("shop-production_vol-pg");
   expect(dialog.textContent).not.toContain("shop-production_vol-uploads");
-  const confirm = within(dialog).getByRole("button", { name: "Delete for good" });
+  const confirm = within(dialog).getByRole("button", { name: "Delete" });
   expect(confirm.hasAttribute("disabled")).toBe(true);
   fireEvent.change(within(dialog).getByRole("textbox", { name: "Type web-1 to confirm" }), { target: { value: "web-1" } });
   await waitFor(() => expect(confirm.hasAttribute("disabled")).toBe(false));
@@ -94,7 +94,7 @@ it("deletes the picked entries for good only once the server's name is typed, ap
 });
 
 it("says why a server's trash couldn't be read", async () => {
-  renderTrash({ kind: "unread", message: "web-1 runs a Ployz that shows its Trash only on the Server. Upgrade it to manage its Trash here." });
-  expect(await screen.findByText(/Upgrade it to manage its Trash here/)).toBeTruthy();
+  renderTrash({ kind: "unread", message: "web-1 runs an older Ployz that shows its Trash only on the Server. Upgrade it to see its Trash here." });
+  expect(await screen.findByText(/Upgrade it to see its Trash here/)).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Restore" })).toBeNull();
 });
