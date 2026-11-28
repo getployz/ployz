@@ -394,7 +394,7 @@ fn a_device_signs_a_rule() {
 }
 
 #[test]
-fn a_ci_key_signs_no_rule_even_over_the_whole_cluster() {
+fn a_ci_key_signs_no_rule() {
     use crate::authority::{
         Cap, CapSet, Grant, GrantKind, KeyKind, KeyPlaces, KeyScope, TrustedGrant,
     };
@@ -412,7 +412,11 @@ fn a_ci_key_signs_no_rule_even_over_the_whole_cluster() {
                 kind: GrantKind::Ci,
                 scope: KeyScope {
                     caps: CapSet::of(&[Cap::Spec]),
-                    places: KeyPlaces::Cluster,
+                    places: KeyPlaces::Only(vec![crate::authority::KeyPlace {
+                        environment: uuid::Uuid::nil(),
+                        namespace: crate::Namespace::parse("app").unwrap(),
+                        service: None,
+                    }]),
                 },
                 volumes: Vec::new(),
                 issued_at: Timestamp::from_millis(1).unwrap(),
@@ -1401,7 +1405,11 @@ fn only_a_person_or_a_full_device_approves_a_commit() {
                 kind: GrantKind::Ci,
                 scope: KeyScope {
                     caps: CapSet::of(&[Cap::Spec]),
-                    places: KeyPlaces::Cluster,
+                    places: KeyPlaces::Only(vec![crate::authority::KeyPlace {
+                        environment: uuid::Uuid::nil(),
+                        namespace: crate::Namespace::parse("app").unwrap(),
+                        service: None,
+                    }]),
                 },
                 volumes: Vec::new(),
                 issued_at: Timestamp::from_millis(1).unwrap(),

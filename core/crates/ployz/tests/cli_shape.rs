@@ -434,15 +434,21 @@ fn usage_errors_exit_2() {
 }
 
 #[test]
-fn an_agent_key_without_an_environment_is_refused_before_anything_is_read() {
-    let (code, json, stderr) = run_json(&["key", "add", "--agent", "--json"]);
-    assert_eq!(code, Some(2), "{stderr}");
-    assert_eq!(
-        json.pointer("/error/code").unwrap(),
-        "invalid_argument",
-        "{json}"
-    );
-    assert!(message(&json).contains("--env"), "{json}");
+fn a_ci_or_agent_key_without_an_environment_is_refused_before_anything_is_read() {
+    for args in [
+        &["key", "add", "--ci", "--name", "github-actions", "--json"][..],
+        &["key", "add", "--agent", "--json"],
+        &["key", "scope", "mmg42klgyq", "--json"],
+    ] {
+        let (code, json, stderr) = run_json(args);
+        assert_eq!(code, Some(2), "{args:?}: {stderr}");
+        assert_eq!(
+            json.pointer("/error/code").unwrap(),
+            "invalid_argument",
+            "{json}"
+        );
+        assert!(message(&json).contains("--env"), "{json}");
+    }
 }
 
 #[test]

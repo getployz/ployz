@@ -27,6 +27,12 @@ pub enum AuthorityRefusal {
         kind: KeyKind,
         what: &'static str,
     },
+    /// The key is a CI key made before every key named its Environments, so it reaches
+    /// none.
+    #[error(
+        "the CI key {code} names no environment, so it may approve nothing: make a new one with ployz key add --ci --env"
+    )]
+    Unscoped { code: DeviceCode },
     /// The key is a grant whose Volume list names no entry for a Volume the spec mounts.
     #[error("the {kind} key {code} may not mount Volume {volume} here")]
     VolumeNotGranted {
