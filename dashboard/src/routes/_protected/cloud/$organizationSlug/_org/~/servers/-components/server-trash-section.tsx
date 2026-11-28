@@ -23,7 +23,7 @@ const when = (unixSeconds: number) =>
   new Date(unixSeconds * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 
 /** What an entry is, its size, when it was deleted and when the Trash deletes it for good. */
-export function entryHint(entry: TrashEntry) {
+function entryHint(entry: TrashEntry) {
   const kind = entry.restoring ? `${KIND[entry.place]}, being restored` : KIND[entry.place];
   return `${kind} · ${bytesText(entry.used_bytes)} · Deleted ${when(entry.trashed_at)} · Gone for good ${when(entry.expires_at)}`;
 }

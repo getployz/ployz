@@ -334,8 +334,9 @@ read the key from that server and need no pin.
 ### Add a passkey
 
 A passkey approves an [automatic deploy rule](../deploy/github.md#approve-a-rule-for-deploys-on-push),
-a Private Access key and a new server's [join](add-a-server.md#approve-a-join) from your
-browser, and nothing else: it can't deploy, open a connection, run `exec`, or approve a device.
+a Private Access key, a new server's [join](add-a-server.md#approve-a-join), and restoring or
+deleting the entries you pick in one server's [trash](../services/volumes.md#get-deleted-data-back)
+from your browser, and nothing else: it can't deploy, open a connection, run `exec`, or approve a device.
 
 In Ployz Cloud, open **Account** in your Organization and choose **Add passkey**. Your browser
 asks for a fingerprint, face or security key. That files the passkey with Ployz Cloud, which
