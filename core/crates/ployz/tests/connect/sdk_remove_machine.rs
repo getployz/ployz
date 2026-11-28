@@ -59,6 +59,50 @@ async fn only_cloud_removes_the_last_machine_it_holds() {
     server.abort();
 }
 
+/// Since every Cloud founding arms a `device-` First Key, that key is part of Cloud's
+/// hold: the last Machine is left to Cloud's removal, not refused as someone else's.
+#[tokio::test]
+async fn a_founding_device_key_is_part_of_clouds_hold_on_the_last_machine() {
+    let (_description, entry, service) = last_machine_cluster();
+    hold_keys(&service, &["cloud", "cli-laptop", "device-jzvsicbxap"]);
+    let (mut client, server, _) = connected_client(service.clone()).await;
+
+    let error = client
+        .remove_machine_membership(&ployz_core::MachineTarget::from(&entry.machine.id))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict);
+    assert!(
+        error.message.contains("Cloud manages it"),
+        "{}",
+        error.message
+    );
+    assert!(service.removed_machines.lock().unwrap().is_empty());
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_device_key_without_cloud_still_refuses_the_last_machine() {
+    let (_description, entry, service) = last_machine_cluster();
+    hold_keys(&service, &["device-jzvsicbxap"]);
+    let (mut client, server, _) = connected_client(service.clone()).await;
+
+    let error = client
+        .remove_machine_membership(&ployz_core::MachineTarget::from(&entry.machine.id))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict);
+    assert!(
+        error
+            .message
+            .contains("still managed by `device-jzvsicbxap`"),
+        "{}",
+        error.message
+    );
+    assert!(service.removed_machines.lock().unwrap().is_empty());
+    server.abort();
+}
+
 #[tokio::test]
 async fn unreadable_holders_of_the_last_machine_refuse_its_removal() {
     let (_description, entry, mut service) = last_machine_cluster();
