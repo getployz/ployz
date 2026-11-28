@@ -33,7 +33,7 @@ const INSPECTS_AT_ONCE: usize = 8;
 /// What one member Server reported for the Volume, or why it didn't. A Machine the entry
 /// lists only by ID goes by that ID.
 #[derive(Debug)]
-pub(super) struct Seen {
+pub(crate) struct Seen {
     pub(super) id: MachineId,
     pub(super) name: String,
     pub(super) copy: Result<Option<VolumeCopy>, Unseen>,
@@ -252,59 +252,19 @@ pub(super) fn docker_volume(
 /// What every member Server in `frame` reports for `docker`, sorted by name. A Server that
 /// can't say is [`Unseen`], with why. With `prove`, each is asked which Pool it read and
 /// what a restore pinned there.
-pub(super) async fn copies(
+pub(crate) async fn copies(
     client: &crate::connect::Client,
     frame: &RuntimeWatchFrame,
     docker: &DockerVolumeName,
     prove: bool,
 ) -> Vec<Seen> {
     // A Server Docker-only now may still hold a Pool it can't import, so every member answers.
-    let mut seen: Vec<Seen> = stream::iter(frame.machines.iter())
-        .map(|observed| async move {
-            let (copy, read, pinned) = if observed.invites_rpc() {
-                let inspected = client
-                    .call_shared::<op::InspectVolumeCopy>(
-                        InspectVolumeCopyRequest {
-                            name: docker.clone(),
-                            prove,
-                        },
-                        Call::once()
-                            .to(&MachineTarget::from(&observed.machine.id))
-                            .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
-                    )
-                    .await
-                    .map_err(crate::connect::rpc_error);
-                let unfenced =
-                    observed.machine.runtime.claim(VOLUME_FLOOR_CAPABILITY) == Claim::Lacks;
-                match inspected {
-                    Ok(view) if unfenced && view.copy.is_some() => {
-                        (Err(Unseen::Unfenced), view.read, view.pinned)
-                    }
-                    Ok(view) => (Ok(view.copy), view.read, view.pinned),
-                    Err(error) => (
-                        Err(Unseen::Silent(format!(
-                            "did not answer ({})",
-                            error.message
-                        ))),
-                        None,
-                        None,
-                    ),
-                }
-            } else {
-                (
-                    Err(Unseen::Silent("is down or hasn't joined yet".to_owned())),
-                    None,
-                    None,
-                )
-            };
-            Seen {
-                id: observed.machine.id,
-                name: observed.machine.name.to_string(),
-                copy,
-                read,
-                pinned,
-            }
-        })
+    let inspects: Vec<_> = frame
+        .machines
+        .iter()
+        .map(|observed| seen_on(client, observed, docker, prove))
+        .collect();
+    let mut seen: Vec<Seen> = stream::iter(inspects)
         .buffer_unordered(INSPECTS_AT_ONCE)
         .collect()
         .await;
@@ -319,6 +279,57 @@ pub(super) async fn copies(
     }));
     seen.sort_by(|a, b| a.name.cmp(&b.name));
     seen
+}
+
+/// What `observed` reports for `docker`, or why it can't say.
+async fn seen_on(
+    client: &crate::connect::Client,
+    observed: &ployz_core::MachineObservation,
+    docker: &DockerVolumeName,
+    prove: bool,
+) -> Seen {
+    let (copy, read, pinned) = if observed.invites_rpc() {
+        let inspected = client
+            .call_shared::<op::InspectVolumeCopy>(
+                InspectVolumeCopyRequest {
+                    name: docker.clone(),
+                    prove,
+                },
+                Call::once()
+                    .to(&MachineTarget::from(&observed.machine.id))
+                    .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
+            )
+            .await
+            .map_err(crate::connect::rpc_error);
+        let unfenced = observed.machine.runtime.claim(VOLUME_FLOOR_CAPABILITY) == Claim::Lacks;
+        match inspected {
+            Ok(view) if unfenced && view.copy.is_some() => {
+                (Err(Unseen::Unfenced), view.read, view.pinned)
+            }
+            Ok(view) => (Ok(view.copy), view.read, view.pinned),
+            Err(error) => (
+                Err(Unseen::Silent(format!(
+                    "did not answer ({})",
+                    error.message
+                ))),
+                None,
+                None,
+            ),
+        }
+    } else {
+        (
+            Err(Unseen::Silent("is down or hasn't joined yet".to_owned())),
+            None,
+            None,
+        )
+    };
+    Seen {
+        id: observed.machine.id,
+        name: observed.machine.name.to_string(),
+        copy,
+        read,
+        pinned,
+    }
 }
 
 /// `ployz volume restore VOLUME --from SERVER` on a Cluster with no Cloud.

@@ -227,6 +227,8 @@ pub enum Ask<'a> {
     PrivateAccess,
     /// A new Volume made from a restore point of another.
     Copy,
+    /// A restore or empty of named entries in one Machine's Trash.
+    Trash,
 }
 
 impl Ask<'_> {
@@ -245,6 +247,7 @@ impl Ask<'_> {
             Self::Join => "a join",
             Self::PrivateAccess => "Private Access",
             Self::Copy => "a copy of a Volume",
+            Self::Trash => "a restore or empty of the Trash",
         }
     }
 
@@ -253,7 +256,9 @@ impl Ask<'_> {
             Self::Version {
                 reaches_host: true, ..
             } => CapSet::bit(Cap::Spec) | CapSet::bit(Cap::HostReach),
-            Self::Version { .. } | Self::Rule | Self::Commit | Self::Copy => CapSet::bit(Cap::Spec),
+            Self::Version { .. } | Self::Rule | Self::Commit | Self::Copy | Self::Trash => {
+                CapSet::bit(Cap::Spec)
+            }
             Self::Key => CapSet::bit(Cap::Key),
             Self::Join | Self::PrivateAccess => CapSet::bit(Cap::Join),
         })

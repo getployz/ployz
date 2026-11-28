@@ -393,9 +393,6 @@ const DIRECT: &[&str] = &[
     "SetDevice",
     "SetKey",
     "SeedVolume",
-    "ListTrash",
-    "RestoreTrash",
-    "EmptyTrash",
     "Exec",
     "Build",
 ];

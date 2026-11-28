@@ -20,6 +20,7 @@ import { ServerResources } from "./-components/server-resources";
 import { ServerSettings } from "./-components/server-settings";
 import { ServerStatusLabel } from "./-components/server-status-label";
 import { ServerSwitcher } from "./-components/server-switcher";
+import { ServerTrashSection } from "./-components/server-trash-section";
 import { ServerUpgradeSection } from "./-components/server-upgrade-section";
 import { ServersStaleAlert, ServersUnreachable } from "./-components/servers-unreachable";
 
@@ -96,6 +97,7 @@ function RouteComponent() {
         <ServerUpgradeSection machine={machine} status={server.status} organizationSlug={organizationSlug} />
       </Suspense>
       {server.status === "offline" ? null : <ServerLeftoversSection organizationSlug={organizationSlug} server={{ id: machine.id, name: server.name }} />}
+      {server.status === "offline" ? null : <ServerTrashSection organizationSlug={organizationSlug} server={{ id: machine.id, name: server.name }} />}
       <Suspense fallback={null}>
         <ServerSettings organizationSlug={organizationSlug} server={server} servers={servers} stale={stale} />
       </Suspense>
