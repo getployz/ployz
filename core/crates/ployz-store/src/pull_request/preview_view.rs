@@ -142,6 +142,9 @@ struct Board {
     repository_id: RepositoryId,
     start_from: Option<EnvironmentId>,
     settings: Option<PreviewSettings>,
+    /// The Service whose settings the rule doesn't cover, as a preview opening now would
+    /// deploy them.
+    not_covered: Option<ServiceName>,
     limit: u32,
     /// Each open preview's pull request, Environment, Namespace and what it shows.
     previews: Vec<(PullRequestNumber, EnvironmentId, PreviewNamespace, Shown)>,
@@ -173,6 +176,7 @@ impl Board {
             repository_id,
             start_from: plan.start_from.clone(),
             settings: settings(tx, plan)?,
+            not_covered: preview::not_covered(tx, who, plan)?,
             limit: u32::from(limit.get()),
             previews,
         })
@@ -225,8 +229,13 @@ impl Board {
                     }
                 }
                 Shown::Failed(message) => PreviewOutcome::NotDeployed {
-                    why: Some(NotDeployed::Failed {
-                        message: message.clone(),
+                    why: Some(match &self.not_covered {
+                        Some(service) => NotDeployed::NotCovered {
+                            service: service.clone(),
+                        },
+                        None => NotDeployed::Failed {
+                            message: message.clone(),
+                        },
                     }),
                 },
             });
@@ -252,6 +261,10 @@ impl Board {
         } else if !deployable {
             Some(NotDeployed::NotMember {
                 author: facts.author,
+            })
+        } else if let Some(service) = &self.not_covered {
+            Some(NotDeployed::NotCovered {
+                service: service.clone(),
             })
         } else if homes.is_some_and(<[MachineId]>::is_empty) {
             Some(NotDeployed::NoServer)

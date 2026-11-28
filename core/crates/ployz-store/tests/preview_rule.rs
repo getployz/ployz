@@ -15,10 +15,10 @@ use ployz_store::testing::backend;
 use ployz_store::{
     Actor, AddDomain, Admit, AuthorizedRepository, ClusterDomain, ClusterDomainStatus, ConfigStore,
     CreateEnvironment, CreateGitService, CreateProject, CreateService, CreateVolume, Deploy,
-    DeploymentId, DomainEvidence, Edit, EnvironmentId, EnvironmentName, EnvironmentRef, Hostname,
-    Mount, OrganizationId, PreviewRuleQuery, ProjectId, ProjectName, PullRequest, RunEvidence,
-    RunnerId, SealingRecipient, ServiceLineageId, SetPrPlan, SettingPath, Signers, SystemEvent,
-    Trusted, VolumeId, VolumeName, Written,
+    DeployPullRequestPreview, DeploymentId, DomainEvidence, Edit, EnvironmentId, EnvironmentName,
+    EnvironmentRef, Hostname, Mount, NotDeployed, OrganizationId, PreviewOutcome, PreviewRuleQuery,
+    PreviewsQuery, ProjectId, ProjectName, PullRequest, RunEvidence, RunnerId, SealingRecipient,
+    ServiceLineageId, SetPrPlan, SettingPath, Signers, SystemEvent, Trusted, VolumeId, VolumeName,
 };
 
 const PINNED: &str =
@@ -245,6 +245,15 @@ fn opened(number: u64) -> PullRequest {
     }
 }
 
+/// A member's ask to deploy pull request `number`'s head as a preview.
+fn asked(number: u64) -> DeployPullRequestPreview {
+    DeployPullRequestPreview {
+        repository_id: backend::repo_id(11),
+        number: backend::pr_number(number),
+        head: backend::sha("1111111111111111111111111111111111111111"),
+    }
+}
+
 /// The rule drafted from the preview rule view as Cloud's client reads it, signed and
 /// kept in `acme/web`'s plan.
 fn sign_previews(store: &ConfigStore, who: &Actor) -> AutoDeployRule {
@@ -282,16 +291,14 @@ fn every_preview_of_a_signed_preview_rule_runs_under_it() {
     let attest = AttestKey::from_bytes([0x55; 32]);
     let built = BuiltImageDigest::from_bytes([0x44; 32]);
     for number in [5, 6] {
-        let Written::Automated(automated) = store
+        store
             .system(
                 &who.organization,
                 &SystemEvent::PullRequest(opened(number)),
                 &cloud(),
             )
-            .unwrap()
-        else {
-            panic!("a system event writes Automated")
-        };
+            .unwrap();
+        let automated = store.write_trusted(&who, &asked(number), &cloud()).unwrap();
         let admitted = automated
             .admitted
             .first()
@@ -369,4 +376,76 @@ fn every_preview_of_a_signed_preview_rule_runs_under_it() {
             assert_eq!(admits, Ok(()), "{} in {namespace}", spec.name);
         }
     }
+}
+
+/// A start-from setting changed since the rule was signed: deploying a preview is refused
+/// naming the Service, and the pull request shows why, instead of a deploy every Server
+/// refuses.
+#[test]
+fn a_preview_of_settings_its_rule_does_not_cover_is_not_deployed() {
+    let (store, who) = shop();
+    sign_previews(&store, &who);
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: at("staging"),
+                expect: None,
+                changes: vec![ployz_store::Change::Set {
+                    path: SettingPath::parse("web.env.MODE").unwrap(),
+                    value: serde_json::json!("debug"),
+                }],
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::Command::Publish(ployz_store::Publish {
+                id: None,
+                environment: at("staging"),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+                rule: None,
+            }),
+        )
+        .unwrap();
+    store
+        .system(
+            &who.organization,
+            &SystemEvent::PullRequest(opened(5)),
+            &cloud(),
+        )
+        .unwrap();
+    let refused = store.write_trusted(&who, &asked(5), &cloud()).unwrap_err();
+    assert_eq!(
+        refused.code,
+        ployz_core::RpcErrorCode::Conflict,
+        "{refused:?}"
+    );
+    assert_eq!(
+        refused.details.get("service"),
+        Some(&serde_json::json!("web")),
+        "{refused:?}"
+    );
+
+    let query = PreviewsQuery {
+        project: None,
+        repository: backend::repo_name("acme/web"),
+        number: None,
+    };
+    let view = store.read_trusted(&who, &query, &cloud()).unwrap();
+    let row = view
+        .pull_requests
+        .iter()
+        .find(|row| row.number == backend::pr_number(5));
+    assert_eq!(
+        row.map(|row| &row.preview),
+        Some(&PreviewOutcome::NotDeployed {
+            why: Some(NotDeployed::NotCovered {
+                service: ServiceName::parse("web").unwrap(),
+            }),
+        }),
+    );
 }

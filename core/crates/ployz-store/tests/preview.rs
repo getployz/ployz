@@ -220,8 +220,43 @@ fn edited(
             *signer.public().as_bytes(),
         )),
     };
+    // The settings it approves, as Cloud's client drafts them from the preview rule view,
+    // for a Parent previews can start from.
+    if let Some(drafted) = drafted(store, who, parent.1) {
+        rule.services = drafted.services;
+        rule.preview = drafted.preview.map(|terms| PreviewTerms {
+            parent: uuid(parent.0).parse().unwrap(),
+            ..terms
+        });
+    }
     edit(&mut rule);
     Box::new(Signed::sign(&rule, &signer).unwrap())
+}
+
+/// The preview rule drafted from `parent`'s preview rule view, unless previews can't
+/// start from it.
+fn drafted(store: &ConfigStore, who: &Actor, parent: &str) -> Option<AutoDeployRule> {
+    let query = ployz_store::PreviewRuleQuery {
+        project: None,
+        repository: backend::repo_name("acme/web"),
+        start_from: EnvironmentName::parse(parent).unwrap(),
+    };
+    let view = store.read_trusted(who, &query, &Trusted::default()).ok()?;
+    let basis: ployz_core::authority::PreviewBasis =
+        serde_json::from_value(serde_json::to_value(&view).unwrap()).unwrap();
+    let terms = ployz_core::authority::rule_draft::RuleTerms {
+        cluster: cluster(),
+        machines: Vec::new(),
+        owner_id: 1,
+        builder: Builder::pinned(),
+        platform: "linux/amd64".to_owned(),
+        new_rule: RuleId::from_bytes([9; 16]),
+        issued_at: ployz_core::authority::Timestamp::from_millis(1_800_000_000_000).unwrap(),
+        signer: SignerKey::Device(ployz_core::DeviceKey::from_bytes(
+            *device().public().as_bytes(),
+        )),
+    };
+    Some(AutoDeployRule::draft_preview(&basis, terms).unwrap())
 }
 
 fn plan(from: &str) -> SetPrPlan {

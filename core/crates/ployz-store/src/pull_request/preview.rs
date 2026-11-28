@@ -746,6 +746,68 @@ pub(crate) fn rule(
         .map(|preview| preview.rule))
 }
 
+/// Refuse a Deployment of preview `environment` whose specs `target`, lowered in its
+/// `namespace` from `saved`, its Parent's copy, its preview rule doesn't cover: every
+/// Server would refuse it. The view says so first ([`not_covered`]).
+pub(crate) fn cover(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    saved: &SavedEnvironmentIntent,
+    (namespace, target): (&Namespace, &[ployz_core::RequestedServiceSpec]),
+) -> Result<(), RpcError> {
+    let Some(rule) = rule(tx, environment)?.and_then(|rule| rule.open().ok()) else {
+        return Ok(());
+    };
+    match crate::auto_rule::uncovered(&rule, namespace, saved, target) {
+        Some(service) => Err(uncovered(&service)),
+        None => Ok(()),
+    }
+}
+
+/// The Service of `plan`'s start-from whose settings its preview rule doesn't cover, as a
+/// preview opening now would deploy them; None while it covers them all, or previews are off.
+pub(super) fn not_covered(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    plan: &Stored,
+) -> Result<Option<ServiceName>, RpcError> {
+    let Some(rule) = (plan.preview.as_ref()).and_then(|preview| preview.rule.open().ok()) else {
+        return Ok(None);
+    };
+    let Some(parent) = &plan.start_from else {
+        return Ok(None);
+    };
+    let Some(saved) = crate::review::latest_saved(tx, parent)? else {
+        return Ok(None);
+    };
+    let Some(home) = rule.machines.first() else {
+        return Ok(None);
+    };
+    let sample = PreviewNamespace::mint(&rule.rule, home, [0; 4]);
+    let target = match deployment::query::preview_target(tx, who, (parent, &saved.intent), &sample)
+    {
+        Ok(target) => target,
+        Err(error) if error.code == ployz_core::RpcErrorCode::InvalidArgument => {
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
+    Ok(crate::auto_rule::uncovered(
+        &rule,
+        sample.namespace(),
+        &saved.intent,
+        &target,
+    ))
+}
+
+/// Why a preview of settings its rule doesn't cover isn't deployed.
+fn uncovered(service: &ServiceName) -> RpcError {
+    error::conflict(
+        format!("Not deployed: changes {service}'s settings, which the policy doesn't cover"),
+        json!({ "service": service }),
+    )
+}
+
 /// Whether `environment` is a preview its own removal closes. A Close of it may have
 /// reached its Server, which then never opens that Namespace again, so nothing makes it
 /// live again.

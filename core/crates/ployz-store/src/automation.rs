@@ -1058,10 +1058,34 @@ pub(crate) fn auto_admit(
                 losses: &losses,
             }
         },
-        namespace,
+        namespace.clone(),
         cluster_domain,
         opening.as_ref(),
     )?;
+    if let Some(opening) = &opening {
+        let ships = deployment::Ships {
+            targeting: match full {
+                true => deployment::Targeting::Full { prune: true },
+                false => deployment::Targeting::Named(services.to_vec()),
+            },
+            removals: ployz_core::ServiceRemovals::default(),
+        };
+        let target = deployment::lower_held(
+            tx,
+            id,
+            &saved.intent,
+            &ships,
+            (namespace.clone(), cluster_domain),
+            &who.organization,
+        )?
+        .created(!full);
+        crate::pull_request::preview::cover(
+            tx,
+            id,
+            &opening.intent(&saved.intent),
+            (&namespace, &target),
+        )?;
+    }
     let pins: BTreeMap<ServiceName, CommitSha> = pins
         .iter()
         .filter(|(name, _)| {

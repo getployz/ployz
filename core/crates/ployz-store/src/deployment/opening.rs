@@ -82,6 +82,12 @@ impl Opening {
         }
     }
 
+    /// `saved`, a revision of the preview, as its Parent's copy: what its specs lower from.
+    pub(crate) fn intent(&self, saved: &SavedEnvironmentIntent) -> SavedEnvironmentIntent {
+        self.open(saved, (&BTreeSet::new(), &BTreeMap::new()))
+            .intent
+    }
+
     /// `saved`, a revision of the preview, as its Parent's copy: each node of the Parent's
     /// latest Saved revision the preview has, with the source the preview's copy tracks,
     /// and `deployed` and `first_copies`, keyed by the preview's IDs, rekeyed by the
