@@ -41,7 +41,7 @@ pub(super) fn with_context_next(failure: Error, leaf: &ArgMatches) -> Error {
     let next = match failure.context_error() {
         Some(ContextError::NoContexts(_)) => no_contexts_next(leaf),
         Some(ContextError::NoConnections { name, .. }) => Some(
-            Rerun::then(leaf, &["server", "add", "--standalone"])
+            Rerun::then(leaf, &["server", "add", "--standalone", "root@HOST"])
                 .set("context", name.as_str())
                 .line(),
         ),

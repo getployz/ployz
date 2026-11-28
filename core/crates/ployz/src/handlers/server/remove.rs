@@ -148,11 +148,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     leave(root, Removal::Reset)
 }
 
-fn enforces(observation: &ployz_core::MachineObservation) -> bool {
-    observation.machine.runtime.device_enforcement == Some(true)
-}
-
-/// Refuse, before anything is asked or sent, a removal an enforcing Server would refuse:
+/// Refuse, before anything is asked or sent, a removal a Server would refuse:
 /// the Leave goes to the leaving Server and the Forget to the entry, and each needs this
 /// CLI there as an approved Device, over SSH, or on the local socket.
 fn refuse_without_device(
@@ -170,7 +166,7 @@ fn refuse_without_device(
         .into_iter()
         .chain(forget)
         .filter_map(|id| machines.iter().find(|observed| observed.machine.id == id))
-        .find(|observed| enforces(observed) && !client.reaches_full(&observed.machine.id, device))
+        .find(|observed| !client.reaches_full(&observed.machine.id, device))
     else {
         return Ok(());
     };
@@ -282,10 +278,10 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
             .await?
             .machine_id;
-        // An enforcing Server leaves, and forgets another, only for a Full caller, so the
-        // CLI drives the removal itself as a Device. The last Server waits on teardown.
-        let by_device = machines.len() > 1 && machines.iter().any(enforces);
-        let mut switched = selected.id == current && machines.len() > 1;
+        // A Server leaves, and forgets another, only for a Full caller, so the CLI drives
+        // the removal itself as a Device. The last Server waits on teardown.
+        let by_device = machines.len() > 1;
+        let mut switched = false;
         if by_device {
             (client, current, switched) = super::super::route::connect_full_avoiding(
                 matches,
@@ -294,10 +290,6 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             )
             .await?;
             refuse_without_device(&client, &machines, &selected, current, removal, matches)?;
-        } else if switched {
-            (client, current) =
-                super::super::route::connect_avoiding(matches, options.context(), &selected)
-                    .await?;
         }
         let hold = refuse_last_managed(&client, &machines, selected.id).await?;
         let held = removal.held(&client, observation, switched).await?;

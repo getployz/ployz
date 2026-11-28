@@ -433,9 +433,9 @@ impl Client {
     }
 }
 
-/// The Services a Drain of `target` within `scope` could move onto a Server that enforces
-/// Device approval, where each new copy needs a signed version. Empty when no other Server
-/// enforces. Reads only, so a caller can refuse before the Drain changes anything.
+/// The Services a Drain of `target` within `scope` could move onto another Server, where
+/// each new copy needs a signed version. Reads only, so a caller can refuse before the Drain
+/// changes anything.
 ///
 /// # Errors
 ///
@@ -450,13 +450,6 @@ pub(crate) async fn needing_versions(
         .map_err(|error| DrainError::Unchanged(Stop::Refused(error)))?
         .machine
         .clone();
-    let enforced = machines.iter().any(|observed| {
-        observed.machine.id != server.id
-            && observed.machine.runtime.device_enforcement == Some(true)
-    });
-    if !enforced {
-        return Ok(Vec::new());
-    }
     let snapshot = client.deploy_snapshot(machines).await?;
     unsigned_moves(snapshot, &server.id, scope).map_err(|detail| {
         DrainError::Unchanged(Stop::Unobservable {

@@ -52,7 +52,16 @@ export function KeyedInstall({ organizationSlug, target, installKey }: { organiz
       </div>
     );
   }
-  const lines = installLines(target, installKey.kind === "key" ? installKey.key : null);
+  if (installKey.kind === "no_passkey") {
+    return (
+      <p role="status" className="text-sm">
+        Add a passkey before your first server. Your new cluster trusts it from the start, so it never runs without a key.{" "}
+        <Link to="/cloud/$organizationSlug/~/account" params={{ organizationSlug }} className="underline">Add a passkey</Link>, then
+        come back here.
+      </p>
+    );
+  }
+  const lines = installLines(target, installKey.key);
   return (
     <div className="flex flex-col gap-2">
       <Tabs defaultValue="shell">
@@ -67,15 +76,7 @@ export function KeyedInstall({ organizationSlug, target, installKey }: { organiz
         </TabsContent>
         <TabsContent value="cloud-init"><CopyBlock value={lines.cloudInit} /></TabsContent>
       </Tabs>
-      {installKey.kind === "key" ? (
-        <p className="text-sm text-muted-foreground">The server will trust your passkey, {installKey.account}.</p>
-      ) : (
-        <p className="text-sm text-muted-foreground">
-          To approve changes from your browser,{" "}
-          <Link to="/cloud/$organizationSlug/~/account" params={{ organizationSlug }} className="underline">add a passkey</Link>{" "}
-          before you run this.
-        </p>
-      )}
+      <p className="text-sm text-muted-foreground">The server will trust your passkey, {installKey.account}.</p>
     </div>
   );
 }

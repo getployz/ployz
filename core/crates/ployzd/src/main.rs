@@ -97,6 +97,10 @@ enum Command {
         #[arg(long)]
         systemd_dir: PathBuf,
     },
+    /// Arm the First Key a Cluster founded through Ployz Cloud trusts, when this disk holds
+    /// none. `ployz server add` runs it over SSH with the key of the computer it runs on.
+    #[command(hide = true)]
+    ArmFirstKey { line: String },
     /// Install or replace this Machine's daemon release.
     Install(InstallArgs),
 }
@@ -264,6 +268,15 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
     }) = &args.command
     {
         ployzd::installer::write_units(bin_dir, run_dir, systemd_dir).map_err(io::Error::other)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    if let Some(Command::ArmFirstKey { line }) = &args.command {
+        let line = ployz_core::first_key::LineKey::parse(line).map_err(io::Error::other)?;
+        // A disk that already holds a key keeps it: only its own terminal replaces one.
+        ployz_core::first_key::FirstKeyFile::beside(&args.data_dir)
+            .lock()
+            .and_then(|held| held.arm(&line))
+            .map_err(io::Error::other)?;
         return Ok(ExitCode::SUCCESS);
     }
     if matches!(args.command, Some(Command::Fence)) {
