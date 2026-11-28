@@ -251,6 +251,7 @@ fn asked(number: u64) -> DeployPullRequestPreview {
         repository_id: backend::repo_id(11),
         number: backend::pr_number(number),
         head: backend::sha("1111111111111111111111111111111111111111"),
+        approval: None,
     }
 }
 

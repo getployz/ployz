@@ -49,7 +49,7 @@ use crate::storage::json_text;
 use std::collections::BTreeSet;
 use std::num::NonZeroU8;
 
-use ployz_core::authority::{AutoDeployRule, Signed};
+use ployz_core::authority::{AutoDeployRule, CommitApproval, Signed};
 use ployz_core::config::{SavedEnvironmentIntent, ServiceGitAccess, ServiceSource};
 use ployz_core::{PreviewNamespace, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -1188,9 +1188,20 @@ pub(crate) fn approve(
         trusted,
     };
     open(tx, who, &at, &mut automated)?;
+    // A preview of a pull request that isn't a member's own deploys only a commit a
+    // person approved with a key the Servers trust, as `deploy_preview` takes it.
     if first {
         for (environment, _) in &current {
-            crate::automation::deploy_head(tx, who, environment, &event, trusted, &mut automated)?;
+            if preview::of(tx, environment)?.is_none() {
+                crate::automation::deploy_head(
+                    tx,
+                    who,
+                    environment,
+                    &event,
+                    trusted,
+                    &mut automated,
+                )?;
+            }
         }
     }
     preview::reconcile(tx, who, &previews, trusted, &mut automated)?;
@@ -1233,7 +1244,8 @@ pub(crate) fn deploy_preview(
     scope::lock_all(tx, touched)?;
     let mut automated = Automated::default();
     preview::reconcile(tx, who, &previews, trusted, &mut automated)?;
-    preview::deploy(tx, who, &previews, &event, trusted, &mut automated)?;
+    let asked_for = (&event, asked.approval.as_ref());
+    preview::deploy(tx, who, &previews, asked_for, trusted, &mut automated)?;
     automated.checks.push(PullRequestRef {
         repository_id,
         number,
@@ -1375,7 +1387,7 @@ fn open(
             Ok(Some(automation::Deploy::NoServers))
         } else {
             crate::storage::attempt(tx, |tx| {
-                create(tx, who, &start, &plan, (event, trusted, None))
+                create(tx, who, &start, &plan, (event, trusted, None), None)
             })
         };
         automation::record(&start.summary.id, deployed, automated)?;
@@ -1384,13 +1396,15 @@ fn open(
 }
 
 /// Make the pull request's PR Environment from `start` and admit its first
-/// Deployment. None when no Service of `start` deploys from the repository.
+/// Deployment, of the head `approval` approved when it carries one. None when no Service
+/// of `start` deploys from the repository.
 fn create(
     tx: &mut dyn Tx,
     who: &Actor,
     start: &Environment,
     plan: &Stored,
     (event, trusted, preview): (&PullRequest, &Trusted, Option<&PreviewNamespace>),
+    approval: Option<&Signed<CommitApproval>>,
 ) -> Result<Option<automation::Deploy>, RpcError> {
     let Some(made) = make(tx, who, start, plan, (event, trusted, preview))? else {
         return Ok(None);
@@ -1400,6 +1414,25 @@ fn create(
         saved,
         cluster_domain,
     } = made;
+    let deployment = admit_head(
+        tx,
+        who,
+        (&environment, &saved, cluster_domain.as_ref()),
+        (event, approval),
+        trusted,
+    )?;
+    Ok(Some(deployment))
+}
+
+/// Deploy all of PR Environment `environment` as `saved` holds it, the repository's
+/// Services at `event`'s head, carrying `approval` of that head into each of their builds.
+fn admit_head(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    (environment, saved, cluster_domain): (&Environment, &review::Saved, Option<&crate::Hostname>),
+    (event, approval): (&PullRequest, Option<&Signed<CommitApproval>>),
+    trusted: &Trusted,
+) -> Result<automation::Deploy, RpcError> {
     let pins = environment
         .working
         .services
@@ -1415,16 +1448,37 @@ fn create(
     let deployment = crate::automation::auto_admit(
         tx,
         who,
-        (&environment, &saved),
+        (environment, saved),
         (&[], &[]),
-        (cluster_domain.as_ref(), &pins),
+        (cluster_domain, &pins, approval),
         crate::deployment::Admission::New {
             id: &crate::id::DeploymentId::fresh(),
             push: Some(&event.head_push()),
         },
         trusted,
     )?;
-    Ok(Some(automation::Deploy::Admitted(Box::new(deployment))))
+    Ok(automation::Deploy::Admitted(Box::new(deployment)))
+}
+
+/// Deploy open preview `id` again at `event`'s head, which `approval` approved: a later
+/// commit of a pull request that isn't a member's own, which no push redeploys.
+fn redeploy(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    id: &EnvironmentId,
+    (event, approval): (&PullRequest, &Signed<CommitApproval>),
+    trusted: &Trusted,
+) -> Result<automation::Deploy, RpcError> {
+    let environment = scope::lock_id(tx, who, id)?;
+    let saved = review::latest_saved(tx, id)?.ok_or_else(|| error::corrupt("Saved State"))?;
+    let cluster_domain = deployment::cluster_domain(tx, id)?;
+    admit_head(
+        tx,
+        who,
+        (&environment, &saved, cluster_domain.as_ref()),
+        (event, Some(approval)),
+        trusted,
+    )
 }
 
 /// A PR Environment [`make`] opened and saved, with the Cluster Domain its generated

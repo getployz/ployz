@@ -1,8 +1,8 @@
 //! What a repository's previews show: each pull request's preview, how many are live
 //! against the cap, and the settings its preview rule signed.
 
-use ployz_core::MachineId;
 use ployz_core::authority::{SignerKey, Timestamp};
+use ployz_core::{MachineId, Namespace};
 
 use super::preview::{Shown, live, shown};
 use super::*;
@@ -64,6 +64,13 @@ pub struct PreviewRow {
     pub updated: crate::GithubTimestamp,
     pub open: bool,
     pub preview: PreviewOutcome,
+    /// The preview Namespace a person's approval of `head` names, when deploying it needs
+    /// one: it isn't a member's own pull request from the repository. Its open preview's
+    /// own, else a new one on the Server it would open on, which the Store opens it in.
+    /// None when no approval is needed, or no preview can open now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub namespace: Option<Namespace>,
 }
 
 /// A pull request's preview: live, deploying, or why it isn't deployed.
@@ -118,10 +125,6 @@ pub enum NotDeployed {
     MergesIntoStartFrom,
     /// No Server can hold a preview.
     NoServer,
-    /// It isn't a member's pull request from the repository itself.
-    NotMember {
-        author: String,
-    },
     /// Its last deploy failed: why, for a person to read.
     Failed {
         message: String,
@@ -148,6 +151,43 @@ struct Board {
     limit: u32,
     /// Each open preview's pull request, Environment, Namespace and what it shows.
     previews: Vec<(PullRequestNumber, EnvironmentId, PreviewNamespace, Shown)>,
+}
+
+impl Board {
+    /// The Namespace an approval of `record`'s head names, when it needs one and a
+    /// preview can open: its open preview's while that is deploying or live, else a new
+    /// one on whichever of `homes` holds the fewest of every `live` preview. Without
+    /// `homes`, which a listing asks no Server for, the rule's Servers stand in: a deploy
+    /// refuses one whose Server can't hold it then, and the person reloads.
+    fn approval_namespace(
+        &self,
+        record: &Record,
+        (members, homes, live): (
+            Option<&[GithubUserId]>,
+            Option<&[MachineId]>,
+            &[preview::Live],
+        ),
+    ) -> Option<Namespace> {
+        let facts = record.facts();
+        let trusted = match members {
+            Some(members) => trusts(&facts, Some(members)),
+            None => record.phase.open_standing() == OpenStanding::Trusted,
+        };
+        if trusted || !matches!(record.phase, Phase::Open { .. }) {
+            return None;
+        }
+        let open = self
+            .previews
+            .iter()
+            .find(|(number, ..)| *number == facts.number);
+        if let Some((_, _, preview, Shown::Deploying(..) | Shown::Live)) = open {
+            return Some(preview.namespace().clone());
+        }
+        let settings = self.settings.as_ref()?;
+        let rule = settings.rule.open().ok()?.rule;
+        let homes = homes.unwrap_or(&settings.servers);
+        preview::fresh(&rule, homes, live).map(|preview| preview.namespace().clone())
+    }
 }
 
 impl Board {
@@ -191,14 +231,14 @@ impl Board {
         u32::try_from(holding).unwrap_or(u32::MAX)
     }
 
-    /// What `record`'s pull request shows as its preview, by `members` when Cloud read
-    /// them for this, else by its standing when it was last reported, and `homes`, the
-    /// Servers Cloud read can hold one.
+    /// What `record`'s pull request shows as its preview, by `homes`, the Servers Cloud
+    /// read can hold one. One that isn't a member's own deploys with an approval
+    /// ([`Board::approval_namespace`]), so membership holds none back.
     fn outcome(
         &self,
         tx: &mut dyn Tx,
         record: &Record,
-        (members, homes): (Option<&[GithubUserId]>, Option<&[MachineId]>),
+        homes: Option<&[MachineId]>,
     ) -> Result<PreviewOutcome, RpcError> {
         let facts = record.facts();
         let open = matches!(record.phase, Phase::Open { .. });
@@ -250,18 +290,10 @@ impl Board {
             }
             None => false,
         };
-        let deployable = match members {
-            Some(members) => trusts(&facts, Some(members)),
-            None => record.phase.open_standing() == OpenStanding::Trusted,
-        };
         let why = if self.settings.is_none() {
             Some(NotDeployed::Off)
         } else if merges_into_start {
             Some(NotDeployed::MergesIntoStartFrom)
-        } else if !deployable {
-            Some(NotDeployed::NotMember {
-                author: facts.author,
-            })
         } else if let Some(service) = &self.not_covered {
             Some(NotDeployed::NotCovered {
                 service: service.clone(),
@@ -383,6 +415,8 @@ pub(crate) fn previews(
         &[who.organization.as_str().into(), repository_id.into()],
     )?;
     let members = trusted.members.as_deref();
+    let homes = trusted.preview_homes.as_deref();
+    let every = live(tx, who)?;
     let mut pull_requests = Vec::new();
     for row in rows {
         let number: PullRequestNumber = row.number(0, "pull request")?;
@@ -392,7 +426,8 @@ pub(crate) fn previews(
         if !open && !previewing && query.number != Some(number) {
             continue;
         }
-        let preview = board.outcome(tx, &record, (members, trusted.preview_homes.as_deref()))?;
+        let preview = board.outcome(tx, &record, homes)?;
+        let namespace = board.approval_namespace(&record, (members, homes, &every));
         let facts = record.facts();
         let member = match members {
             Some(members) => facts
@@ -411,6 +446,7 @@ pub(crate) fn previews(
             updated: facts.updated,
             open,
             preview,
+            namespace,
         });
     }
     pull_requests
@@ -453,7 +489,7 @@ pub(super) fn links(
         links.push(PreviewLink {
             project: row.parse(1, "Project name")?,
             repository: row.parse(2, "repository")?,
-            outcome: board.outcome(tx, record, (None, None))?,
+            outcome: board.outcome(tx, record, None)?,
         });
     }
     Ok(links)

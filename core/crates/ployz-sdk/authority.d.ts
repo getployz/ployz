@@ -6,6 +6,7 @@ export type {
   ApprovedChange,
   AutoDeployRule,
   BuildPolicy,
+  CommitApproval,
   GithubSource,
   JoinApproval,
   Passkey,
@@ -39,6 +40,7 @@ export type {
 } from "./generated/payloads";
 
 import type {
+  CommitApproval,
   HeldContainer,
   JoinApproval,
   MachineDetails,
@@ -75,6 +77,13 @@ export function previewRuleBody(view: PreviewRuleView, terms: RuleTerms): RuleDr
 
 /** The generation that turns `view`'s kept preview rule off. Throws when previews are off. */
 export function previewRuleEndBody(view: PreviewRuleView, terms: Pick<RuleTerms, "issued_at" | "signer">): RuleDraft;
+
+/**
+ * The approval of one commit for one preview a passkey answers, in canonical form, as each Server reads it: `commit`
+ * builds and runs in the preview Namespace `namespace` under generation `generation` of preview rule `rule`. Throws
+ * an Error for a field that isn't one, such as a commit that isn't 40 hex digits.
+ */
+export function commitApprovalBody(approval: CommitApproval): string;
 
 /**
  * The Private Access approval a passkey answers for `terms`, in canonical form: the auth key sealed to the Cluster in

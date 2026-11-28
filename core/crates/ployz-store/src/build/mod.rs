@@ -25,6 +25,7 @@ pub(crate) use sources::{
     pin, pin_admitted, pin_running, pinner, retried, routed, sources, uploads_of,
 };
 
+use ployz_core::authority::{CommitApproval, Signed};
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -326,6 +327,9 @@ struct BuildRow {
     attempt: Option<String>,
     /// Pinned since Cloud reserves a build before asking GitHub for it.
     reservable: bool,
+    /// A person's approval of its commit for one preview, which its check-in relays and
+    /// every Server checks in place of the branch head.
+    approval: Option<Signed<CommitApproval>>,
 }
 
 /// Where a build is, with who holds it while it builds: a GitHub run or the Servers,
@@ -456,7 +460,7 @@ fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
     tx.query(
         "SELECT service, commit_sha, status, message, log, github, organization_id, \
          started, finished, server, github_skipped, interrupted, receipt, image_token, verified, \
-         attempt, reservable \
+         attempt, reservable, commit_approval \
          FROM config_build \
          WHERE deployment_id = ?1 ORDER BY service",
         &[id.as_str().into()],
@@ -483,6 +487,7 @@ fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
             verified: row.optional_json(14, "verified build")?,
             attempt: row.optional_text(15)?.map(str::to_owned),
             reservable: row.int(16)? != 0,
+            approval: row.optional_json(17, "commit approval")?,
         })
     })
     .collect()

@@ -6,7 +6,7 @@ description: Deploy any pull request as a copy of staging, at its own https addr
 A preview is a copy of one of your environments, usually staging, running a pull request's code
 at its own https address. Nothing deploys until someone asks: each pull request gets a
 **Deploy as a preview** link, and one click from a member of your organization makes the copy.
-After that, every push to the pull request redeploys it. When the pull request closes, the
+After that, every push to a member's pull request redeploys it. When the pull request closes, the
 preview and its data are deleted.
 
 A pull request's preview is either **Live**, with its address, or **Not deployed**, with the
@@ -61,7 +61,8 @@ preview** with its address. The same page, and **Pull requests** in Ployz, show 
 
 You can also deploy from **Pull requests** in Ployz: each row has a **Deploy** button.
 
-Every push to the pull request redeploys its live preview.
+Every push to a member's pull request redeploys its live preview. A pull request from a fork
+waits for you to approve each new commit: see [Who can deploy](#who-can-deploy).
 
 Each push to a pull request starts a **Ployz build** run on GitHub. While the pull request has no
 live preview, Ployz has nothing for that run to build, and GitHub marks the run failed. Deploying
@@ -77,9 +78,14 @@ branch of the repository itself. Ployz knows a member by the GitHub account they
 so to let a contributor's pull requests deploy, [invite them](../account/members.md) to your
 organization.
 
-A pull request from a fork, or from someone outside your organization, reads
-**Not deployed: rdev0x isn't in your organization on Ployz**. Invite them, or deploy it from a
-branch of your own.
+A pull request from a fork, or from someone outside your organization, deploys one commit at a
+time. Its page shows the commit, and **Deploy with passkey** approves exactly that commit for
+its preview. Your servers check the approval themselves, so Ployz can't deploy a commit you
+didn't approve.
+
+A push to such a pull request doesn't redeploy its preview. The preview keeps running the commit
+you approved, and **Pull requests** shows **New commits** with **Deploy again**, as does the
+comment on GitHub. Read the new commits, then approve the latest one with your passkey.
 
 ## What each preview gets
 

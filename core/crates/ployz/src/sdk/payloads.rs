@@ -91,6 +91,7 @@ fn typescript_declarations() -> String {
     declarations.add::<ployz_core::authority::PasskeyJoinDraft>();
     declarations.add::<ployz_core::authority::PrivateAccessApproval>();
     declarations.add::<ployz_core::authority::PrivateAccessTerms>();
+    declarations.add::<ployz_core::authority::CommitApproval>();
     declarations.add::<ployz_core::authority::TrashApproval>();
     declarations.add::<ployz_core::authority::TrashTerms>();
     declarations.add::<ployz_core::TrashList>();

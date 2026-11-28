@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use ployz_core::authority::{CommitApproval, Signed};
 use ployz_core::config::{BuildMethod, SavedServiceIntent, ServiceGitAccess, ServiceSource};
 use ployz_core::{MachineId, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -12,7 +13,7 @@ use crate::builders::{self, Builder};
 use crate::deployment::{self, Stored};
 use crate::error;
 use crate::id::{BranchName, CommitSha, DeploymentId, EnvironmentId, RepositoryId, RepositoryName};
-use crate::storage::Tx;
+use crate::storage::{Tx, json_text};
 
 use super::{BuildRow, BuildStatus, rows};
 
@@ -63,7 +64,7 @@ pub(crate) fn pin(
     attempt: &str,
 ) -> Result<(), RpcError> {
     let stored = pinner(tx, id, attempt)?;
-    pin_stored(tx, &stored, commits, trusted)
+    pin_stored(tx, &stored, (commits, None), trusted)
 }
 
 /// Deployment `id`, locked, when worker attempt `attempt` may pin its commits: it is in
@@ -88,21 +89,29 @@ pub(crate) fn pinner(
 }
 
 /// Pin the commits of `commits` for Deployment `id` in the write that admits it, before
-/// any worker attempt began: the Store chose them, so no attempt is checked.
+/// any worker attempt began: the Store chose them, so no attempt is checked. Each build of
+/// the commit `approval` approves keeps it, and pins without its pull request's admission:
+/// the caller checked the approval as a Server would.
 pub(crate) fn pin_admitted(
     tx: &mut dyn Tx,
     id: &DeploymentId,
-    commits: &BTreeMap<ServiceName, CommitSha>,
+    (commits, approval): (
+        &BTreeMap<ServiceName, CommitSha>,
+        Option<&Signed<CommitApproval>>,
+    ),
     trusted: &crate::Trusted,
 ) -> Result<(), RpcError> {
     let stored = deployment::locked(tx, id)?;
-    pin_stored(tx, &stored, commits, trusted)
+    pin_stored(tx, &stored, (commits, approval), trusted)
 }
 
 fn pin_stored(
     tx: &mut dyn Tx,
     stored: &Stored,
-    commits: &BTreeMap<ServiceName, CommitSha>,
+    (commits, approval): (
+        &BTreeMap<ServiceName, CommitSha>,
+        Option<&Signed<CommitApproval>>,
+    ),
     trusted: &crate::Trusted,
 ) -> Result<(), RpcError> {
     let id = &stored.summary.id;
@@ -115,13 +124,36 @@ fn pin_stored(
             ));
         };
         let environment = &stored.summary.environment_id;
-        if !crate::pull_request::admits(tx, environment, (source.repository_id, commit), trusted)? {
+        let approved = approval.filter(|approval| {
+            approval
+                .open()
+                .is_ok_and(|approved| approved.commit.to_string() == commit.as_str())
+        });
+        if approved.is_none()
+            && !crate::pull_request::admits(
+                tx,
+                environment,
+                (source.repository_id, commit),
+                trusted,
+            )?
+        {
             return Err(error::invalid(
                 format!("{commit} needs approval before it deploys"),
                 json!({ "service": service, "commit": commit }),
             ));
         }
         pending(tx, id, service, Some(commit))?;
+        if let Some(approved) = approved {
+            tx.execute(
+                "UPDATE config_build SET commit_approval = ?3 \
+                 WHERE deployment_id = ?1 AND service = ?2",
+                &[
+                    id.as_str().into(),
+                    service.as_str().into(),
+                    json_text(approved).as_str().into(),
+                ],
+            )?;
+        }
     }
     Ok(())
 }
@@ -150,7 +182,8 @@ pub(super) fn pending(
 }
 
 /// Give retry `id` a pending build of each commit its `source` pinned, which may reuse
-/// the image `source` built, with that image's token and verified build.
+/// the image `source` built, with that image's token and verified build, and the approval
+/// of its commit.
 pub(crate) fn retried(
     tx: &mut dyn Tx,
     id: &DeploymentId,
@@ -159,9 +192,9 @@ pub(crate) fn retried(
     tx.execute(
         "INSERT INTO config_build \
          (deployment_id, service, organization_id, commit_sha, status, message, log, \
-          receipt, image_token, verified, reservable) \
+          receipt, image_token, verified, commit_approval, reservable) \
          SELECT ?1, service, organization_id, commit_sha, 'pending', NULL, '', receipt, \
-          image_token, verified, 1 \
+          image_token, verified, commit_approval, 1 \
          FROM config_build WHERE deployment_id = ?2",
         &[id.as_str().into(), source.as_str().into()],
     )
@@ -169,7 +202,7 @@ pub(crate) fn retried(
 }
 
 /// Pin `service`'s build in Deployment `id` to the commit it runs, as built by the
-/// Deployment that put it in Applied State. A Service without a Git source has no
+/// Deployment that put it in Applied State, with the approval of that commit. A Service without a Git source has no
 /// build to pin. Builds go by the runtime name, which a rename keeps.
 pub(crate) fn pin_running(
     tx: &mut dyn Tx,
@@ -178,8 +211,10 @@ pub(crate) fn pin_running(
 ) -> Result<(), RpcError> {
     tx.execute(
         "INSERT INTO config_build \
-         (deployment_id, service, organization_id, commit_sha, status, message, log) \
-         SELECT ?1, b.service, b.organization_id, b.commit_sha, 'pending', NULL, '' \
+         (deployment_id, service, organization_id, commit_sha, status, message, log, \
+          commit_approval) \
+         SELECT ?1, b.service, b.organization_id, b.commit_sha, 'pending', NULL, '', \
+          b.commit_approval \
          FROM config_build b JOIN config_applied a ON a.deployment_id = b.deployment_id \
          WHERE a.environment_id = ?2 AND a.node_id = ?3 AND b.service = ?4 \
          AND b.commit_sha IS NOT NULL",

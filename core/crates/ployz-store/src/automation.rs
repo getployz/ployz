@@ -14,6 +14,7 @@
 use crate::id::{BranchName, CommitSha, RepositoryId};
 use std::collections::{BTreeMap, BTreeSet};
 
+use ployz_core::authority::{CommitApproval, Signed};
 use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent, ServiceSource};
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -874,7 +875,7 @@ fn admit(
             who,
             (&environment, &saved),
             (&names, plan.retire()),
-            (cluster_domain.as_ref(), &pins),
+            (cluster_domain.as_ref(), &pins, None),
             admission,
             trusted,
         )
@@ -1013,7 +1014,11 @@ pub(crate) fn auto_admit(
     who: &Actor,
     (environment, saved): (&scope::Environment, &review::Saved),
     (services, retire): (&[ServiceName], &[deployment::Retire]),
-    (cluster_domain, pins): (Option<&Hostname>, &BTreeMap<ServiceName, CommitSha>),
+    (cluster_domain, pins, approval): (
+        Option<&Hostname>,
+        &BTreeMap<ServiceName, CommitSha>,
+        Option<&Signed<CommitApproval>>,
+    ),
     admission: deployment::Admission<'_>,
     trusted: &Trusted,
 ) -> Result<DeploymentSummary, RpcError> {
@@ -1118,7 +1123,7 @@ pub(crate) fn auto_admit(
         saved.revision,
         &frozen,
     )?;
-    build::pin_admitted(tx, &summary.id, &pins, trusted)?;
+    build::pin_admitted(tx, &summary.id, (&pins, approval), trusted)?;
     Ok(summary)
 }
 

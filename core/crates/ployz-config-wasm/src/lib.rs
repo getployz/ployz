@@ -1,12 +1,12 @@
 //! The SDK's WASM ABI for Node and the browser: config rules, the preview rule and turning
-//! an automatic deploy rule off, Private Access approval, join and versions a passkey answers, and the key an install line
+//! an automatic deploy rule off, a commit approved for one preview, Private Access approval, join and versions a passkey answers, and the key an install line
 //! carries.
 //! All policy lives in ployz-core.
 use ployz_core::OperationId;
 use ployz_core::authority::{
-    AutoDeployRule, JoinApproval, Passkey, PreviewBasis, PrivateAccessApproval, PrivateAccessTerms,
-    RuleBasis, RuleTerms, SignerKey, Timestamp, TrashApproval, TrashTerms, version_draft,
-    version_draft::VersionsAsked,
+    AutoDeployRule, CommitApproval, JoinApproval, Passkey, PreviewBasis, PrivateAccessApproval,
+    PrivateAccessTerms, RuleBasis, RuleTerms, SignerKey, Timestamp, TrashApproval, TrashTerms,
+    version_draft, version_draft::VersionsAsked,
 };
 use ployz_core::config::{ConfigError, Generator, parse_env_file, parse_service_setting};
 use ployz_core::first_key::LineKey;
@@ -146,6 +146,19 @@ pub fn preview_rule_body(input: &str) -> Result<String, JsError> {
         .drafted_preview(&input.view)
         .map_err(|error| JsError::new(&error.to_string()))?;
     serde_json::to_string(&draft).map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// The approval of one commit for one preview a passkey answers, in canonical form, as
+/// every Server reads it.
+///
+/// # Errors
+/// Rejects malformed input, such as a commit or Namespace that isn't one.
+#[wasm_bindgen]
+pub fn commit_approval_body(input: &str) -> Result<String, JsError> {
+    let approval: CommitApproval =
+        serde_json::from_str(input).map_err(|error| JsError::new(&error.to_string()))?;
+    ployz_core::authority::canonical::to_canonical(&approval)
+        .map_err(|error| JsError::new(&error.to_string()))
 }
 
 /// The Private Access approval a passkey answers for `terms`, in canonical form, with the

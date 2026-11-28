@@ -3,15 +3,15 @@
  * answers a challenge that is the digest of its signing input, so the answer covers that body and nothing else. No
  * browser key is lent and nothing outlives the prompt.
  *
- * Servers take such an answer for an automatic deploy rule, which stands for every future push, and for a Private
- * Access approval, which names the one sealed key a router may join a tailnet with. Every passkey prompt in the
+ * Servers take such an answer for an automatic deploy rule, which stands for every future push, for one commit a
+ * preview builds, and for a Private Access approval, which names the one sealed key a router may join a tailnet with. Every passkey prompt in the
  * dashboard goes through `passkeyAnswer`.
  */
 import type { PasskeyAssertion, Signed } from "@ployz/sdk";
 import { base64url } from "#/lib/bytes";
 
 /** What a signature is for, as `keys::Purpose` names it. Each purpose signs under its own prefix. */
-export type Purpose = "workflow" | "rule";
+export type Purpose = "workflow" | "rule" | "commit";
 
 const encoder = new TextEncoder();
 

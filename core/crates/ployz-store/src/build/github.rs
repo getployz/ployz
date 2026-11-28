@@ -1,6 +1,8 @@
 //! Builds handed to a GitHub Actions run, from its dispatch through its check-in and reports to its end.
 
-use ployz_core::authority::{AutoDeployRule, BuiltImageDigest, CommitAuthority, Signed};
+use ployz_core::authority::{
+    AutoDeployRule, BuiltImageDigest, CommitApproval, CommitAuthority, Signed,
+};
 use ployz_core::{MachineId, RpcError, RpcErrorCode, ServiceName};
 use ployz_decide::github_build::{
     CANCELLED, EndKind, Hold, Target, github_check_in_holds, github_end_holds,
@@ -1025,8 +1027,9 @@ pub enum GithubRule {
     /// The Store's automation admitted the Deployment for a push: its run is the push's
     /// own, which Cloud follows. The rule may be ended, which the grant Machine refuses.
     Push(Signed<AutoDeployRule>),
-    /// A person admitted it while the rule was on: Cloud dispatches the rule's workflow on
-    /// its branch, and the grant Machine builds only that branch's head.
+    /// A person admitted it while the rule was on, or approved its commit for a preview:
+    /// Cloud dispatches the rule's workflow on its branch, and the grant Machine builds only
+    /// that branch's head or the commit the approval names.
     Dispatch(Signed<AutoDeployRule>),
 }
 
@@ -1049,8 +1052,9 @@ pub(crate) fn github_rule(
     rule_of(tx, &stored, &id.service)
 }
 
-/// The automatic deploy rule `stored`'s build of `service` builds under. A push's build
-/// does whenever the rule covers the Service. A person's Deploy builds under it only
+/// The automatic deploy rule `stored`'s build of `service` builds under. A preview's build
+/// of a commit a person approved runs on a dispatch, since no push of the repository holds
+/// that commit. A push's build does whenever the rule covers the Service. A person's Deploy builds under it only
 /// while it is on and approves the Service as the Deployment froze it: its repository,
 /// branch, settings and build policy. Any other builds as it would without a rule.
 pub(crate) fn rule_of(
@@ -1066,6 +1070,12 @@ pub(crate) fn rule_of(
     };
     if rule.service(service).is_none() {
         return Ok(None);
+    }
+    let approved = rows(tx, &stored.summary.id)?
+        .into_iter()
+        .any(|row| row.service == *service && row.approval.is_some());
+    if rule.preview.is_some() && approved {
+        return Ok(Some(GithubRule::Dispatch(signed)));
     }
     if stored.summary.admitted_by.is_none() {
         return Ok(Some(GithubRule::Push(signed)));
@@ -1155,6 +1165,8 @@ pub struct GithubInput {
     pub receipt: Option<serde_json::Value>,
     /// The image token a redeploy copied with its source's image.
     pub image_token: Option<ImageToken>,
+    /// A person's approval of `commit` for a preview, which the check-in relays.
+    pub approval: Option<Signed<CommitApproval>>,
 }
 
 /// What GitHub build `id` builds. In-process only.
@@ -1198,6 +1210,7 @@ pub(crate) fn github_input(tx: &mut dyn Tx, id: &GithubBuildId) -> Result<Github
         commit,
         receipt,
         image_token: row.image_token,
+        approval: row.approval,
     })
 }
 
@@ -1367,7 +1380,7 @@ pub(crate) fn github_end(
 }
 
 /// The image token a build that ended Built with `receipt` keeps: its run's, with the
-/// rule generation and authority its audience names, or, reusing the image a redeploy's
+/// rule generation and authority its audience names (the approval it kept, else the head), or, reusing the image a redeploy's
 /// source built, the token copied with that image.
 fn built_token(
     tx: &mut dyn Tx,
@@ -1402,7 +1415,10 @@ fn built_token(
         token: token.clone(),
         image: image.to_owned(),
         generation: rule.generation,
-        authority: CommitAuthority::Head,
+        authority: row
+            .approval
+            .clone()
+            .map_or(CommitAuthority::Head, CommitAuthority::Approved),
     }))
 }
 

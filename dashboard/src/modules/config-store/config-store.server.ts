@@ -166,8 +166,10 @@ export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
   const members = approves || deploysPreview || listsPreviews ? yield* githubMembers(organizationId) : undefined;
   const drafts = call.operation === "read" && call.query.query === "preview_rule";
   const homes = deploysPreview ? yield* gatherPreviewHomes(organizationId, read) : drafts ? yield* observeHomes(organizationId) : undefined;
-  // A preview rule is kept only once a key the Servers trust signed it.
-  const signs = call.operation === "write" && call.command.command === "set_pr_plan" && call.command.preview_rule != null;
+  // A preview rule is kept, and a commit approval deploys a preview, only once a key the Servers trust signed it.
+  const signs = call.operation === "write" && (
+    (call.command.command === "set_pr_plan" && call.command.preview_rule != null)
+    || (call.command.command === "deploy_preview" && call.command.approval != null));
   const signers = signs ? yield* gatherSigners(organizationId) : undefined;
   const sealing = call.operation === "write" ? yield* readClusterSealing(organizationId) : undefined;
   const trusted: ConfigTrusted = { ...git, domains };

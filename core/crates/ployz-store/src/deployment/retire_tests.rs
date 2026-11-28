@@ -195,7 +195,7 @@ fn retire_api(store: &ConfigStore, who: &Actor, services: &[&str]) -> Deployment
                 who,
                 (&environment, &saved),
                 (&services, &retire),
-                (None, &BTreeMap::new()),
+                (None, &BTreeMap::new(), None),
                 super::Admission::New {
                     id: &crate::id::DeploymentId::parse(uuid::Uuid::new_v4().to_string())?,
                     push: None,
@@ -448,7 +448,7 @@ fn the_stores_own_deploy_of_every_service_prunes() {
                 &who,
                 (&environment, &saved),
                 (&[], &[]),
-                (None, &BTreeMap::new()),
+                (None, &BTreeMap::new(), None),
                 super::Admission::New {
                     id: &deployment(3),
                     push: None,

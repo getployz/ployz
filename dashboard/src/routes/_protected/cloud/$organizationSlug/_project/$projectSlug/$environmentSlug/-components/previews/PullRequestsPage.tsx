@@ -9,10 +9,9 @@ import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "#/components/ui/table";
 import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { PREVIEW_CLOSE_ROUTE_TO, PREVIEW_ROUTE_TO, PREVIEW_SETTINGS_ROUTE_TO, type PreviewRouteParams } from "#/lib/environment-routes";
-import { useOrganizationName } from "#/modules/organization/organization-state.queries";
 import { usePreviews } from "#/modules/previews/previews.queries";
 import { usePreviewWrites, writeFailure } from "#/modules/previews/preview-writes";
-import { addressHref, authorLine, deployable, outcomeLine, PreviewsRefused, PreviewStatus } from "./preview-parts";
+import { addressHref, authorLine, deployable, needsApproval, outcomeLine, PreviewsRefused, PreviewStatus } from "./preview-parts";
 
 /** A repository's pull requests, each with its preview's one outcome line and the one action that changes it. */
 export function PullRequestsPage({ params, repository }: { params: PreviewRouteParams; repository: string }) {
@@ -34,7 +33,6 @@ function Rows({ view, params, filter, onFilter }: {
   filter: "open" | "closed";
   onFilter: (filter: "open" | "closed") => void;
 }) {
-  const organizationName = useOrganizationName(params.organizationSlug);
   if (view.settings === null) {
     return (
       <Empty variant="placeholder">
@@ -91,7 +89,7 @@ function Rows({ view, params, filter, onFilter }: {
                   </div>
                 </TableCell>
                 <TableCell className="whitespace-normal">
-                  <PreviewStatus line={outcomeLine(row, view, organizationName)}>
+                  <PreviewStatus line={outcomeLine(row, view)}>
                     <RowAction row={row} view={view} params={params} />
                   </PreviewStatus>
                 </TableCell>
@@ -105,7 +103,10 @@ function Rows({ view, params, filter, onFilter }: {
   );
 }
 
-/** The one action that changes a row's outcome: Open a live preview, Deploy one that can, or make room for it. */
+/**
+ * The one action that changes a row's outcome: Open a live preview, Deploy one that can (on its page, for a commit that
+ * needs a passkey approval), or make room for it.
+ */
 function RowAction({ row, view, params }: { row: PreviewRow; view: PreviewsView; params: PreviewRouteParams }) {
   const writes = usePreviewWrites(params.organizationSlug);
   const [deploying, setDeploying] = useState(false);
@@ -128,6 +129,11 @@ function RowAction({ row, view, params }: { row: PreviewRow; view: PreviewsView;
   }
   const head = row.head;
   if (!deployable(row, view) || head === null) return null;
+  const label = outcome.state === "live" ? "Deploy again" : "Deploy";
+  // Its passkey approval is of the commit the preview page shows.
+  if (needsApproval(row)) {
+    return <Button variant="link" size="sm" render={<Link to={PREVIEW_ROUTE_TO} params={{ ...params, number: String(row.number) }} />}>{label}</Button>;
+  }
   const deploy = async () => {
     setDeploying(true);
     try {
@@ -141,7 +147,7 @@ function RowAction({ row, view, params }: { row: PreviewRow; view: PreviewsView;
   };
   return (
     <Button variant="link" size="sm" disabled={deploying} onClick={() => void deploy()}>
-      {outcome.state === "live" ? "Deploy again" : "Deploy"}
+      {label}
     </Button>
   );
 }

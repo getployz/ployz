@@ -40,7 +40,7 @@ export type Tone = "success" | "info" | "warning" | "muted";
 /** A pull request's one outcome line: Live, Deploying, Not deployed and why, or Closed; `detail` qualifies it. */
 export type OutcomeLine = { readonly tone: Tone; readonly text: string; readonly detail?: string };
 
-export function outcomeLine(row: PreviewRow, view: PreviewsView, organizationName: string): OutcomeLine {
+export function outcomeLine(row: PreviewRow, view: PreviewsView): OutcomeLine {
   const startFrom = view.settings?.start_from ?? "";
   const outcome = row.preview;
   switch (outcome.state) {
@@ -48,7 +48,7 @@ export function outcomeLine(row: PreviewRow, view: PreviewsView, organizationNam
       return {
         tone: "success",
         text: outcome.address ? `Live at ${outcome.address}` : "Live",
-        detail: outcome.newer ? `new commits since ${shortCommit(outcome.head)}` : undefined,
+        detail: outcome.newer ? "New commits" : undefined,
       };
     case "deploying":
       return { tone: "info", text: "Deploying", detail: shortCommit(outcome.head) };
@@ -64,7 +64,6 @@ export function outcomeLine(row: PreviewRow, view: PreviewsView, organizationNam
         case "not_covered": return { tone: "warning", text: `Not deployed: it changes ${why.service}'s settings`, detail: "Preview settings don't cover that" };
         case "merges_into_start_from": return { tone: "muted", text: `Not deployed: it merges into ${startFrom}'s own branch` };
         case "no_server": return { tone: "warning", text: "Not deployed: no server can hold another preview" };
-        case "not_member": return { tone: "muted", text: `Not deployed: ${why.author} isn't in ${organizationName} on Ployz` };
         case "failed": return { tone: "warning", text: `Not deployed: ${why.message}` };
       }
     }
@@ -84,6 +83,12 @@ export function PreviewStatus({ line, children }: { line: OutcomeLine; children?
     </span>
   );
 }
+
+/**
+ * Whether deploying the row's head needs the person's passkey: the pull request is from a fork or by someone outside
+ * the organization, so each commit deploys only once approved. The Store names the preview the approval is for.
+ */
+export const needsApproval = (row: PreviewRow) => row.namespace !== undefined;
 
 /** Whether a Deploy can go now: the pull request is open, has a commit, and nothing the Store said holds it. */
 export function deployable(row: PreviewRow, view: PreviewsView) {
