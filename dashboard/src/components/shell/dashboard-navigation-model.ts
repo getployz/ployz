@@ -6,6 +6,7 @@ import {
   ChartLineIcon,
   CircleUserRoundIcon,
   CreditCardIcon,
+  GitPullRequestIcon,
   HistoryIcon,
   LayoutGridIcon,
   PlugIcon,
@@ -38,13 +39,19 @@ export const ORGANIZATION_SETTINGS_SECTIONS = [
 export type OrganizationSettingsSection = (typeof ORGANIZATION_SETTINGS_SECTIONS)[number]["id"];
 
 /** Architecture is the Environment's canvas. */
-const environmentPlaceOrder = ["architecture", "deployments", "logs", "analytics", "settings"] as const;
+const environmentPlaceOrder = ["architecture", "previews", "deployments", "logs", "analytics", "settings"] as const;
 type EnvironmentPlace = (typeof environmentPlaceOrder)[number];
 const environmentPlaces = {
   architecture: {
     label: "Architecture",
     icon: WorkflowIcon,
     path: ENVIRONMENT_INDEX_ROUTE_TO,
+  },
+  // A repository's pull requests and their previews: the one that starts from this Environment, else the first.
+  previews: {
+    label: "Pull requests",
+    icon: GitPullRequestIcon,
+    path: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/previews",
   },
   deployments: {
     label: "Deployments",

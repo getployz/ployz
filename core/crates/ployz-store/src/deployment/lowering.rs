@@ -295,7 +295,9 @@ pub(crate) fn changed(
 
 /// Freeze a Deployment of `saved` over `scope`, diffed against `landing`: its
 /// target nodes, checked to lower to a Deploy Intent. Generated domains expand
-/// under `cluster_domain`; a plan, which has none, checks the rest.
+/// under `cluster_domain`; a plan, which has none, checks the rest. A preview's
+/// lowers as `opening` opens it.
+#[expect(clippy::too_many_arguments, reason = "each is one input of the freeze")]
 pub(crate) fn freeze(
     environment: &EnvironmentId,
     organization: &OrganizationId,
@@ -304,6 +306,7 @@ pub(crate) fn freeze(
     scope: Scope<'_>,
     namespace: Namespace,
     cluster_domain: Option<&Hostname>,
+    opening: Option<&super::Opening>,
 ) -> Result<Frozen, RpcError> {
     let Scope {
         targeting,
@@ -429,6 +432,7 @@ pub(crate) fn freeze(
         (namespace.clone(), cluster_domain),
         &crate::branch::Lowering::default(),
         organization,
+        opening,
     )?;
     if !full {
         // The planner also ships, at its Saved snapshot, each Service the named ones
@@ -639,6 +643,13 @@ fn resolve(
 /// references against `branch.live`. A value sealed in the browser for `environment`
 /// reaches its Service unopened, with the identity the Machine opens it under from
 /// `organization`. `deployed` names the Volumes Applied State holds.
+///
+/// A preview's revision lowers as `opening` opens it: as its Parent's copy, sealed for
+/// the Parent, with no Live Node or Setup Command.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each is one input of the lowering"
+)]
 pub(super) fn lower(
     environment: &EnvironmentId,
     saved: &SavedEnvironmentIntent,
@@ -651,7 +662,19 @@ pub(super) fn lower(
     (namespace, cluster_domain): (Namespace, Option<&Hostname>),
     branch: &crate::branch::Lowering,
     organization: &OrganizationId,
+    opening: Option<&super::Opening>,
 ) -> Result<Lowered, RpcError> {
+    let opened = opening.map(|opening| opening.open(saved, (deployed, first_copies)));
+    let none = crate::branch::Lowering::default();
+    let (environment, saved, (deployed, born, first_copies), branch) = match (opening, &opened) {
+        (Some(opening), Some(opened)) => (
+            &opening.parent,
+            &opened.intent,
+            (&opened.deployed, &opened.born, &opened.first_copies),
+            &none,
+        ),
+        _ => (environment, saved, (deployed, born, first_copies), branch),
+    };
     let (compiled, mut resolved) = resolve(environment, saved, cluster_domain, branch)?;
     let removals = &ships.removals;
     let (narrowed, services, prune): (bool, &[ServiceName], _) = match &ships.targeting {

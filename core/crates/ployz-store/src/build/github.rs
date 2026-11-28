@@ -1073,6 +1073,11 @@ pub(crate) fn rule_of(
     if rule.ended {
         return Ok(None);
     }
+    // A member's Deploy of a preview builds on its pull request's own push run, which
+    // the Server checks against the rule's pushers.
+    if rule.preview.is_some() {
+        return Ok(Some(GithubRule::Push(signed)));
+    }
     let saved = deployment::held_revision(tx, stored)?;
     let lowered = deployment::lowered(tx, stored, &saved)?;
     let approved =
@@ -1166,18 +1171,16 @@ pub(crate) fn github_input(tx: &mut dyn Tx, id: &GithubBuildId) -> Result<Github
         .iter()
         .flat_map(|snapshot| snapshot.resolved_env.values())
         .any(ployz_core::EnvValue::is_sealed);
-    let built = if sealed {
-        let built = saved
-            .services
+    if sealed
+        && !input
+            .snapshots
             .iter()
-            .find(|service| service.config.private_dns == id.service)
-            .ok_or_else(|| error::corrupt("GitHub build Service"))?;
-        Some(&built.id)
-    } else {
-        None
-    };
+            .any(|snapshot| snapshot.serves(&id.service))
+    {
+        return Err(error::corrupt("GitHub build Service"));
+    }
     for snapshot in &mut input.snapshots {
-        if snapshot.service_id.as_ref() != built {
+        if !snapshot.serves(&id.service) {
             snapshot.resolved_env.retain(|_, value| !value.is_sealed());
         }
     }

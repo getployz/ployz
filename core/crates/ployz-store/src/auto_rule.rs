@@ -5,8 +5,9 @@
 //! waits for a person instead of failing on every Machine.
 
 use ployz_core::authority::{
-    AutoDeployRule, Births, BuildPolicy, PlannedVolumes, RuleBasis, RuleId, RuleSource, Signed,
-    rule::template,
+    AutoDeployRule, Births, BuildPolicy, PlannedVolumes, RuleBasis, RuleId, RuleSource,
+    SealedDigest, Signed,
+    rule::{preview_template, template},
     rule_draft::{RuleImageView, RuleSourceView},
 };
 use ployz_core::config::{SavedEnvironmentIntent, ServiceSource, canonicalize_environment_intent};
@@ -126,7 +127,7 @@ impl RuleView {
     }
 }
 
-/// The rule an Environment holds, ended or not.
+/// The rule an Environment holds, ended or not. A preview holds its plan's preview rule.
 pub(crate) fn stored(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -135,9 +136,10 @@ pub(crate) fn stored(
         "SELECT rule FROM config_auto_deploy_rule WHERE environment_id = ?1",
         &[environment.as_str().into()],
     )?;
-    rows.first()
-        .map(|row| row.json(0, "Automatic deploy rule"))
-        .transpose()
+    match rows.first() {
+        Some(row) => row.json(0, "Automatic deploy rule").map(Some),
+        None => crate::pull_request::preview::rule(tx, environment),
+    }
 }
 
 /// `rule`'s terms. A kept rule that won't open counts as no rule: nothing it would
@@ -447,6 +449,13 @@ pub(crate) fn approved(
     saved: &SavedEnvironmentIntent,
     target: &[RequestedServiceSpec],
 ) -> Vec<ServiceName> {
+    if rule.preview.is_some() {
+        let sources = sources(saved);
+        return (target.iter())
+            .filter(|spec| previews_approve(rule, namespace, &sources, spec))
+            .map(|spec| spec.name.clone())
+            .collect();
+    }
     if let RuleSource::Registry(source) = &rule.source {
         let changed = changed(rule, namespace, target, &[], &[]);
         let basis = RuleBasis {
@@ -475,6 +484,66 @@ pub(crate) fn approved(
         .map(|service| service.config.private_dns.clone())
         .filter(|service| rule.service(service).is_some() && !changed.contains(service))
         .collect()
+}
+
+/// The first of `target`, a preview's specs lowered from `saved` in preview `namespace`,
+/// that preview rule `rule` doesn't approve: one whose settings, build or build secrets
+/// changed since it was signed, or one it doesn't name. Every Server would refuse it, so
+/// neither a preview's deploy nor the view saying it would deploy goes ahead.
+pub(crate) fn uncovered(
+    rule: &AutoDeployRule,
+    namespace: &Namespace,
+    saved: &SavedEnvironmentIntent,
+    target: &[RequestedServiceSpec],
+) -> Option<ServiceName> {
+    let sources = sources(saved);
+    (target.iter())
+        .find(|spec| !previews_approve(rule, namespace, &sources, spec))
+        .map(|spec| spec.name.clone())
+}
+
+/// Whether preview rule `rule` approves `spec` in preview `namespace`, with its build
+/// from `sources`: the image it pins, or the template, build policy and build secrets of a
+/// Service it builds.
+fn previews_approve(
+    rule: &AutoDeployRule,
+    namespace: &Namespace,
+    sources: &[RuleSourceView],
+    spec: &RequestedServiceSpec,
+) -> bool {
+    let Some(preview) = &rule.preview else {
+        return false;
+    };
+    if ployz_core::PreviewNamespace::of(namespace).is_none() {
+        return false;
+    }
+    if let Some(pinned) = (preview.pinned.iter()).find(|pinned| pinned.name == spec.name) {
+        return preview_template(spec, namespace, true).ok() == Some(pinned.template);
+    }
+    let Some(approved) = rule.service(&spec.name) else {
+        return false;
+    };
+    let (Some(policy), Some(source)) = (
+        &approved.policy,
+        sources.iter().find(|source| source.service == spec.name),
+    ) else {
+        return false;
+    };
+    let secrets = ployz_core::SealedRecord::of(spec).ok().and_then(|record| {
+        record
+            .map(|record| SealedDigest::of(&record))
+            .transpose()
+            .ok()
+    });
+    preview_template(spec, namespace, false).ok() == Some(approved.template)
+        && secrets == Some(approved.secrets)
+        && BuildPolicy::derive(
+            &source.root_dir,
+            &source.build,
+            spec,
+            policy.platforms.clone(),
+            policy.cache,
+        ) == *policy
 }
 
 /// The Services a push of `rule`'s branch would deploy that the rule doesn't approve:

@@ -373,16 +373,14 @@ pub(crate) const ENV_ON_MERGE: Verb = Verb::cloud(
     env::pr::on_merge,
 )
 .docs("cli/overview.md");
-pub(crate) const ENV_PR: Verb = Verb::cloud("env pr", Depends, env::pr_command, env::pr::pr)
-    .needs(Permission::ProjectEdit)
-    .docs("environments/preview-environments.md");
+pub(crate) const ENV_PR: Verb =
+    Verb::cloud("env pr", Depends, env::pr_command, env::pr::pr).needs(Permission::ProjectEdit);
 pub(crate) const ENV_PR_APPROVE: Verb = Verb::cloud(
     "env pr approve",
     Never,
     env::pr_approve_command,
     env::pr::approve,
 )
-.docs("environments/preview-environments.md")
 .needs(Permission::ChangesDeploy);
 pub(crate) const ENV_PROTECT: Verb =
     Verb::cloud("env protect", Never, env::protect_command, env::protect)
@@ -406,7 +404,7 @@ pub(crate) const ENV_SHUTDOWN: Verb = Verb::cloud(
 pub(crate) const ENV_SYNC: Verb =
     Verb::cloud("env sync", Depends, env::sync_command, env::branch::sync)
         .stdin(&[("--value", Stdin::Only)])
-        .docs("environments/preview-environments.md");
+        .docs("environments/environments.md");
 pub(crate) const EXEC: Verb = Verb::cloud("exec", Always, operator::exec_command, operator::exec)
     .refuses_json()
     .docs("services/databases.md");

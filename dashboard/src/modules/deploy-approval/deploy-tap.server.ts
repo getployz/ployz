@@ -195,7 +195,7 @@ const mayProtect = (access: Omit<Access, "organization">, environment: string) =
   access.permissions.includes("environments:protect") && beyondEnvironments(access.environments, { environment }) === null;
 
 /** `userId` null only classifies a Deploy someone else signs: no one's passkeys, and no digest lookups. */
-const gate = Effect.fn("DeployTap.gate")(function* <E, R>(userId: string | null, organizationId: string, tags: readonly string[], asked: {
+export const gate = Effect.fn("DeployTap.gate")(function* <E, R>(userId: string | null, organizationId: string, tags: readonly string[], asked: {
   readonly namespace: string;
   /** Read only once the gate would ask. */
   readonly parents: Effect.Effect<Readonly<Record<string, Parent>>, E, R>;

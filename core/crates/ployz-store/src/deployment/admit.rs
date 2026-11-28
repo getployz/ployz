@@ -444,6 +444,7 @@ fn deploy(
         trusted,
     )?;
     let landing = deployment::Landing::of(&review.head);
+    let opening = deployment::Opening::of(tx, id, &namespace)?;
     // A narrowed one freezes now; a full one freezes once saved, with what it retires.
     let narrowed = match admit.services.is_empty() {
         true => None,
@@ -455,6 +456,7 @@ fn deploy(
             deployment::Scope::of(&admit.services, &[]),
             namespace.clone(),
             cluster_domain,
+            opening.as_ref(),
         )?),
     };
     let pruning = match prunes {
@@ -506,6 +508,7 @@ fn deploy(
                 },
                 namespace,
                 cluster_domain,
+                opening.as_ref(),
             )?
         }
     };
@@ -690,6 +693,7 @@ fn unchanged(
     (services, landing): (&[ServiceName], &deployment::Landing<'_>),
     (namespace, cluster_domain): (&Namespace, Option<&Hostname>),
 ) -> Result<Option<(Revision, SavedEnvironmentIntent, deployment::Frozen)>, RpcError> {
+    let opening = deployment::Opening::of(tx, environment, namespace)?;
     for revision in revisions(tx, environment)? {
         let saved = deployment::saved_at(tx, environment, revision)?;
         if !running
@@ -706,6 +710,7 @@ fn unchanged(
             deployment::Scope::of(services, &[]),
             namespace.clone(),
             cluster_domain,
+            opening.as_ref(),
         )?;
         let ships_as_it_runs = frozen.nodes.iter().all(|node| {
             saved

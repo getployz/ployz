@@ -553,6 +553,7 @@ fn retried(
                     },
                     stored.namespace.clone(),
                     stored.cluster_domain.as_ref(),
+                    Opening::of(tx, environment, &stored.namespace)?.as_ref(),
                 )?
                 .nodes
             }

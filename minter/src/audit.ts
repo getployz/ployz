@@ -17,6 +17,8 @@ export interface AuditLine {
   workflow_digest?: string;
   run_id?: number;
   check_name?: string;
+  pull_request?: number;
+  comment_id?: number;
   github_status?: number;
   token_expires_at?: string;
   duration_ms?: number;

@@ -11,6 +11,7 @@ export type {
   Passkey,
   PasskeyJoinDraft,
   PayloadDigest,
+  PreviewSummary,
   PrivateAccessApproval,
   PrivateAccessTerms,
   ProposalApproval,
@@ -45,6 +46,7 @@ import type {
   Passkey,
   PasskeyJoinDraft,
   PlanView,
+  PreviewRuleView,
   PrivateAccessTerms,
   RequestedServiceSpec,
   RegistrySource,
@@ -61,6 +63,18 @@ import type {
 
 /** The generation that turns `view`'s kept rule off, signed as `terms.signer` at `terms.issued_at`. Throws when no rule is on. */
 export function autoDeployRuleEndBody(view: RuleView, terms: Pick<RuleTerms, "issued_at" | "signer">): RuleDraft;
+
+/**
+ * The preview rule a passkey answers for the Store's `preview_rule` view: every Git Service of the repository builds under
+ * it, every Service that runs an image runs it pinned by digest, and each preview opens the start-from's Sealed values.
+ * The kept rule's next generation when it is for the same repository and start-from. `terms.machines` are the Servers
+ * previews run on; `terms.new_rule` is 16 random bytes from this browser. Throws an Error naming a Service no preview
+ * rule can cover, such as an image that names no digest.
+ */
+export function previewRuleBody(view: PreviewRuleView, terms: RuleTerms): RuleDraft;
+
+/** The generation that turns `view`'s kept preview rule off. Throws when previews are off. */
+export function previewRuleEndBody(view: PreviewRuleView, terms: Pick<RuleTerms, "issued_at" | "signer">): RuleDraft;
 
 /**
  * The Private Access approval a passkey answers for `terms`, in canonical form: the auth key sealed to the Cluster in

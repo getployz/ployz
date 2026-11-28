@@ -20,6 +20,14 @@ const usesPreviews = (read: StoreRead) =>
  */
 export const gatherPreviewHomes = Effect.fn("ConfigStore.previewHomes")(function* (organizationId: string, read: StoreRead) {
   if (!(yield* usesPreviews(read))) return undefined;
+  return yield* observeHomes(organizationId);
+});
+
+/**
+ * The Servers that can hold a preview now, for a preview rule's draft to list: read even before the Organization uses
+ * previews, since turning them on picks among them. Undefined when the Cluster can't be read.
+ */
+export const observeHomes = Effect.fn("ConfigStore.observeHomes")(function* (organizationId: string) {
   const observed = yield* withDeployDial(organizationId, ({ connections, expect }) =>
     observePreviewHomes(connections, expect)).pipe(Effect.option);
   const homes = Option.getOrUndefined(observed)?.homes;

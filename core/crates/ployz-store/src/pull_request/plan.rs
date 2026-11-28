@@ -20,25 +20,7 @@ pub(crate) fn set_plan(
 ) -> Result<PrPlansView, RpcError> {
     let project = scope::project(tx, who, set.project.as_ref())?;
     scope::lock_project(tx, &project.id)?;
-    let repositories = repositories(tx, &project.id)?;
-    let Some(Repository {
-        id: repository_id, ..
-    }) = repositories
-        .iter()
-        .find(|repository| repository.name == set.repository)
-    else {
-        let names = repositories
-            .iter()
-            .map(|repository| repository.name.as_str());
-        return Err(error::choices(
-            format!(
-                "No Service of Project {} deploys from {} through the GitHub App",
-                project.name, set.repository
-            ),
-            set.repository.as_str(),
-            names,
-        ));
-    };
+    let repository_id = &repository(tx, &project, &set.repository)?;
     // Under the plan's own lock, as everything that opens or closes its previews holds it.
     super::preview::lock_plan(tx, &project.id, *repository_id)?;
     let mut plan = load(tx, &project.id, *repository_id)?.unwrap_or_else(off);
@@ -217,6 +199,32 @@ pub(crate) fn plans(
 
 /// Every repository a Service of the Project deploys from through the GitHub App,
 /// by ID, with its name and installation, sorted by name.
+/// The ID of `name`, a repository some Service of `project` deploys from.
+pub(super) fn repository(
+    tx: &mut dyn Tx,
+    project: &scope::Project,
+    name: &RepositoryName,
+) -> Result<RepositoryId, RpcError> {
+    let repositories = repositories(tx, &project.id)?;
+    if let Some(repository) = repositories
+        .iter()
+        .find(|repository| repository.name == *name)
+    {
+        return Ok(repository.id);
+    }
+    let names = repositories
+        .iter()
+        .map(|repository| repository.name.as_str());
+    Err(error::choices(
+        format!(
+            "No Service of Project {} deploys from {name} through the GitHub App",
+            project.name
+        ),
+        name.as_str(),
+        names,
+    ))
+}
+
 pub(super) fn repositories(
     tx: &mut dyn Tx,
     project: &crate::id::ProjectId,
@@ -257,8 +265,8 @@ pub(super) fn repositories(
 
 /// A repository a Project's Services deploy from through the GitHub App.
 pub(super) struct Repository {
-    id: RepositoryId,
-    name: RepositoryName,
+    pub(super) id: RepositoryId,
+    pub(super) name: RepositoryName,
     installation_id: u64,
 }
 

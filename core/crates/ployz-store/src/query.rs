@@ -238,9 +238,15 @@ queries! {
     /// A pull request's PR Environments and GitHub check.
     PullRequest(crate::PullRequestQuery) -> crate::PullRequestView
         => crate::pull_request::view(tx, who, q);
+    /// A repository's previews in a Project: each pull request's, the cap, the settings.
+    Previews(crate::PreviewsQuery) -> crate::PreviewsView
+        => crate::pull_request::previews(tx, who, trusted, q);
     /// Which of a Server's preview Namespaces are open: Cloud closes the others there.
     OpenPreviews(crate::OpenPreviewsQuery) -> crate::OpenPreviewsView
         => crate::pull_request::open_previews(tx, who, q);
+    /// What signing a repository's preview rule takes.
+    PreviewRule(crate::PreviewRuleQuery) -> crate::PreviewRuleView as *
+        => crate::pull_request::preview_rule(tx, who, trusted, q);
     /// What a PR Environment's pull request lands when it merges.
     OnMerge(crate::OnMergeQuery) -> crate::OnMerge => crate::pull_request::on_merge(tx, who, q);
     /// The signed versions kept for one spec of a Service.

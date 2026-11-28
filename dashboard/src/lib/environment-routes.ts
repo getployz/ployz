@@ -30,3 +30,19 @@ export const DEPLOYMENT_ROUTE_TO =
 
 export const VERSIONS_ROUTE_TO =
   "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments/versions";
+
+/** A repository's pull requests and their previews, from an Environment. */
+export const PREVIEWS_ROUTE_TO =
+  "/cloud/$organizationSlug/$projectSlug/$environmentSlug/previews/$repositoryId";
+
+export const PREVIEW_SETTINGS_ROUTE_TO =
+  "/cloud/$organizationSlug/$projectSlug/$environmentSlug/previews/$repositoryId/settings";
+
+export const PREVIEW_CLOSE_ROUTE_TO =
+  "/cloud/$organizationSlug/$projectSlug/$environmentSlug/previews/$repositoryId/close";
+
+/** One pull request's preview: what it is when live, else what deploys. */
+export const PREVIEW_ROUTE_TO =
+  "/cloud/$organizationSlug/$projectSlug/$environmentSlug/previews/$repositoryId/$number";
+
+export type PreviewRouteParams = EnvironmentRouteParams & { repositoryId: string };

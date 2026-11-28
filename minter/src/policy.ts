@@ -20,6 +20,17 @@ export const BUILD_INPUTS = ["build", "runner", "commit"] as const;
 /** Copied from `PR_CHECK_NAME` in `dashboard/src/modules/config-store/store-pull-requests.ts`, never imported. */
 export const PLOYZ_CHECK_NAMES: ReadonlySet<string> = new Set(["Ployz · ready to merge"]);
 
+/**
+ * The first line of the App's one comment on a pull request, which the minter writes itself, so the comment route
+ * finds that comment again and never touches another. Copied from `PREVIEW_COMMENT_MARKER` in
+ * `dashboard/src/modules/github/github-authority.server.ts`, never imported.
+ */
+export const PREVIEW_COMMENT_MARKER = "<!-- ployz-preview -->";
+
+/** What Cloud may write after the marker: one line, so a comment holds a link or two and never a page. */
+export const PREVIEW_COMMENT_LINE = /^[^\r\n\u2028\u2029]+$/;
+export const PREVIEW_COMMENT_MAX = 2000;
+
 /** The canonical `ployz-build.yml` digests the deployed minter dispatches. Lanes may swap in their own set. */
 export const CANONICAL_DIGESTS: ReadonlySet<string> = new Set(canonicalWorkflows.digests);
 

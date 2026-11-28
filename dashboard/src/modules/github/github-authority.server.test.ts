@@ -2,6 +2,7 @@ import { ConfigProvider, Effect, Layer } from "effect";
 import { TestClock } from "effect/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GITHUB_BUILD_WORKFLOW, GITHUB_BUILDER_COMMIT, GITHUB_RULE_WORKFLOW } from "./github-build-workflow";
+import { githubLacksPermission } from "./github-observation.api";
 import {
   GITHUB_READ_SET, GithubAuthority, GithubAuthorityLive, githubBuildWorkflowDigest, type GithubAuthorityService,
 } from "./github-authority.server";
@@ -219,6 +220,35 @@ describe("the App's authority held in Cloud", () => {
     expect(sent[0]?.body).toMatchObject({ code: "code-1" });
   });
 
+  it("writes the App's one comment on a pull request in place, never another's, and takes it down", async () => {
+    const MARKED = "<!-- ployz-preview -->\n";
+    let comments = [
+      { id: 1, body: `${MARKED}another App's`, performed_via_github_app: { id: 999 } },
+      { id: 2, body: `${MARKED}a person quoting it`, performed_via_github_app: null },
+      { id: 3, body: `${MARKED}[Deploy as a preview](https://cloud.ployz.test/x)`, performed_via_github_app: { id: 4242 } },
+    ];
+    const sent = serve(({ url, method, body }) => {
+      if (url.pathname === "/app/installations/7/access_tokens") return token({ pull_requests: "write" });
+      if (url.pathname === "/repositories/42/issues/3/comments" && method === "GET") return Response.json(comments);
+      if (url.pathname === "/repositories/42/issues/comments/3" && method === "PATCH") {
+        comments = comments.map((each) => each.id === 3 ? { ...each, body: (body as { body: string }).body } : each);
+        return Response.json({ id: 3 });
+      }
+      if (url.pathname === "/repositories/42/issues/comments/3" && method === "DELETE") return new Response(null, { status: 204 });
+      return undefined;
+    });
+    const line = "[Open preview](https://web.pr-3.acme.ployz.app/) https://web.pr-3.acme.ployz.app/";
+    await withAuthority(testConfigLayer({ DATABASE_URL, GITHUB_APP_ID: "4242" }), (authority) => Effect.gen(function* () {
+      expect(yield* authority.postComment({ installationId: 7, repositoryId: 42, number: 3, line })).toEqual({ commentId: 3 });
+      expect(yield* authority.postComment({ installationId: 7, repositoryId: 42, number: 3, line })).toEqual({ commentId: 3 });
+      expect(yield* authority.postComment({ installationId: 7, repositoryId: 42, number: 3, line: null })).toEqual({ commentId: null });
+    }));
+    expect(comments.find((each) => each.id === 3)?.body).toBe(`${MARKED}${line}`);
+    expect(sent.filter((request) => request.method !== "GET" && !request.url.pathname.endsWith("/access_tokens")).map((request) => [request.method, request.url.pathname]))
+      .toEqual([["PATCH", "/repositories/42/issues/comments/3"], ["DELETE", "/repositories/42/issues/comments/3"]]);
+    expect(minted(sent)).toEqual([{ permissions: { pull_requests: "write" }, repository_ids: [42] }]);
+  });
+
   it("tries a mint again when GitHub cut its body short or answered a bare 403", async () => {
     serve(() => new Response("{\"tok", { status: 201 }));
     await expect(local((authority) => authority.readToken(7))).rejects.toMatchObject({ code: "request_failed", retriable: true });
@@ -304,6 +334,12 @@ describe("the App's authority held by the minter", () => {
       .rejects.toMatchObject({ code: "invalid_response", retriable: false });
     await expect(cancel(500, { error: "internal" })).rejects.toMatchObject({ code: "request_failed", retriable: true });
     await expect(cancel(403, { message: "Forbidden" })).rejects.toMatchObject({ code: "request_failed", retriable: false });
+  });
+
+  it("reads an installation without Pull requests: write as lacking the permission, so the link goes in the check", async () => {
+    serve(() => Response.json({ error: "github", operation: "installation_token", failure: "status", status: 422 }, { status: 502 }));
+    const refused = await viaMinter((authority) => authority.postComment({ installationId: 7, repositoryId: 42, number: 3, line: "x" }).pipe(Effect.flip));
+    expect(githubLacksPermission(refused)).toBe(true);
   });
 
   it("runs no build again", async () => {

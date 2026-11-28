@@ -8,7 +8,9 @@ import { closeUnheldPreviews } from "#/modules/config-store/preview-evidence.ser
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { StoreGithubFailure, mergedInto, pullRequestEvent } from "#/modules/config-store/store-github.server";
 import { installationAccess } from "#/modules/github/github-access";
-import { postInstallationCheckRun } from "#/modules/github/github-authority.server";
+import { postInstallationCheckRun, postInstallationComment } from "#/modules/github/github-authority.server";
+import { previewInCheck } from "#/modules/config-store/store-pr-preview-check.server";
+import { previewComment, previewLinks } from "#/modules/config-store/store-pr-preview";
 import { fetchInstallationPullRequest, githubLacksPermission } from "#/modules/github/github-observation.api";
 import { githubRepositoryCache, organizationGithubInstallation } from "#/modules/github/tables";
 import type { GithubPullRequestReceivedEventData } from "#/modules/github/github-ingestion.contracts";
@@ -114,7 +116,7 @@ export const closeStoreEnvironments = Effect.fn("StorePullRequest.close")(functi
 });
 
 /**
- * A Store write named the pull request (a Conditional Sync, for one): publish its check again, through a GitHub
+ * A Store write or a Deployment named the pull request (a Conditional Sync, a preview deployed): publish its check and comment again, through a GitHub
  * installation the Organization links that holds the repository.
  */
 export const publishRequestedStorePrCheck = Effect.fn("StorePullRequest.publishRequestedCheck")(function* (
@@ -129,42 +131,57 @@ export const publishRequestedStorePrCheck = Effect.fn("StorePullRequest.publishR
     .where(eq(githubRepositoryCache.repositoryId, request.repositoryId))
     .orderBy(githubRepositoryCache.installationId)
     .limit(1);
-  if (!found) return "skipped" as const;
+  if (!found) return { check: "skipped" as const, comment: "skipped" as const };
   return yield* publishStorePrCheck({ installationId: found.installationId, repositoryId: request.repositoryId, number: request.number });
 });
 
 /**
- * Publish the pull request's "Ployz · ready to merge" check from the Store's views, as they are now. Nothing is posted
- * when no Store has a word (no PR Environments, closed unmerged, or everything landed), or for an installation without
- * Checks: write.
+ * Publish what Ployz says on the pull request, from the Store's views as they are now: its one comment, which offers a
+ * preview or opens the live one, and, when `check` asks for it, its "Ployz · ready to merge" check. Nothing is
+ * commented when no Store lists a preview, and nothing checked when no Store has a word (no PR Environments, closed
+ * unmerged, or everything landed), or for an installation without Checks: write. An installation without Pull
+ * requests: write gets the comment's link in the check instead (`previewInCheck`).
  */
 export const publishStorePrCheck = Effect.fn("StorePullRequest.publishCheck")(function* (payload: {
   installationId: number; repositoryId: number; number: number;
-}) {
+}, ask: { check: boolean } = { check: true }) {
   const store = yield* cloudStore;
   const config = yield* AppConfig;
   const organizations = yield* listLinkedOrganizationIds(payload.installationId);
   const views: { organizationId: string; view: PullRequestView; guarded: Guarded[] }[] = [];
   for (const organizationId of organizations) {
     const view = yield* storeTry(() => store.read(organizationId, { query: "pull_request", repository_id: payload.repositoryId, number: payload.number }));
-    if (!view.check) continue;
+    if (!view.check && previewLinks(view).length === 0) continue;
     const guarded: Guarded[] = [];
-    for (const { environment, destinations } of view.environments) {
+    for (const { environment, destinations } of view.check ? view.environments : []) {
       const { environments } = yield* storeTry(() => store.read(organizationId, { query: "environments", project: environment.project }));
       guarded.push(...destinations.flatMap((into) => environments.some((each) => each.name === into.name && each.protected) ? [{ project: environment.project, environment: into.name }] : []));
     }
     views.push({ organizationId, view, guarded });
   }
-  if (views.length === 0) return "skipped" as const;
+  if (views.length === 0) return { check: "skipped" as const, comment: "skipped" as const };
   const { drizzle } = yield* Database;
   const slugs = yield* drizzle.select({ id: organization.id, slug: organization.slug }).from(organization)
     .where(inArray(organization.id, views.map((entry) => entry.organizationId)));
-  const run = storePrCheckRun(
-    views.map(({ organizationId, ...rest }) => ({ slug: slugs.find((row) => row.id === organizationId)?.slug ?? "", ...rest })),
-    config.app.url.href,
+  const named = views.map(({ organizationId, ...rest }) => ({ slug: slugs.find((row) => row.id === organizationId)?.slug ?? "", ...rest }));
+  const access = installationAccess(payload.installationId);
+  const preview = previewComment(named, payload, config.app.url.href);
+  const comment = preview === null ? "skipped" as const : yield* postInstallationComment(access, payload.repositoryId, {
+    number: payload.number, line: preview.line,
+  }).pipe(
+    Effect.as(preview.line === null ? "deleted" as const : "posted" as const),
+    Effect.catchIf(githubLacksPermission, () => Effect.succeed("unpermitted" as const)),
+    // One GitHub won't take never holds back the check; one it may take later fails the step, which tries again.
+    Effect.catchIf((error) => !error.retriable, (error) =>
+      Effect.logWarning("The preview comment was not posted.", { payload, error }).pipe(Effect.as("failed" as const))),
   );
-  if (!run) return "skipped" as const;
-  return yield* postInstallationCheckRun(installationAccess(payload.installationId), payload.repositoryId, {
+  const said = storePrCheckRun(named, config.app.url.href);
+  const head = named.find((each) => each.view.pull_request)?.view.pull_request?.head ?? null;
+  const run = preview !== null && comment === "unpermitted"
+    ? yield* previewInCheck(payload.installationId, said, preview.calls, head)
+    : ask.check ? said : null;
+  if (!run) return { check: "skipped" as const, comment };
+  const check = yield* postInstallationCheckRun(access, payload.repositoryId, {
     ...run,
     externalId: `${payload.repositoryId}:${payload.number}`,
   }).pipe(
@@ -172,4 +189,5 @@ export const publishStorePrCheck = Effect.fn("StorePullRequest.publishCheck")(fu
     Effect.catchIf(githubLacksPermission, (error) =>
       Effect.logWarning("The PR check was not posted: the installation lacks Checks: write.", { payload, error }).pipe(Effect.as("forbidden" as const))),
   );
+  return { check, comment };
 });

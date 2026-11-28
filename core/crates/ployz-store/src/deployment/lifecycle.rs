@@ -665,7 +665,11 @@ pub(crate) fn lower_held(
     (namespace, cluster_domain): (Namespace, Option<&Hostname>),
     organization: &OrganizationId,
 ) -> Result<Lowered, RpcError> {
-    let branch = crate::branch::lowering(tx, environment, saved)?;
+    let opening = super::Opening::of(tx, environment, &namespace)?;
+    let branch = match opening {
+        Some(_) => crate::branch::Lowering::default(),
+        None => crate::branch::lowering(tx, environment, saved)?,
+    };
     let deployed = deployed_volumes(tx, environment, saved)?;
     let born = crate::volume::birth::born(tx, environment)?;
     let first_copies = crate::volume::first_copy::first_copies(tx, environment)?;
@@ -677,6 +681,7 @@ pub(crate) fn lower_held(
         (namespace, cluster_domain),
         &branch,
         organization,
+        opening.as_ref(),
     )
 }
 

@@ -15,6 +15,7 @@ pub(crate) mod loss;
 mod lowering;
 #[cfg(test)]
 mod node_tests;
+mod opening;
 mod outcomes;
 pub(crate) mod query;
 mod record;
@@ -36,6 +37,7 @@ pub(crate) use history::*;
 pub(crate) use landing::*;
 pub(crate) use lifecycle::*;
 pub(crate) use lowering::*;
+pub(crate) use opening::Opening;
 use outcomes::*;
 pub(crate) use record::*;
 pub(crate) use retry::*;

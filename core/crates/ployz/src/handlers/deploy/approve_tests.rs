@@ -324,6 +324,7 @@ fn a_drafted_rule_that_drops_a_built_service_refuses_it_though_the_kept_rule_cov
         generation: 2,
         ended: false,
         services: Vec::new(),
+        preview: None,
     };
     let ruled = Ruled {
         drafted: Some(super::Drafted {

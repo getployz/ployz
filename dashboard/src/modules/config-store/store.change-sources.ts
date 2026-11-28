@@ -119,6 +119,8 @@ export const storeViewRefreshedBy = {
   uploads: ["store_environment", "store_deployment"],
   // Plans list the repositories Working States deploy from, and name nodes of the start-from Environment.
   pr_plans: ["store_project", "store_environment"],
+  // Each pull request's preview: its facts, the plan's rule and cap, and each preview's Deployments.
+  previews: ["store_project", "store_environment", "store_deployment", "store_pull_request"],
   // Open previews are PR Environments in preview Namespaces; a plan keeps the preview rule.
   open_previews: ["store_project", "store_environment"],
   // PR Environments, their Deployments, each Destination's Working State, and the facts GitHub last told Cloud.
@@ -131,4 +133,6 @@ export const storeViewRefreshedBy = {
   parent: ["store_environment", "store_deployment"],
   // What a Service runs now is the newest applied Deployment's spec, with the signed versions kept for it.
   running: ["store_environment", "store_deployment"],
+  // The start-from's Saved Services and secrets, beside the plan's kept rule.
+  preview_rule: ["store_project", "store_environment"],
 } satisfies Record<ConfigQuery["query"], readonly StoreViewName[]>;

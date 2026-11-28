@@ -1,11 +1,12 @@
-//! The SDK's WASM ABI for Node and the browser: config rules, turning the automatic deploy
-//! rule off, Private Access approval, join and versions a passkey answers, and the key an install line
+//! The SDK's WASM ABI for Node and the browser: config rules, the preview rule and turning
+//! an automatic deploy rule off, Private Access approval, join and versions a passkey answers, and the key an install line
 //! carries.
 //! All policy lives in ployz-core.
 use ployz_core::OperationId;
 use ployz_core::authority::{
-    AutoDeployRule, JoinApproval, Passkey, PrivateAccessApproval, PrivateAccessTerms, RuleBasis,
-    SignerKey, Timestamp, TrashApproval, TrashTerms, version_draft, version_draft::VersionsAsked,
+    AutoDeployRule, JoinApproval, Passkey, PreviewBasis, PrivateAccessApproval, PrivateAccessTerms,
+    RuleBasis, RuleTerms, SignerKey, Timestamp, TrashApproval, TrashTerms, version_draft,
+    version_draft::VersionsAsked,
 };
 use ployz_core::config::{ConfigError, Generator, parse_env_file, parse_service_setting};
 use ployz_core::first_key::LineKey;
@@ -120,6 +121,29 @@ pub fn auto_deploy_rule_end_body(input: &str) -> Result<String, JsError> {
     let draft = AutoDeployRule::ending(&input.view, input.issued_at, input.signer)
         .map_err(|error| JsError::new(&error.to_string()))?
         .drafted(&input.view)
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    serde_json::to_string(&draft).map_err(|error| JsError::new(&error.to_string()))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PreviewInput {
+    view: PreviewBasis,
+    terms: RuleTerms,
+}
+
+/// The preview rule a passkey answers for the Store's preview rule `view`, as
+/// [`AutoDeployRule::draft_preview`] drafts it: its canonical body and what the person reads.
+///
+/// # Errors
+/// Rejects malformed input, and a view with a Service no preview rule can cover.
+#[wasm_bindgen]
+pub fn preview_rule_body(input: &str) -> Result<String, JsError> {
+    let input: PreviewInput =
+        serde_json::from_str(input).map_err(|error| JsError::new(&error.to_string()))?;
+    let draft = AutoDeployRule::draft_preview(&input.view, input.terms)
+        .map_err(|error| JsError::new(&error.to_string()))?
+        .drafted_preview(&input.view)
         .map_err(|error| JsError::new(&error.to_string()))?;
     serde_json::to_string(&draft).map_err(|error| JsError::new(&error.to_string()))
 }

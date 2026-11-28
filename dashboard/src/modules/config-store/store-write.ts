@@ -76,6 +76,8 @@ const SPANS = {
   set_pr_plan: false,
   approve_rule: false,
   approve_pull_request: false,
+  deploy_preview: false,
+  close_preview: false,
   batch: false,
 } satisfies Record<ConfigCommand["command"], boolean>;
 

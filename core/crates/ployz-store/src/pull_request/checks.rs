@@ -31,6 +31,10 @@ pub(crate) fn view(
             not_set: crate::branch::not_set(&environment.working)?,
         });
     }
+    let previews = match &record {
+        Some(record) => preview_view::links(tx, who, record)?,
+        None => Vec::new(),
+    };
     let unlanded = match record.map(|record| record.phase) {
         Some(Phase::Merged {
             landed: Some(landed),
@@ -46,6 +50,7 @@ pub(crate) fn view(
         pull_request,
         environments,
         check,
+        previews,
     })
 }
 
