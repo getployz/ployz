@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
+import type { PreviewRow, PreviewsView } from "@ployz/sdk";
 import { DashboardPage } from "#/components/dashboard-page";
 import { RelativeTime } from "#/components/relative-time";
 import { Button } from "#/components/ui/button";
@@ -9,7 +10,6 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "#
 import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { PREVIEW_CLOSE_ROUTE_TO, PREVIEW_ROUTE_TO, PREVIEW_SETTINGS_ROUTE_TO, type PreviewRouteParams } from "#/lib/environment-routes";
 import { useOrganizationName } from "#/modules/organization/organization-state.queries";
-import type { PreviewRow, PreviewsView } from "#/modules/previews/previews.contract";
 import { usePreviews } from "#/modules/previews/previews.queries";
 import { usePreviewWrites, writeFailure } from "#/modules/previews/preview-writes";
 import { addressHref, authorLine, deployable, outcomeLine, PreviewsRefused, PreviewStatus } from "./preview-parts";

@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { ChevronDownIcon } from "lucide-react";
 import { toast } from "sonner";
+import type { PreviewRow, PreviewSettings, PreviewsView } from "@ployz/sdk";
 import { DashboardPage } from "#/components/dashboard-page";
 import { RelativeTime } from "#/components/relative-time";
 import { SettingsDanger, SettingsRow, SettingsSection } from "#/components/settings/settings-section";
@@ -12,7 +13,7 @@ import { Spinner } from "#/components/ui/spinner";
 import { PREVIEW_SETTINGS_ROUTE_TO, PREVIEWS_ROUTE_TO, type PreviewRouteParams } from "#/lib/environment-routes";
 import { listNames } from "#/lib/plural";
 import { useOrganizationName } from "#/modules/organization/organization-state.queries";
-import { ruleBody, type PreviewRow, type PreviewSettings, type PreviewsView } from "#/modules/previews/previews.contract";
+import { ruleBody } from "#/modules/previews/previews.contract";
 import { usePreviews } from "#/modules/previews/previews.queries";
 import { usePreviewWrites, writeFailure } from "#/modules/previews/preview-writes";
 import {

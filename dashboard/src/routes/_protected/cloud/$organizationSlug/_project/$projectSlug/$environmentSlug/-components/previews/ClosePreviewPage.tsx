@@ -1,12 +1,12 @@
 import { useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
+import type { PreviewsView } from "@ployz/sdk";
 import { DashboardPage } from "#/components/dashboard-page";
 import { Button } from "#/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "#/components/ui/empty";
 import { Spinner } from "#/components/ui/spinner";
 import { PREVIEW_ROUTE_TO, PREVIEWS_ROUTE_TO, type PreviewRouteParams } from "#/lib/environment-routes";
-import type { PreviewsView } from "#/modules/previews/previews.contract";
 import { usePreviews } from "#/modules/previews/previews.queries";
 import { usePreviewWrites, writeFailure } from "#/modules/previews/preview-writes";
 import { CloseOneList, PreviewsRefused, RaiseLimit, upRows } from "./preview-parts";

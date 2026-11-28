@@ -62,7 +62,6 @@ pub struct PreviewRuleView {
 /// A Server previews may run on. Cloud adds its name.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct PreviewServer {
-    #[ts(as = "String")]
     pub machine_id: MachineId,
     /// Whether it can hold a preview now.
     pub holds: bool,

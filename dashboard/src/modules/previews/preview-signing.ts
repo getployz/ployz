@@ -3,17 +3,21 @@
  * the person's passkey answers it with a prompt of its own. Turning previews off signs the rule's ending generation.
  * Cloud only relays the rule view and the answer; each Server checks the rule before it opens a preview.
  */
-import type { MachineId, Signed } from "@ployz/sdk";
+import type { PreviewRuleView, Signed } from "@ployz/sdk";
+import { previewRuleBody, previewRuleEndBody } from "@ployz/sdk/authority";
 import type { QueryClient } from "@tanstack/react-query";
+import { Schema } from "effect";
+import { rustMachineIdSchema } from "#/lib/schema";
 import { ownerLookup } from "#/modules/deploy-approval/source-step";
 import { PasskeyDeclined, signWithPasskey } from "#/modules/passkeys/passkey-statement";
 import { preparePreviewSigningServerFn } from "./preview-sign.functions";
-import { previewRuleBody, previewRuleEndBody, type PreviewRuleView } from "./previews.contract";
 
 /** Why Preview settings weren't signed, in words the sheet shows as they are. */
 export class PreviewSignRefused extends Error {}
 
 const DRAFT = "This browser couldn't draft the preview rule. Try again.";
+
+const machineIds = Schema.decodeUnknownSync(Schema.Array(rustMachineIdSchema));
 
 const hex = (bytes: Uint8Array) => [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 
@@ -48,14 +52,14 @@ export async function signPreviewRule(input: {
   readonly view: PreviewRuleView;
   readonly repository: string;
   readonly repositoryId: number;
-  readonly servers: readonly MachineId[];
+  readonly servers: readonly string[];
 }): Promise<Signed> {
   const ready = await signing(input.organizationSlug, input.view);
   const owner = await ownerLookup(input.queryClient, input.organizationSlug)(input.repository, input.repositoryId);
   if ("problem" in owner) throw new PreviewSignRefused(owner.problem);
   const draft = drafted(() => previewRuleBody(input.view, {
     cluster: ready.cluster,
-    machines: [...input.servers].sort(),
+    machines: [...machineIds(input.servers)].sort(),
     owner_id: owner.ownerId,
     new_rule: hex(crypto.getRandomValues(new Uint8Array(16))),
     issued_at: Date.now(),

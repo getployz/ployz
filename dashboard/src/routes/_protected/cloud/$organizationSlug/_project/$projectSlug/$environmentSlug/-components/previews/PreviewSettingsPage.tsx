@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import type { MachineId, Signed } from "@ployz/sdk";
+import type { PreviewRuleView, PreviewSettings, PreviewsView, Signed } from "@ployz/sdk";
 import { KeyRoundIcon, ServerIcon, UsersIcon } from "lucide-react";
 import { toast } from "sonner";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -21,7 +21,6 @@ import { listNames, plural } from "#/lib/plural";
 import { environmentsQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { showRefusalInline, useStoreWriter } from "#/modules/config-store/store-write";
 import { useOrganizationName } from "#/modules/organization/organization-state.queries";
-import type { PreviewRuleView, PreviewSettings, PreviewsView } from "#/modules/previews/previews.contract";
 import { invalidatePreviews, usePreviewRule, usePreviews } from "#/modules/previews/previews.queries";
 import { PreviewSignRefused, signPreviewEnd, signPreviewRule } from "#/modules/previews/preview-signing";
 import { writeFailure } from "#/modules/previews/preview-writes";
@@ -29,7 +28,7 @@ import { PreviewsRefused, useServerName } from "./preview-parts";
 import { startFromChoices } from "./start-from";
 
 /** What Preview settings set: where previews copy from, the Servers they run on and how many are live at once. */
-type Draft = { readonly startFrom: string | null; readonly servers: readonly MachineId[] | null; readonly limit: number };
+type Draft = { readonly startFrom: string | null; readonly servers: readonly string[] | null; readonly limit: number };
 
 const LIMITS = [2, 3, 5, 8, 12];
 
@@ -176,11 +175,11 @@ function Settings({ view, params, repositoryId, edit }: { view: PreviewsView; pa
   );
 }
 
-const sameServers = (a: readonly MachineId[], b: readonly MachineId[]) => [...a].sort().join() === [...b].sort().join();
+const sameServers = (a: readonly string[], b: readonly string[]) => [...a].sort().join() === [...b].sort().join();
 
 /** The edit's lines, each the setting and its value before and after. */
-function changesOf(settings: PreviewSettings, draft: Draft & { servers: readonly MachineId[] }, name: (id: MachineId) => string) {
-  const names = (ids: readonly MachineId[]) => (ids.length ? listNames(ids.map(name)) : "none");
+function changesOf(settings: PreviewSettings, draft: Draft & { servers: readonly string[] }, name: (id: string) => string) {
+  const names = (ids: readonly string[]) => (ids.length ? listNames(ids.map(name)) : "none");
   const lines: string[] = [];
   if (draft.startFrom !== settings.start_from) lines.push(`Copy of ${settings.start_from} → ${draft.startFrom}`);
   if (draft.limit !== settings.limit) lines.push(`Up to ${settings.limit} → ${draft.limit} live previews`);
@@ -191,7 +190,7 @@ function changesOf(settings: PreviewSettings, draft: Draft & { servers: readonly
 /** The settings in one sentence, as the person signed them. */
 function Summary({ organizationName, organizationSlug, repository, startFrom, secrets, servers, limit }: {
   organizationName: string; organizationSlug: string; repository: string; startFrom: string; secrets: number | undefined;
-  servers: readonly MachineId[]; limit: number;
+  servers: readonly string[]; limit: number;
 }) {
   const name = useServerName(organizationSlug);
   const names = servers.map(name);
@@ -209,9 +208,9 @@ function Servers({ organizationSlug, startFrom, rule, ruleView, picked, editing,
   startFrom: string | null;
   rule: ReturnType<typeof usePreviewRule>;
   ruleView: PreviewRuleView | null;
-  picked: readonly MachineId[];
+  picked: readonly string[];
   editing: boolean;
-  onPick: (servers: readonly MachineId[]) => void;
+  onPick: (servers: readonly string[]) => void;
 }) {
   const name = useServerName(organizationSlug);
   if (startFrom === null) return <SettingsEmpty title="Pick an environment to copy first" />;
@@ -242,7 +241,7 @@ function Servers({ organizationSlug, startFrom, rule, ruleView, picked, editing,
 
 /** Saves the edit: a limit alone saves at once; anything a preview copies or where it runs asks for a passkey. */
 function SaveButton({ view, params, draft, servers, ruleView, resigns, settings, onSign, onSaved }: {
-  view: PreviewsView; params: PreviewRouteParams; draft: Draft; servers: readonly MachineId[]; ruleView: PreviewRuleView | null;
+  view: PreviewsView; params: PreviewRouteParams; draft: Draft; servers: readonly string[]; ruleView: PreviewRuleView | null;
   resigns: boolean; settings: PreviewSettings | null; onSign: () => void; onSaved: () => void;
 }) {
   const writer = useStoreWriter(params.organizationSlug);
@@ -285,7 +284,7 @@ function Term({ label, children }: { label: string; children: ReactNode }) {
 /** Signs the preview rule with the person's passkey, after listing exactly what it confirms, then saves it. */
 function SignSheet({ view, params, repositoryId, ruleView, startFrom, servers, limit, organizationName, turningOn, onClose, onSigned }: {
   view: PreviewsView; params: PreviewRouteParams; repositoryId: number; ruleView: PreviewRuleView; startFrom: string;
-  servers: readonly MachineId[]; limit: number; organizationName: string; turningOn: boolean; onClose: () => void; onSigned: () => void;
+  servers: readonly string[]; limit: number; organizationName: string; turningOn: boolean; onClose: () => void; onSigned: () => void;
 }) {
   const writer = useStoreWriter(params.organizationSlug);
   const { queryClient } = useCollectionScope();

@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
+import type { PreviewOutcome, PreviewRow, PreviewsView } from "@ployz/sdk";
 import { ConfirmDialog } from "#/components/confirm-dialog";
 import { RelativeTime } from "#/components/relative-time";
 import { RouteErrorAlert } from "#/components/route-error-alert";
@@ -9,7 +10,6 @@ import { Skeleton } from "#/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "#/components/ui/table";
 import { cn } from "#/lib/utils";
 import { PREVIEW_ROUTE_TO, PREVIEW_SETTINGS_ROUTE_TO, type PreviewRouteParams } from "#/lib/environment-routes";
-import type { PreviewOutcome, PreviewRow, PreviewsView } from "#/modules/previews/previews.contract";
 import { usePreviewWrites, writeFailure } from "#/modules/previews/preview-writes";
 import { useServerList } from "#/modules/machines/use-servers";
 

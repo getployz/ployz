@@ -1,10 +1,9 @@
-import type { PrPlan } from "@ployz/sdk";
+import type { PreviewRuleQuery, PreviewsQuery, PrPlan } from "@ployz/sdk";
 import { notFound } from "@tanstack/react-router";
 import { prefetchRemote, scopeOf, streamRemote, type RouteDataContext } from "#/collections/route-data";
 import { prPlansQuery } from "#/modules/config-store/store-pull-requests";
 import { requireStoreProjects } from "#/modules/config-store/store.route-data";
 import { environmentsQuery, requireView, storeViewOptions } from "#/modules/config-store/store-view.queries";
-import type { PreviewRuleQuery, PreviewsQuery } from "./previews.contract";
 import { previewRuleQueryOptions, previewsQueryOptions } from "./previews.queries";
 
 type Place = { organizationSlug: string; projectSlug: string; environmentSlug: string };

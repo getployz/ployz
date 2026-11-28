@@ -28,7 +28,6 @@ import { readClusterSealing } from "#/modules/sealing/cluster-sealing.server";
 import { writeAdmitted } from "#/modules/volume-placement/volume-placement.server";
 import type { StoreAnswer, StoreWriteResult, StoreCall, StoreRead, StoreResult, ViewAnswer } from "./store.contract";
 import { environmentKey } from "./environment-ref";
-import { draftsPreviewRule, previewCommand } from "#/modules/previews/previews.contract";
 
 /** One view Cloud reads for itself, with no evidence: its own lookups, such as a Deployment's Namespace for its logs. */
 export const readStore = <Q extends ConfigQuery>(organizationId: string, query: Q) =>
@@ -165,7 +164,7 @@ export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
   const deploysPreview = call.operation === "write" && call.command.command === "deploy_preview";
   const listsPreviews = call.operation === "read" && call.query.query === "previews";
   const members = approves || deploysPreview || listsPreviews ? yield* githubMembers(organizationId) : undefined;
-  const drafts = call.operation === "read" && draftsPreviewRule(call.query);
+  const drafts = call.operation === "read" && call.query.query === "preview_rule";
   const homes = deploysPreview ? yield* gatherPreviewHomes(organizationId, read) : drafts ? yield* observeHomes(organizationId) : undefined;
   // A preview rule is kept only once a key the Servers trust signed it.
   const signs = call.operation === "write" && call.command.command === "set_pr_plan" && call.command.preview_rule != null;
@@ -303,7 +302,7 @@ export const writePermission = (command: ConfigCommand): Permission => {
   if (command.command === "set_environment_protected") return "environments:protect";
   if (command.command === "set_build_order") return "org:settings";
   if (command.command === "name_region") return "servers:operate";
-  if (previewCommand(command) !== null) return "changes:deploy";
+  if (command.command === "deploy_preview" || command.command === "close_preview") return "changes:deploy";
   if (command.command !== "remove") return "changes:stage";
   return command.environment == null ? "project:delete" : "environment:delete";
 };
