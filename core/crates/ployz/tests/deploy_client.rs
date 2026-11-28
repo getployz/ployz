@@ -15,6 +15,7 @@ mod runner_cancellation;
     reason = "the SDK agent tests share this mock and use helpers this suite does not"
 )]
 mod support;
+use ployz_store::testing::backend::PinAs;
 use support::*;
 
 use std::{num::NonZeroU64, process::Stdio, sync::atomic::Ordering, time::Duration};
@@ -2069,7 +2070,7 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
             .unwrap();
         let web = ployz_core::ServiceName::parse("web").unwrap();
         store
-            .pin(
+            .pin_as(
                 &id,
                 &[(
                     web.clone(),
@@ -2077,6 +2078,7 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
                 )]
                 .into(),
                 &ployz_store::Trusted::default(),
+                "cloud-run-1",
             )
             .unwrap();
         let build = GithubBuildId {
@@ -2086,7 +2088,10 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
         let skipped = GithubEnd::Skipped {
             message: skipped.into(),
         };
-        store.github_end(&build, None, &skipped).unwrap();
+        store.github_begin(&id, "cloud-run-1").unwrap();
+        store
+            .github_pass_on(&build, &skipped, None, "cloud-run-1")
+            .unwrap();
 
         let (address, server) = listening(DeployService::new(machine('a', "one"))).await;
         let summary = ployz::sdk::run_deployment(

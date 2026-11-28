@@ -2293,6 +2293,25 @@ fn save_when(tx: &mut dyn Tx, stored: &mut Stored, when: SaveWhen) -> Result<boo
     Ok(true)
 }
 
+/// The status Deployment `stored`'s row keeps, for a stop of GitHub builds: never one a
+/// lapsed runner lease only shows, which a renewal still committing may undo. A claim of
+/// `runner` whose lease lapsed is first ended Unknown and saved, as its abandon would, so
+/// a stop never waits on a status nothing writes.
+pub(crate) fn kept_for_stop(
+    tx: &mut dyn Tx,
+    mut stored: Stored,
+    runner: Option<&RunnerId>,
+) -> Result<(DeploymentStatus, Option<RunnerId>), RpcError> {
+    let lapsed_ours = runner.is_some_and(|runner| stored.summary.runner.as_ref() == Some(runner))
+        && stored.summary.status == DeploymentStatus::Unknown
+        && stored.standing.kept().claimed();
+    if lapsed_ours {
+        stored.standing = stored.standing.lose_runner(now());
+        save(tx, &mut stored)?;
+    }
+    Ok((stored.standing.kept(), stored.standing.runner().cloned()))
+}
+
 fn running(stored: &Stored) -> Result<(), RpcError> {
     match stored.summary.status {
         DeploymentStatus::Running | DeploymentStatus::Cancelling => Ok(()),

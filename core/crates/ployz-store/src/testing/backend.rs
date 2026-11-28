@@ -493,3 +493,32 @@ fn texts(url: &str, sql: &str) -> Vec<Vec<String>> {
 pub fn statements<T>(work: impl FnOnce() -> T) -> (T, usize) {
     crate::storage::counted::statements(work)
 }
+
+/// Pin as a worker attempt that began the Deployment: the Store takes a pin only from
+/// the attempt that owns it.
+pub trait PinAs {
+    /// Begin worker attempt `runner` on `deployment`, then pin `commits` as it.
+    ///
+    /// # Errors
+    /// Whatever the begin or the pin refuses.
+    fn pin_as(
+        &self,
+        deployment: &crate::DeploymentId,
+        commits: &std::collections::BTreeMap<ployz_core::ServiceName, crate::CommitSha>,
+        trusted: &crate::Trusted,
+        runner: &str,
+    ) -> Result<Vec<crate::GitSource>, ployz_core::RpcError>;
+}
+
+impl PinAs for ConfigStore {
+    fn pin_as(
+        &self,
+        deployment: &crate::DeploymentId,
+        commits: &std::collections::BTreeMap<ployz_core::ServiceName, crate::CommitSha>,
+        trusted: &crate::Trusted,
+        runner: &str,
+    ) -> Result<Vec<crate::GitSource>, ployz_core::RpcError> {
+        self.github_begin(deployment, runner)?;
+        self.pin(deployment, commits, trusted, runner)
+    }
+}

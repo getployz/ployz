@@ -254,6 +254,18 @@ describe("run routes", () => {
     expect(tokenRequests(minter.calls)[0]?.body).toEqual({ permissions: { actions: "write" }, repository_ids: [REPOSITORY] });
     expect(minter.audit[0]).toMatchObject({ outcome: "granted", run_id: 7, github_status: 409 });
   });
+
+  it("/v1/cancel fails when GitHub answers 409 for a run a read shows still in progress, so Cloud keeps owing it", async () => {
+    const running = { ...RUN, status: "in_progress", conclusion: null };
+    const minter = harness({
+      ...runRoutes,
+      [`GET ${repo}/actions/runs/7`]: () => json(running),
+      [`POST ${repo}/actions/runs/7/cancel`]: () => json({ message: "Conflict" }, 409),
+    });
+    const response = await minter.call("/v1/cancel", { installation_id: INSTALLATION, repository_id: REPOSITORY, run_id: 7 });
+    expect(response.status).not.toBe(200);
+    expect(minter.audit[0]).toMatchObject({ outcome: "failed", run_id: 7, github_status: 409 });
+  });
 });
 
 describe("/v1/check", () => {

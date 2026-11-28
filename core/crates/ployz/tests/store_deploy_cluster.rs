@@ -7,6 +7,7 @@
 )]
 
 use ployz::connect::Call;
+use ployz_store::testing::backend::PinAs;
 use std::{path::Path, process::Command, sync::Arc, time::Duration};
 
 use ployz::{
@@ -493,7 +494,9 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
                     )
                 })
                 .collect();
-            store.pin(&id, &pins, &Trusted::default()).unwrap();
+            store
+                .pin_as(&id, &pins, &Trusted::default(), &format!("cloud-{n}"))
+                .unwrap();
             ployz::sdk::run_deployment(
                 ployz_core::Operator::Cloud,
                 Arc::clone(&store),
@@ -769,7 +772,9 @@ async fn redeploys_sharing_a_dockerfile(reaches_data: bool) {
                     )
                 })
                 .collect();
-            store.pin(&id, &pins, &Trusted::default()).unwrap();
+            store
+                .pin_as(&id, &pins, &Trusted::default(), &format!("cloud-{n}"))
+                .unwrap();
             let started = std::time::Instant::now();
             ployz::sdk::run_deployment(
                 ployz_core::Operator::Cloud,

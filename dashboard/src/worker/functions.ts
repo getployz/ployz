@@ -30,6 +30,7 @@ import { createSweepExpiredVerifications } from "#/modules/identity/verification
 import {
   createCancelStoreDeployment, createDeployToFirstServer, createRedispatchStoreDeployments, createRunStoreDeployment,
 } from "#/modules/config-store/store-deployment.inngest";
+import { createStopStoreDeployment } from "#/modules/config-store/store-deployment-stop.inngest";
 import { createRetireOldFunctions } from "#/modules/config-store/retire-old.inngest";
 import {
   createStoreGithubCheckSuite, createStoreGithubPush, createStorePrCheck, createStorePullRequest, createStoreSweep,
@@ -76,6 +77,7 @@ export function createWorkerFunctions(inngest: PloyzInngest, billingMode: PolarC
     createRunStoreDeployment(inngest),
     ...createRetireOldFunctions(inngest),
     createCancelStoreDeployment(inngest),
+    createStopStoreDeployment(inngest),
     createRedispatchStoreDeployments(inngest),
     createDeployToFirstServer(inngest),
     createStoreGithubPush(inngest),

@@ -12,6 +12,7 @@ import type {
   ConnectOptions,
   Connection,
   ContainerObservation,
+  CopyObservation,
   DataLossConfirmation,
   DeployOutcome,
   DoorsChanged,
@@ -171,6 +172,8 @@ export interface PloyzSession {
   readonly observeService: (namespace: string, service: string) => Effect.Effect<ServiceCopies, PloyzSdkError>;
   /** The Containers of `namespace` that each Server lists itself, and the Servers that didn't answer. */
   readonly observeNamespace: (namespace: string) => Effect.Effect<NamespaceContainers, PloyzSdkError>;
+  /** Every copy of every Volume the Cluster's Servers hold, read over this session. */
+  readonly observeCopies: () => Effect.Effect<CopyObservation, PloyzSdkError>;
   readonly stopContainer: (machine: string, container: string) => Effect.Effect<void, PloyzSdkError>;
   /** How a started Container ended up: past its healthcheck and serving, unconfirmed, or failing its healthcheck. */
   readonly startContainer: (machine: string, container: string) => Effect.Effect<"serving" | "unconfirmed" | "unhealthy", PloyzSdkError>;
@@ -424,6 +427,7 @@ function wrapClient(client: Client): PloyzSession {
     agentAsk: (query, readable, sealed) => sdkPromise("agent ask", () => client.agentAsk(query, readable, sealed)),
     observeService: (namespace, service) => sdkPromise("observe service", () => client.observeService(namespace, service)),
     observeNamespace: (namespace) => sdkPromise("observe namespace", () => client.observeNamespace(namespace)),
+    observeCopies: () => sdkPromise("observe copies", () => client.observeCopies()),
     stopContainer: (machine, container) => sdkPromise("stop container", () => client.stopContainer(machine, container)),
     startContainer: (machine, container) => sdkPromise("start container", () => client.startContainer(machine, container)),
     removeContainer: (machine, container) => sdkPromise("remove container", () => client.removeContainer(machine, container)),

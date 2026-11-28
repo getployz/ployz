@@ -14,6 +14,7 @@ import { GithubRepositoriesLive } from "#/modules/github/github-cli.server";
 import { GithubApiLive } from "#/modules/github/github-observation.api";
 import { GithubOidcKeysLive } from "#/modules/github/github-oidc.server";
 import { GithubTokensLive } from "#/modules/github/github-token.server";
+import { GithubSourcesLive } from "#/modules/github/github-sources.server";
 import { InngestLive } from "#/modules/inngest/client";
 import { AuthLive } from "#/modules/identity/auth.server";
 import { AppConfig } from "#/server/config.server";
@@ -33,6 +34,7 @@ const InfrastructureLive = Layer.mergeAll(
   GithubRepositoriesLive,
   GithubOidcKeysLive,
   CloudStoreLive,
+  GithubSourcesLive,
 ).pipe(
   Layer.provideMerge(GithubApiLive),
   Layer.provideMerge(GithubTokensLive),

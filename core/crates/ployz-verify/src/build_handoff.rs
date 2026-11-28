@@ -42,19 +42,20 @@
 //! it after it got its Build Grant and build secrets.
 //!
 //! The model starts from two `github-start` steps. On the first try, `githubDispatched`
-//! committed the run and answered (`store-github-builds.server.ts::startStoreGithubBuild`). On the retry, the first try's `githubDispatched`
-//! timed out, so Cloud cancelled its run and Inngest ran the step again. The timed-out
-//! call keeps running (`ployz::sdk::store_call::bounded`), so its write
-//! (`Who::Delayed`) can commit at any step after: before the retry reads the build, between
-//! that read and the retry's own hand-off, or never in time. The retry follows a run that
-//! holds the build; otherwise it dispatches its own run and hands it the build. A
-//! refused hand-off means another run's committed first, and the retry reads the build again
-//! and follows that run. If the retry's hand-off wins, the first try's write is
-//! refused, and the walk follows the retry's run. A retry that skips GitHub instead goes to the
-//! same second read when its skip is refused (`store-github-builds.server.ts::startStoreGithubBuild::skip`), so the refused hand-off stands
-//! for it; a skip that commits refuses the first try's write, and the walk returns.
-//! `Broken::start_leaves_held_run` answers `done` for a refused hand-off without the second
-//! read, so the walk returns while the first try's run holds the build.
+//! committed the run and answered (`store-github-builds.server.ts::startStoreGithubBuilds`).
+//! On the retry, the first try's `githubDispatched` timed out, so the start handed its record
+//! to a step of its own, which Inngest runs again: GitHub may have taken the run, so it is never
+//! asked for again, and Cloud keeps the run (`store-deployment.inngest.ts::startGithubBuilds`).
+//! The timed-out call keeps running (`ployz::sdk::store_call::bounded`), so its write
+//! (`Who::Delayed`) can commit at any step after: before the retry's own write of the same run,
+//! or never in time. A refused write means the build is no longer waiting, and the retry reads
+//! it again (`store-github-builds.server.ts::recordStoreGithubBuild`): it follows the run when
+//! the run holds it, and otherwise cancels the run and returns. Either write committing hands
+//! the build to the one run, so the walk follows it whichever commits first. A start step whose
+//! answer Inngest lost records each build before asking for the next, so its re-run's first read
+//! follows every run it asked for: the first try's state.
+//! `Broken::start_leaves_held_run` answers `done` for a refused write without the second
+//! read, so the walk returns while the run holds the build.
 //!
 //! The Deployment runner's report on the build goes through `record`
 //! (`ployz_store::build::record`), which refuses a build a GitHub run holds or
@@ -321,7 +322,7 @@ enum Stop {
     Outstanding,
     /// The build it found: its `github_end` Failed "cancelled" (`ployz::sdk::github_build::github_cancel`).
     Ending,
-    /// `cancelDispatchedGithubRun` for it (`config-store.server.ts::cancelStoreGithubBuilds`).
+    /// The cancel of the run its write owes (`store-github-builds.server.ts::cancelStoreGithubBuilds`).
     Cancelling,
 }
 
@@ -334,13 +335,13 @@ enum At {
     Deployment { grant: bool, ended: bool },
     /// `cancelStoreGithubBuilds` (`store-github-builds.server.ts::checkStoreGithubBuild`).
     Stopping(Stop),
-    /// `cancelDispatchedGithubRun` past the budget (`store-github-builds.server.ts::checkStoreGithubBuild`).
+    /// The cancel the budget's settle owes (`store-github-builds.server.ts::checkStoreGithubBuild`).
     BudgetCancel,
     /// `runEnded` is next: at `store-github-builds.server.ts::checkStoreGithubBuild` without a grant, and at its later call with one.
     AskingGithub { grant: bool },
     /// `store-github-builds.server.ts::checkStoreGithubBuild::finish`, called with `look`.
     Finishing { look: GithubLook, at: Finish },
-    /// `cancelDispatchedGithubRun` after the start limit's finish (`store-github-builds.server.ts::checkStoreGithubBuild`). `waiting` is what
+    /// The cancel the start limit's settle owes (`store-github-builds.server.ts::checkStoreGithubBuild`). `waiting` is what
     /// the finish answered, which that step returns.
     LimitCancel { waiting: bool },
 }
@@ -348,7 +349,7 @@ enum At {
 /// Where Cloud's walk is (`store-deployment.inngest.ts::walkGithub`).
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Walk {
-    /// Inside the retried `github-start` step (`store-github-builds.server.ts::startStoreGithubBuild`).
+    /// Inside the retried record step (`store-deployment.inngest.ts::startGithubBuilds`).
     Start(Start),
     /// `github-open-${check}` is next (`store-deployment.inngest.ts::walkGithub`).
     Open(u8),
@@ -370,16 +371,15 @@ enum Walk {
     GaveUp,
 }
 
-/// The retried `github-start`'s next statement.
+/// The retried record step's next statement (`store-github-builds.server.ts::recordStoreGithubBuild`).
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Start {
-    /// `holder`'s first read (`store-github-builds.server.ts::startStoreGithubBuild`).
-    Read,
-    /// `githubDispatched` for the retry's own run (`store-github-builds.server.ts::startStoreGithubBuild`), which `github_dispatched`
+    /// `githubDispatched` for the same run the first try recorded, which `github_dispatched`
     /// (`ployz_store::build::github_dispatched`) commits only for a waiting build of a
     /// Deployment in flight.
     HandOff,
-    /// `holder`'s read after a refused hand-off (`refused`, `store-github-builds.server.ts::startStoreGithubBuild`).
+    /// `heldRun`'s read after a refused write: follow the run that holds the build, else
+    /// cancel the run and return.
     Reread,
 }
 
@@ -603,12 +603,12 @@ enum Branch {
     ServersReported {
         ok: bool,
     },
-    /// The retried start's read of the build: `follows` when a run holds it.
+    /// The retried record's read of the build after its refused write: `follows` when the run
+    /// holds it.
     StartRead {
-        at: Start,
         follows: bool,
     },
-    /// The retried start's own hand-off: `won` when it committed.
+    /// The retried record's write: `won` when it committed.
     HandOff {
         won: bool,
     },
@@ -650,14 +650,11 @@ struct State {
     granted_after_cancel: bool,
     /// A check-in committed over a grant already recorded.
     grant_replaced: bool,
-    /// The walk's `github-start` was a retry, whose first try's `githubDispatched` timed out,
-    /// so Cloud cancelled the first try's run (`store-github-builds.server.ts::startStoreGithubBuild`).
+    /// The walk's start was a retry, whose first try's `githubDispatched` timed out, so its
+    /// record runs in a step of its own (`store-deployment.inngest.ts::startGithubBuilds`).
     retried: bool,
     /// The first try's timed-out `githubDispatched` has not committed or been refused yet.
     delayed: bool,
-    /// The retry's own hand-off committed, so `RUN` is the retry's run and the first try's
-    /// run never held the build.
-    retry_won: bool,
     servers: Servers,
     /// A Server's report landed on a build a GitHub run held.
     server_on_github: bool,
@@ -1536,49 +1533,19 @@ const COVERAGE: &[Coverage] = &[
     },
     // The retried start.
     Coverage {
-        name: "the first try's hand-off commits before the retry reads the build, and the retry follows its run",
+        name: "the first try's hand-off commits first: the retry's write is refused, and its second read follows the run",
         on: everywhere,
         omit: None,
-        reached: |_, state| {
-            took(
-                state.took,
-                Branch::StartRead {
-                    at: Start::Read,
-                    follows: true,
-                },
-            )
-        },
+        reached: |_, state| took(state.took, Branch::StartRead { follows: true }),
     },
     Coverage {
-        name: "the first try's hand-off commits after the retry read the build: the retry's hand-off is refused, and its second read follows the first try's run",
+        name: "the retry's second read finds the run no longer holding the build: Cloud cancels it, and the walk returns",
         on: everywhere,
         omit: None,
-        reached: |_, state| {
-            took(
-                state.took,
-                Branch::StartRead {
-                    at: Start::Reread,
-                    follows: true,
-                },
-            )
-        },
+        reached: |_, state| took(state.took, Branch::StartRead { follows: false }),
     },
     Coverage {
-        name: "the retry's second read finds the first try's run no longer holding the build, and the walk returns",
-        on: everywhere,
-        omit: None,
-        reached: |_, state| {
-            took(
-                state.took,
-                Branch::StartRead {
-                    at: Start::Reread,
-                    follows: false,
-                },
-            )
-        },
-    },
-    Coverage {
-        name: "the retry's hand-off commits, and the walk follows the retry's run",
+        name: "the retry's write commits, and the walk follows the run",
         on: everywhere,
         omit: None,
         reached: |_, state| took(state.took, Branch::HandOff { won: true }),
@@ -1590,23 +1557,21 @@ const COVERAGE: &[Coverage] = &[
         reached: |_, state| took(state.took, Branch::DelayedHandOff { ok: false }),
     },
     Coverage {
-        name: "after a retried start, a look passes on the run Cloud cancelled, and the Servers take the build",
+        name: "after a retried record, a look passes on the run, and the Servers take the build",
         on: everywhere,
         omit: None,
         reached: |_, state| {
             state.retried
-                && !state.retry_won
                 && !state.limit_waited
                 && took(state.took, Branch::ServersReported { ok: true })
         },
     },
     Coverage {
-        name: "after a retried start, the run Cloud cancelled checked in first: the start limit waits for it, and a later look settles it",
+        name: "after a retried record, the run checked in: the start limit waits for it, and a later look settles it",
         on: everywhere,
         omit: None,
         reached: |_, state| {
             state.retried
-                && !state.retry_won
                 && state.limit_waited
                 && [GithubLook::Ended, GithubLook::Budget]
                     .into_iter()
@@ -1822,41 +1787,30 @@ impl BuildHandoff {
     }
 
     /// The walk's steps.
-    /// The retried `github-start`'s steps (`store-github-builds.server.ts::startStoreGithubBuild`).
+    /// The retried record step's steps (`store-github-builds.server.ts::recordStoreGithubBuild`).
     fn start(&self, state: &mut State, at: Start) {
         state.walk = match at {
-            Start::Read | Start::Reread => {
-                // `holder`: a run holds the build while it is building on GitHub (`store-github-builds.server.ts::startStoreGithubBuild`).
-                let follows = state.row.status == Status::Building && state.row.github.is_some();
-                state.took = Some(Branch::StartRead { at, follows });
-                match (follows, at) {
-                    (true, _) => Walk::Open(0),
-                    (false, Start::Read) => Walk::Start(Start::HandOff),
-                    (false, Start::HandOff | Start::Reread) => Walk::Done,
-                }
-            }
             Start::HandOff => {
                 let won = Self::hand_off(state);
                 state.took = Some(Branch::HandOff { won });
                 if won {
-                    // `RUN` is the retry's run from here: GitHub has neither ended it nor been
-                    // asked to cancel it, and its job has yet to check in. The first try's run
-                    // never held the build, so its job's check-in is refused and its late
-                    // hand-off too.
-                    state.retry_won = true;
-                    state.cancelled = false;
-                    state.completed = false;
-                    state.job = Job::Queued;
-                    state.again = if self.requests > 1 {
-                        Again::Unsent
-                    } else {
-                        Again::Absent
-                    };
                     Walk::Open(0)
                 } else if self.broken.start_leaves_held_run {
                     Walk::Done
                 } else {
                     Walk::Start(Start::Reread)
+                }
+            }
+            Start::Reread => {
+                // `heldRun`: the run holds the build while it is building on GitHub.
+                let follows = state.row.status == Status::Building && state.row.github.is_some();
+                state.took = Some(Branch::StartRead { follows });
+                if follows {
+                    Walk::Open(0)
+                } else {
+                    // The build started or ended without the run: Cloud cancels it.
+                    state.cancelled = true;
+                    Walk::Done
                 }
             }
         };
@@ -2402,8 +2356,8 @@ impl Model for BuildHandoff {
 
     /// The run was dispatched and `githubDispatched` committed it (`store-github-builds.server.ts::startStoreGithubBuild`,
     /// `ployz_store::build::github_dispatched`); the walk's first `github-open` is next.
-    /// The other state is the retried start: the build is still waiting, the first try's run
-    /// (`RUN`) is cancelled and its hand-off still running, and the retry's read is next. The
+    /// The other state is the retried record: the build is still waiting, the first try's
+    /// hand-off of `RUN` is still running, and the record step's own write of `RUN` is next. The
     /// checker explores the last start state first, so a story starts from the first try
     /// wherever both reach a state at the same depth.
     fn init_states(&self) -> Vec<State> {
@@ -2437,7 +2391,6 @@ impl Model for BuildHandoff {
             grant_replaced: false,
             retried: false,
             delayed: false,
-            retry_won: false,
             servers: Servers::Idle,
             server_on_github: false,
             servers_refused: false,
@@ -2449,8 +2402,7 @@ impl Model for BuildHandoff {
                 github: None,
                 skipped: false,
             },
-            cancelled: true,
-            walk: Walk::Start(Start::Read),
+            walk: Walk::Start(Start::HandOff),
             retried: true,
             delayed: true,
             ..first
@@ -2593,7 +2545,7 @@ fn row(row: Row) -> String {
 /// The start state in the code's words.
 fn start(state: &State) -> String {
     if state.retried {
-        "start: a retried github-start: the first try's githubDispatched timed out with its write still running (`ployz::sdk::store_call::bounded`), so Cloud cancelled the first try's run (`store-github-builds.server.ts::startStoreGithubBuild`); the retry's read of the build is next".to_owned()
+        "start: a retried record: the start's githubDispatched timed out with its write still running (`ployz::sdk::store_call::bounded`), so the record runs in a step of its own, never asking GitHub again (`store-deployment.inngest.ts::startGithubBuilds`); its write of the same run is next".to_owned()
     } else {
         "start: the run was dispatched, and the walk's github-open-0 is next".to_owned()
     }
@@ -2870,17 +2822,15 @@ fn reads_as(model: &BuildHandoff, before: &State, action: Action, after: &State)
             }
         ),
         Branch::ServersReported { ok: false } => "run-deployment: record refuses the Servers' Building report, since a GitHub run holds the build (`ployz_store::build::record`)".to_owned(),
-        Branch::StartRead { at: Start::Read, follows: true } => "github-start: holder reads the build building on a run, and the retry follows that run (`store-github-builds.server.ts::startStoreGithubBuild`)".to_owned(),
-        Branch::StartRead { at: Start::Read, follows: false } => "github-start: holder finds no run holding the build (`store-github-builds.server.ts::startStoreGithubBuild`); the retry dispatches its own run, and its githubDispatched is next".to_owned(),
-        Branch::StartRead { at: _, follows: true } => "github-start: after the refused hand-off, holder reads the build again, and the retry follows the run that holds it (`store-github-builds.server.ts::startStoreGithubBuild`)".to_owned(),
-        Branch::StartRead { at: _, follows: false } => "github-start: after the refused hand-off, holder finds no run holding the build, so the step answers done (`store-github-builds.server.ts::startStoreGithubBuild`) and walkGithub returns".to_owned(),
-        Branch::HandOff { won: true } => "github-start: github_dispatched hands the waiting build to the retry's run, and the walk follows it".to_owned(),
+        Branch::StartRead { follows: true } => "github-record: after the refused write, heldRun reads the build again and finds the run holding it, so the walk follows it (`store-github-builds.server.ts::recordStoreGithubBuild`)".to_owned(),
+        Branch::StartRead { follows: false } => "github-record: after the refused write, heldRun finds no run holding the build, so Cloud cancels the run and the step answers done (`store-github-builds.server.ts::recordStoreGithubBuild`); walkGithub returns".to_owned(),
+        Branch::HandOff { won: true } => "github-record: github_dispatched hands the waiting build to the run, and the walk follows it".to_owned(),
         Branch::HandOff { won: false } => format!(
-            "github-start: github_dispatched refuses the retry's run, since the build is no longer waiting; Cloud cancels that run (`store-github-builds.server.ts::startStoreGithubBuild`){}",
+            "github-record: github_dispatched refuses the run, since the build is no longer waiting (`ployz_store::build::github_dispatched`){}",
             if model.broken.start_leaves_held_run {
-                " and answers done without reading the build again (under Broken), so walkGithub returns"
+                ", and the step answers done without reading the build again (under Broken), so walkGithub returns"
             } else {
-                ", and holder reads the build again (`store-github-builds.server.ts::startStoreGithubBuild`)"
+                ", and heldRun reads the build again (`store-github-builds.server.ts::recordStoreGithubBuild`)"
             }
         ),
         Branch::DelayedHandOff { ok: true } => "the first try's githubDispatched commits: github_dispatched hands the waiting build to the first try's run".to_owned(),
@@ -3417,14 +3367,13 @@ mod tests {
         ));
     }
 
-    /// A retried start follows the run its first try handed the build to. The Servers get that
-    /// build once the start limit ends the cancelled run Unstarted, and `record` takes their
-    /// report.
+    /// A retried record follows the run it handed the build to. The Servers get that build once
+    /// the start limit ends the run Unstarted, and `record` takes their report.
     #[test]
     fn a_retried_start_follows_the_held_run() {
         let path = breaks_where(
             code(),
-            "after a retried start, a look passes on the run Cloud cancelled, and the Servers take the build",
+            "after a retried record, a look passes on the run, and the Servers take the build",
             |path| {
                 branches(path).contains(&Branch::Finish {
                     by: Finisher::Walk,
@@ -3436,40 +3385,33 @@ mod tests {
         assert!(path.first().expect("a start state").0.retried);
     }
 
-    /// The first try's hand-off can commit after the retry read the build with no run. The
-    /// retry's own hand-off is then refused, and its second read follows the first try's run.
+    /// The first try's hand-off can commit before the retry's own write of the same run. That
+    /// write is then refused, and its second read follows the run.
     #[test]
     fn a_retried_start_follows_a_hand_off_that_commits_after_its_read() {
         let path = breaks(
             code(),
-            "the first try's hand-off commits after the retry read the build: the retry's hand-off is refused, and its second read follows the first try's run",
+            "the first try's hand-off commits first: the retry's write is refused, and its second read follows the run",
         );
         let taken = branches(&path);
         assert_eq!(
             taken,
             [
-                Branch::StartRead {
-                    at: Start::Read,
-                    follows: false,
-                },
                 Branch::DelayedHandOff { ok: true },
                 Branch::HandOff { won: false },
-                Branch::StartRead {
-                    at: Start::Reread,
-                    follows: true,
-                },
+                Branch::StartRead { follows: true },
             ]
         );
         assert_eq!(last(&path).walk, Walk::Open(0));
     }
 
-    /// A run Cloud cancelled can still check in before GitHub ends it. The start limit waits
-    /// for it, and a later look settles it.
+    /// The run a retried record handed the build to can check in before the start limit's look.
+    /// The start limit waits for it, and a later look settles it.
     #[test]
     fn a_retried_start_s_run_that_checked_in_keeps_its_build() {
         let path = breaks(
             code(),
-            "after a retried start, the run Cloud cancelled checked in first: the start limit waits for it, and a later look settles it",
+            "after a retried record, the run checked in: the start limit waits for it, and a later look settles it",
         );
         assert!(before(&path, the_check_in_committed, |branch| matches!(
             branch,
@@ -3482,7 +3424,7 @@ mod tests {
         assert!(!last(&path).limit_took);
     }
 
-    /// A retried start that answers `done` for a refused hand-off, without its second read,
+    /// A retried record that answers `done` for a refused write, without its second read,
     /// returns the walk while the first try's late hand-off holds the build: `record` refuses
     /// the Servers' report, and the Deployment lapses Unknown.
     #[test]
@@ -3498,15 +3440,6 @@ mod tests {
         assert!(after.retried);
         assert_eq!(after.took, Some(Branch::ServersReported { ok: false }));
         assert!(after.row.building_on(RUN).is_some());
-        assert!(before(
-            &path,
-            |branch| branch
-                == Branch::StartRead {
-                    at: Start::Read,
-                    follows: false,
-                },
-            |branch| branch == Branch::DelayedHandOff { ok: true },
-        ));
         assert!(before(
             &path,
             |branch| branch == Branch::DelayedHandOff { ok: true },

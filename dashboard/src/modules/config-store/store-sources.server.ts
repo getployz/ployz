@@ -38,25 +38,32 @@ export const githubMembers = Effect.fn("ConfigStore.githubMembers")(function* (o
 
 /**
  * Pin each Git Service of the Deployment to its branch's head, unless it is pinned already (a pin never moves, so a
- * retried run reads the same commit). Resolves to every source with its pin. A trusted pull request's head pins only
- * while its author is still among the members sent with it, unless a bot opened it from the repository itself.
+ * retried run reads the same commit), for worker attempt `runner`: the Store refuses a pin from an attempt that no
+ * longer owns the Deployment as `newer`, so only the newest attempt chooses the commit. Resolves to every source with
+ * its pin. A trusted pull request's head pins only while its author is still among the members sent with it, unless a
+ * bot opened it from the repository itself.
  */
 export const pinStoreSources = Effect.fn("StoreDeployment.pinSources")(function* (
-  store: ConfigStore, organizationId: string, deploymentId: string,
+  store: ConfigStore, organizationId: string, deploymentId: string, runner: string,
 ) {
   const sources = yield* storeTry(() => store.deploymentSources(deploymentId));
   const heads: Record<string, string> = {};
+  const resolved = new Map<string, string>();
   for (const source of sources) {
     if (source.commit !== null) continue;
     if (source.branch === null) {
       return yield* new SourceUnreadable({ message: `Reconnect ${source.service}'s branch before deploying.` });
     }
-    heads[source.service] = yield* fromGithub(resolveGithubSourceSha({ ...sourceIdentity(organizationId, source), branch: source.branch }));
+    const branch = { ...sourceIdentity(organizationId, source), branch: source.branch };
+    const key = `${branch.installationId}:${branch.repositoryId}:${branch.branch}`;
+    const head = resolved.get(key) ?? (yield* fromGithub(resolveGithubSourceSha(branch)));
+    resolved.set(key, head);
+    heads[source.service] = head;
   }
   if (Object.keys(heads).length === 0) return sources;
   const members = yield* githubMembers(organizationId);
   // A head it can never build, such as one its pull request hasn't approved, is why it failed.
-  return yield* storeTry(() => store.pinSources(deploymentId, heads, { members })).pipe(
+  return yield* storeTry(() => store.pinSources(deploymentId, heads, runner, { members })).pipe(
     Effect.catchIf(refusedWith("invalid_argument"), (refused) => new SourceUnreadable({ message: refused.message })),
   );
 });

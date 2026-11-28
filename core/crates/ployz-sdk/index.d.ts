@@ -4,6 +4,7 @@ import type {
   ConfigTrusted,
   ConfigView,
   BuildStatus,
+  GithubSettled,
   DeployEvent,
   DeployIntent,
   DeployOutcome,
@@ -273,6 +274,6 @@ export interface ConfigStore extends Omit<native.ConfigStore, "read"> {
 }
 export type GithubStart = { kind: "reused" } | { kind: "dispatch"; runner: string } | { kind: "skipped"; message: string } | { kind: "follow"; workflow: string; workflow_ref: string; commit: string } | { kind: "approved"; workflow: string; workflow_ref: string; branch: string; commit: string };
 export type GithubCheckIn = ({ grant: string } | { machine: string }) & { commit: string; fingerprint: string; ployzVersion: string; deployment: PreparationInput["deployment"] };
-export type GithubFinish = "waiting" | { ended: BuildStatus };
+export type GithubFinish = "waiting" | { ended: GithubSettled };
 /** Calls run off the JavaScript thread, a few at once; a slow or queued call rejects `unavailable`. */
 export declare function openConfigStore(url: string, sealingSecret: string): Promise<ConfigStore>;

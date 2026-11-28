@@ -17,7 +17,7 @@ pub enum GithubLook {
     /// No run checked in by the time another Builder could take the build. It passes
     /// on only a run that still hasn't: one that checked in meanwhile started in time.
     StartLimit,
-    /// The run ran past its budget, and Cloud cancelled it.
+    /// The run ran past its budget: the write that ends it owes the run a cancel.
     Budget,
     /// The run reported its end, or GitHub says it completed.
     Ended,

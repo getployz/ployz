@@ -270,6 +270,20 @@ const INSTALLATION_PAGES = 10;
 const runOf = (run: typeof runSchema.Type): GithubBuildRun =>
   ({ id: run.id, url: run.html_url, headSha: run.head_sha, event: run.event, status: run.status, conclusion: run.conclusion });
 
+/**
+ * How long one call to GitHub or the minter may take, its body included; past this, Cloud reads it as down. A start
+ * that stalls after GitHub took its dispatch ends inside its step, as a call that failed.
+ */
+const ANSWER_TIMEOUT = "30 seconds";
+const withinAnswerTime = (operation: GithubObservationOperation) => <A, E, R>(call: Effect.Effect<A, E, R>) =>
+  call.pipe(Effect.timeoutOrElse({ duration: ANSWER_TIMEOUT, orElse: () => Effect.fail(failure({ code: "request_failed", operation, retriable: true })) }));
+/** A request and the read of its answer within the bound. A call cut off there aborts its request, body included, so its connection closes. */
+const abortedPastAnswerTime = <A, E, R>(operation: GithubObservationOperation, call: (abort: AbortSignal) => Effect.Effect<A, E, R>) =>
+  Effect.suspend(() => {
+    const abort = new AbortController();
+    return call(abort.signal).pipe(Effect.onInterrupt(() => Effect.sync(() => abort.abort())));
+  }).pipe(withinAnswerTime(operation));
+
 /** The App's authority held in this Cloud, from `GITHUB_APP_PRIVATE_KEY` and `GITHUB_APP_CLIENT_SECRET`. */
 export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(function* (secrets: {
   readonly appPrivateKey: Redacted.Redacted<string>; readonly appClientSecret: Redacted.Redacted<string>;
@@ -282,6 +296,7 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
   /** GitHub's answer when it succeeded. */
   const respond = Effect.fn("GithubAuthority.respond")(function* (input: {
     operation: GithubObservationOperation; token: string | null; path: `/${string}`; method?: "POST" | "PATCH"; body?: unknown; origin?: string; accept?: string;
+    abort?: AbortSignal;
   }) {
     const headers = new Headers({ Accept: input.accept ?? "application/vnd.github+json", "X-GitHub-Api-Version": GITHUB_API_VERSION });
     if (input.token !== null) headers.set("Authorization", `Bearer ${input.token}`);
@@ -292,7 +307,7 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
       init.body = JSON.stringify(input.body ?? {});
     }
     const response = yield* Effect.tryPromise({
-      try: (signal) => fetch(`${input.origin ?? origins.api}${input.path}`, { ...init, signal }),
+      try: (signal) => fetch(`${input.origin ?? origins.api}${input.path}`, { ...init, signal: input.abort ? AbortSignal.any([signal, input.abort]) : signal }),
       catch: () => failure({ code: "request_failed", operation: input.operation, retriable: true }),
     });
     if (!response.ok) {
@@ -302,17 +317,20 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
     return response;
   });
 
-  const send = (input: Parameters<typeof respond>[0]) => respond(input).pipe(
+  const send = (input: Parameters<typeof respond>[0]) => abortedPastAnswerTime(input.operation, (abort) => respond({ ...input, abort }).pipe(
     Effect.flatMap((response) => Effect.tryPromise({ try: () => response.text(), catch: () => invalidResponse(input.operation) })),
-  );
+  ));
 
   /** A file's bytes on the default branch, or null when it holds no such file. Bytes, not text, so the digest is the minter's. */
   const defaultBranchFile = (token: string, repositoryId: number, path: string) =>
-    respond({ operation: "fetch_contents", token, path: `/repositories/${repositoryId}/contents/${path}`, accept: "application/vnd.github.raw" }).pipe(
+    abortedPastAnswerTime("fetch_contents", (abort) => respond({
+      operation: "fetch_contents", token, path: `/repositories/${repositoryId}/contents/${path}`, accept: "application/vnd.github.raw", abort,
+    }).pipe(
       Effect.flatMap((response) => Effect.tryPromise({
         try: async () => new Uint8Array(await response.arrayBuffer()),
         catch: () => failure({ code: "request_failed", operation: "fetch_contents", retriable: true }),
       })),
+    )).pipe(
       Effect.catchIf((error) => error.code === "not_found", () => Effect.succeed(null)),
     );
 
@@ -328,14 +346,14 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
    * GitHub answers a token mint under a secondary limit with a bare 403, and can cut its body short: both pass, so
    * the mint is tried again rather than failed.
    */
-  const mint = Effect.fn("GithubAuthority.mint")(function* (installationId: number, body: {
+  const mint = (installationId: number, body: {
     permissions: Readonly<Record<string, "read" | "write">>; repository_ids?: ReadonlyArray<number>;
-  }) {
+  }) => abortedPastAnswerTime("installation_token", (abort) => Effect.gen(function* () {
     const operation = "installation_token";
     const jwt = yield* appJwt;
     const response = yield* Effect.tryPromise({
       try: (signal) => fetch(`${origins.api}/app/installations/${installationId}/access_tokens`, {
-        signal,
+        signal: AbortSignal.any([signal, abort]),
         method: "POST",
         headers: { Authorization: `Bearer ${jwt}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": GITHUB_API_VERSION, "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -354,7 +372,7 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
     const text = yield* Effect.tryPromise({ try: () => response.text(), catch: cutShort });
     const parsed = yield* Effect.try({ try: () => JSON.parse(text), catch: cutShort });
     return yield* Schema.decodeUnknownEffect(tokenSchema)(parsed).pipe(Effect.mapError(() => invalidResponse(operation)));
-  });
+  }).pipe(Effect.withSpan("GithubAuthority.mint")));
 
   /** A token for one repository with what the operation needs, kept until shortly before it expires. Cloud never hands it on. */
   const owned = yield* Cache.makeWith(
@@ -448,8 +466,12 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
   const cancelBuild: GithubAuthorityService["cancelBuild"] = Effect.fn("GithubAuthority.local.cancelBuild")(function* (input) {
     const token = yield* own(input, "act");
     yield* buildRunOf(token, input, "cancel_run");
+    // A 409 says only that GitHub didn't cancel it now: the run counts as stopped once a read shows it completed. One
+    // still queued or in progress fails the cancel, so Cloud keeps owing it.
     yield* send({ operation: "cancel_run", token, method: "POST", path: `/repositories/${input.repositoryId}/actions/runs/${input.runId}/cancel` }).pipe(
-      Effect.catchIf((error) => error.status === 409, () => Effect.void),
+      Effect.catchIf((error) => error.status === 409, (error) => buildRunOf(token, input, "cancel_run").pipe(
+        Effect.flatMap((run) => run.status === "completed" ? Effect.void : Effect.fail(error)),
+      )),
     );
   });
 
@@ -550,8 +572,6 @@ const minterConnectSchema = Schema.Struct({
 /** A minter route's JSON body: ids, names and inputs Cloud chose. JSON drops a field left undefined. */
 type MinterBody = Readonly<Record<string, string | number | ReadonlyArray<number> | GithubReadPermissions | Readonly<Record<string, string | undefined>> | undefined>>;
 
-/** The minter answers a route within GitHub's own calls; past this, Cloud reads it as down. */
-const MINTER_TIMEOUT = "30 seconds";
 
 /** The minter's answer when it refused or GitHub failed, as the error a direct GitHub call would have given. */
 function minterError(operation: GithubObservationOperation, status: number, text: string): GithubObservationError {
@@ -613,9 +633,7 @@ export function makeGithubAuthorityMinter(minter: { readonly url: URL; readonly 
           return { status: response.status, text: await response.text() };
         },
         catch: () => failure({ code: "request_failed", operation, retriable: true }),
-      }).pipe(
-        Effect.timeoutOrElse({ duration: MINTER_TIMEOUT, orElse: () => Effect.fail(failure({ code: "request_failed", operation, retriable: true })) }),
-      );
+      }).pipe(withinAnswerTime(operation));
       if (answered.status !== 200) return yield* minterError(operation, answered.status, answered.text);
       return yield* decodeAs(schema, answered.text, operation);
     });

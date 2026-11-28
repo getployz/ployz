@@ -232,7 +232,8 @@ it.live(
       // A Deploy of pr-5 someone asks for pins its branch's head as ada's.
       const deploy = (id: string) => Effect.gen(function* () {
         yield* write({ command: "admit", admit: "deploy", id, environment: { project: null, environment: "pr-5" }, services: [], version: null, accept_volume_loss: [] });
-        return yield* pinStoreSources(store, ORGANIZATION, id).pipe(Effect.provide(services), Effect.result);
+        yield* Effect.promise(() => store.githubBegin(id, "cloud-pr"));
+        return yield* pinStoreSources(store, ORGANIZATION, id, "cloud-pr").pipe(Effect.provide(services), Effect.result);
       });
       const pinned = yield* deploy("00000000-0000-4000-8000-00000000b201");
       expect(pinned).toMatchObject({ _tag: "Success", success: [{ commit: H1 }] });

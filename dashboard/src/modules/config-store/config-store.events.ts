@@ -37,6 +37,24 @@ export const configDeploymentRetireRequested = defineEvent({
   id: ({ deploymentId }) => `config-deployment-retire-requested-${deploymentId}`,
 });
 
+/**
+ * A worker run of a Deployment stopped without finishing, and the Store didn't answer its stop: Cloud tries again until
+ * it does. `round` counts the hand-offs, each a fresh run of tries.
+ */
+export const configDeploymentStopRequested = defineEvent({
+  name: "config/deployment.stop-requested",
+  schema: Schema.Struct({
+    organizationId: Schema.String,
+    deploymentId: Schema.String,
+    runId: Schema.String,
+    round: Schema.Number,
+    /** The sweep's window that found the run's stop lost, so each window hands it on once. */
+    sweep: Schema.optional(Schema.Number),
+  }),
+  id: ({ deploymentId, runId, round, sweep }) =>
+    `config-deployment-stop-requested-${deploymentId}-${runId}-${sweep === undefined ? round : `sweep-${sweep}-${round}`}`,
+});
+
 /** A Config Store write named a pull request whose check Cloud publishes again from the Store's view. */
 export const configPrCheckRequested = defineEvent({
   name: "config/pr-check.requested",

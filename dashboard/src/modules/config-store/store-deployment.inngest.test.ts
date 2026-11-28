@@ -19,6 +19,7 @@ type Ran = { ran: { id: string; status: "applied" | "failed" | "unknown"; remove
 async function runOf(ran: Ran) {
   const order: string[] = [];
   const results = new Map<string, unknown>([
+    ["begin", true],
     ["servers-lacking", []],
     ["plan-builds", []],
     ["approval-0", false],
@@ -89,5 +90,72 @@ describe("a Deploy's storage steps", () => {
     expect(deployment).not.toContain("placement-wait");
     expect(deployment).not.toContain("step.sleep");
     expect(read("../volume-placement/volume-placement.deploy.server.ts")).not.toContain("listActiveVolumeRuns");
+  });
+});
+
+describe("a Deployment with several Git Services", () => {
+  const target = (service: string) => ({ build: `dep.${service}`, service, repository: "acme/web", repositoryId: 42, installationId: 7, hasNext: false });
+  const builds = [target("web"), target("api"), target("docs")];
+  const fresh = () => { throw new Error("a step ran its real effect"); };
+
+  async function stepsRun(memo: ReadonlyArray<readonly [string, unknown]>) {
+    const results = new Map<string, unknown>([
+      ["begin", true],
+      ["servers-lacking", []],
+      ["plan-builds", builds],
+      ["placement-0", { kind: "stopped" }],
+      ["place-volumes", []],
+      ["run-deployment", { ran: { id: "dep", status: "applied", remove: false } }],
+      ["finish-volumes", null],
+      ["delete-orphan-mirrors", []],
+      ...memo,
+    ]);
+    const ran: string[] = [];
+    await new InngestTestEngine({
+      function: createRunStoreDeployment(new Inngest({ id: "store-deployment-builds-test" }), fresh),
+      events: [admitted],
+      steps: [...results.keys(), "record-run", "github-failed", "retire-old", "sync-uptime", "forget-run"]
+        .map((id) => ({ id, handler: () => { ran.push(id); return results.get(id) ?? null; } })),
+    }).execute();
+    return ran;
+  }
+
+  it("starts every build in one step when the Store records each, and runs the Deployment once", async () => {
+    const ran = await stepsRun([
+      ["github-start-round-0", { started: [{ kind: "dispatched", runId: 9001 }, { kind: "dispatched", runId: 9002 }, { kind: "done" }], unrecorded: null, rest: [] }],
+      ["github-open-web-0", false],
+      ["github-open-api-0", false],
+    ]);
+    expect(ran.filter((id) => id.startsWith("github-"))).toEqual(["github-start-round-0", "github-open-web-0", "github-open-api-0"]);
+    expect(ran.filter((id) => id === "run-deployment")).toHaveLength(1);
+    expect(ran).not.toContain("github-failed");
+  });
+
+  it("gives a record the Store refused a step of its own, and starts the builds after it in the next round", async () => {
+    const ran = await stepsRun([
+      ["github-start-round-0", { started: [{ kind: "dispatched", runId: 9001 }], unrecorded: { kind: "run", build: "dep.api", run: {} }, rest: [target("docs")] }],
+      ["github-record-round-0", { kind: "dispatched", runId: 9002 }],
+      ["github-start-round-1", { started: [{ kind: "done" }], unrecorded: null, rest: [] }],
+      ["github-open-web-0", false],
+      ["github-open-api-0", false],
+    ]);
+    expect(ran.filter((id) => /^github-(start|record)-round/.test(id))).toEqual(["github-start-round-0", "github-record-round-0", "github-start-round-1"]);
+    expect(ran.filter((id) => id.startsWith("github-open"))).toEqual(["github-open-web-0", "github-open-api-0"]);
+    expect(ran.filter((id) => id === "run-deployment")).toHaveLength(1);
+  });
+
+  it("runs a run that started its builds under older step ids to the end, through the one start step", async () => {
+    // What the older per-build steps recorded; the start step follows the dispatched runs and leaves the skipped build.
+    const ran = await stepsRun([
+      ["github-start-web", { kind: "dispatched", runId: 9001 }],
+      ["github-start-api", { kind: "dispatched", runId: 9002 }],
+      ["github-start-docs", { kind: "done" }],
+      ["github-start-round-0", { started: [{ kind: "dispatched", runId: 9001 }, { kind: "dispatched", runId: 9002 }, { kind: "done" }], unrecorded: null, rest: [] }],
+      ["github-open-web-0", false],
+      ["github-open-api-0", false],
+    ]);
+    expect(ran.filter((id) => ["github-start-web", "github-start-api", "github-start-docs"].includes(id))).toEqual([]);
+    expect(ran.filter((id) => id.startsWith("github-start-round") || id.startsWith("github-record"))).toEqual(["github-start-round-0"]);
+    expect(ran.filter((id) => id === "run-deployment")).toHaveLength(1);
   });
 });

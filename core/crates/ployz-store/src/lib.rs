@@ -70,9 +70,10 @@ pub use branch::{
     ProposalSource, RemoveProposal, Removed, RowRef, SecretRow, SyncChange, carries_plan_version,
 };
 pub use build::{
-    BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubBuild,
-    GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff, GithubInput, GithubReport,
-    GithubRule, GithubRun, ImageToken, RunEnd, VerifiedClaim,
+    BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubAsked,
+    GithubBuild, GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff, GithubInput,
+    GithubOwed, GithubRecorded, GithubReport, GithubRule, GithubRun, GithubSettled, ImageToken,
+    RunEnd, UNRESERVED, VerifiedClaim,
 };
 pub use builders::{BuildOrder, BuildOrderQuery, BuildOrderView, Builder, SetBuildOrder};
 pub use client_sealed::SecretValue;
@@ -504,26 +505,32 @@ impl ConfigStore {
     /// changes: a pin for a Service already pinned is ignored. Returns every source
     /// with its pin. `trusted` carries the Organization's members as Cloud read them:
     /// a Trusted pull request's commit pins only while its author is one, or when a bot
-    /// opened it from the repository itself. In-process only.
+    /// opened it from the repository itself. Only worker attempt `attempt` that owns the
+    /// Deployment pins. In-process only.
     ///
     /// # Errors
-    /// Returns `conflict` once the Deployment was replaced, cancelled or ended,
-    /// `invalid_argument` for a Service it doesn't build, a malformed commit or one
+    /// Returns `conflict` once the Deployment was replaced, cancelled or ended, or
+    /// (`newer`) once a later attempt began, `invalid_argument` for a Service it doesn't build, a malformed commit or one
     /// its pull request doesn't admit, or a storage error.
     pub fn pin(
         &self,
         deployment: &DeploymentId,
         commits: &std::collections::BTreeMap<ployz_core::ServiceName, CommitSha>,
         trusted: &Trusted,
+        attempt: &str,
     ) -> Result<Vec<GitSource>, RpcError> {
-        // A transaction of its own, before the pin's: a refused pin undoes its writes.
+        // A transaction of its own, before the pin's: a pin refused for a commit its pull
+        // request no longer admits keeps the trust it withdrew. Only the attempt that owns
+        // the Deployment withdraws trust: an outranked pin's refusal rolls it back, so it
+        // writes nothing. The pull request locks come before the Environment's.
         self.storage.write(|tx| {
             deployment::load(tx, deployment)?;
             let who = Actor::system(deployment::organization(tx, deployment)?);
-            pull_request::withdraw_trust(tx, &who, trusted)
+            pull_request::withdraw_trust(tx, &who, trusted)?;
+            build::pinner(tx, deployment, attempt).map(drop)
         })?;
         self.storage.write(|tx| {
-            build::pin(tx, deployment, commits, trusted)?;
+            build::pin(tx, deployment, commits, trusted, attempt)?;
             build::sources(tx, deployment)
         })
     }
@@ -599,18 +606,68 @@ impl ConfigStore {
         self.storage.read(|tx| teardown::applied_volumes(tx, who))
     }
 
-    /// Hand a pinned Git build that hasn't started to GitHub run `run`. In-process only.
+    /// Hand a pinned Git build that hasn't started to GitHub run `run`: [`GithubRecorded::Refused`],
+    /// with a cancel owed for a run Cloud dispatched, once the Deployment no longer takes
+    /// it, it went to another run or Builder, or another attempt took the Deployment.
+    /// In-process only.
     ///
     /// # Errors
-    /// Returns `conflict` once the Deployment no longer wants it or it went to
-    /// another run or Builder, `not_found` for an unknown build, or a storage error.
+    /// Returns `not_found` for an unknown build, or a storage error.
     pub fn github_dispatched(
         &self,
         id: &GithubBuildId,
         github: &GithubRun,
-    ) -> Result<(), RpcError> {
+    ) -> Result<GithubRecorded, RpcError> {
         self.storage
             .write(|tx| build::github_dispatched(tx, id, github))
+    }
+
+    /// Take up to `limit` runs Cloud owes a cancel, in any Organization, for the sweep:
+    /// never-tried first, then the longest since its last try, each stamped as tried.
+    /// In-process only.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub fn github_owed(&self, limit: u32) -> Result<Vec<GithubOwed>, RpcError> {
+        self.storage.write(|tx| build::github_owed(tx, limit))
+    }
+
+    /// Reserve a pinned Git build that hasn't started for worker attempt `attempt`, before
+    /// asking GitHub for its run. A build pinned before reservations fails instead
+    /// ([`GithubAsked::Failed`]). In-process only.
+    ///
+    /// # Errors
+    /// Returns `conflict` once it was reserved, handed off or passed on, or the
+    /// Deployment no longer takes GitHub runs, `not_found` for an unknown build, or a
+    /// storage error.
+    pub fn github_ask(&self, id: &GithubBuildId, attempt: &str) -> Result<GithubAsked, RpcError> {
+        self.storage.write(|tx| build::github_ask(tx, id, attempt))
+    }
+
+    /// Stop Deployment `deployment`'s GitHub builds for worker attempt `attempt`: fail each a run holds, owing a cancel for each
+    /// run Cloud dispatched, and pass on each reservation. Returns every run still owed a
+    /// cancel. In-process only.
+    ///
+    /// # Errors
+    /// Returns `conflict` when a newer attempt runs it or it still takes GitHub runs,
+    /// `not_found` for an unknown Deployment, or a storage error.
+    pub fn github_stop(
+        &self,
+        deployment: &DeploymentId,
+        attempt: &RunnerId,
+    ) -> Result<Vec<GithubOwed>, RpcError> {
+        self.storage
+            .write(|tx| build::github_stop(tx, deployment, attempt))
+    }
+
+    /// GitHub confirmed run `run_id` of build `id` is cancelled or ended: Cloud owes it
+    /// no cancel. In-process only.
+    ///
+    /// # Errors
+    /// Returns `not_found` for an unknown build, or a storage error.
+    pub fn github_cancel_confirmed(&self, id: &GithubBuildId, run_id: u64) -> Result<(), RpcError> {
+        self.storage
+            .write(|tx| build::github_cancel_confirmed(tx, id, run_id))
     }
 
     /// A Git build handed to GitHub. In-process only.
@@ -703,19 +760,79 @@ impl ConfigStore {
             .write(|tx| build::github_report(tx, id, run_id, report))
     }
 
-    /// End GitHub build `id`, held by run `run_id`, or before any run with none.
-    /// In-process only.
+    /// End GitHub build `id` from its run `run_id`'s own check-in, while that run holds it
+    /// and the run's attempt owns the Deployment. In-process only.
     ///
     /// # Errors
-    /// Returns `conflict` once the build ended or another run or Builder holds it.
-    pub fn github_end(
+    /// Returns `conflict` once the build ended, another run or Builder holds it, or a
+    /// newer attempt runs the Deployment.
+    pub fn github_run_end(
         &self,
         id: &GithubBuildId,
-        run_id: Option<u64>,
+        run_id: u64,
         end: &GithubEnd,
     ) -> Result<BuildStatus, RpcError> {
         self.storage
-            .write(|tx| build::github_end(tx, id, run_id, end))
+            .write(|tx| build::github_run_end(tx, id, run_id, end))
+    }
+
+    /// End GitHub build `id` for its run `run_id`, for worker attempt `attempt` that owns
+    /// the Deployment, owing the run a cancel in the same write with `owe`. In-process
+    /// only.
+    ///
+    /// # Errors
+    /// Returns `conflict` once the build ended or another run or Builder holds it, or,
+    /// with `newer`, when another attempt owns the Deployment.
+    pub fn github_settle(
+        &self,
+        id: &GithubBuildId,
+        run_id: u64,
+        end: &GithubEnd,
+        attempt: &str,
+        owe: bool,
+    ) -> Result<GithubSettled, RpcError> {
+        self.storage
+            .write(|tx| build::github_settle(tx, id, run_id, end, attempt, owe))
+    }
+
+    /// Worker attempt `attempt` begins running Deployment `deployment`: numbered after
+    /// every attempt that began before, it owns the Deployment's GitHub runs, taking them
+    /// over from those it outranks. Beginning again answers the same number.
+    /// In-process only.
+    ///
+    /// # Errors
+    /// Returns `conflict`, with `newer`, when a later attempt began or another runner
+    /// claimed the Deployment, `not_found` for an unknown Deployment, or a storage error.
+    pub fn github_begin(&self, deployment: &DeploymentId, attempt: &str) -> Result<u64, RpcError> {
+        self.storage
+            .write(|tx| build::github_begin(tx, deployment, attempt))
+    }
+
+    /// Every run Deployment `deployment` still owes a cancel. In-process only.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub fn github_owed_by(&self, deployment: &DeploymentId) -> Result<Vec<GithubOwed>, RpcError> {
+        self.storage
+            .read(|tx| build::github_owed_by(tx, deployment))
+    }
+
+    /// End build `id` before any run took it (`end`), for worker attempt `attempt`, owing
+    /// run `owe` a cancel in the same write: a run Cloud dispatched whose record never
+    /// landed, which can then never hold the build. In-process only.
+    ///
+    /// # Errors
+    /// Returns `conflict` once the build started or ended, or, with `newer`, when another
+    /// attempt owns the Deployment, owing nothing.
+    pub fn github_pass_on(
+        &self,
+        id: &GithubBuildId,
+        end: &GithubEnd,
+        owe: Option<&GithubRun>,
+        attempt: &str,
+    ) -> Result<GithubSettled, RpcError> {
+        self.storage
+            .write(|tx| build::github_pass_on(tx, id, end, owe, attempt))
     }
 
     /// Deployment `deployment`'s builds still on GitHub. In-process only.

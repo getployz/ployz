@@ -1,4 +1,5 @@
 import { gzipSync } from "node:zlib";
+import { stableRunId } from "#/test/inngest-stable-run";
 import { it } from "@effect/vitest";
 import { InngestTestEngine } from "@inngest/test";
 import type { ConfigCommand, ConfigTrusted, Outcome } from "@ployz/sdk";
@@ -69,7 +70,7 @@ it.live(
       const inngest = new Inngest({ id: "store-deployment-test" });
       const worker = createRunStoreDeployment(inngest, runner);
       const run = (deploymentId: string) =>
-        Effect.promise(() => new InngestTestEngine({ function: worker, events: [admitted(deploymentId)], steps: sentRetire() }).execute());
+        Effect.promise(() => new InngestTestEngine({ function: stableRunId(worker, `run-${deploymentId}`), events: [admitted(deploymentId)], steps: sentRetire() }).execute());
       const claim = (deploymentId: string) => Effect.gen(function* () {
         const { drizzle } = yield* Database;
         yield* drizzle.insert(volumePlacement).values({ volumeId: `vol-${deploymentId}`, organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId });
@@ -123,14 +124,14 @@ it.live(
       // A run cancelled before it claimed its Deployment (waiting on GitHub builds) records it failed, not cancelled.
       yield* write({ command: "admit", admit: "deploy", id: UNCLAIMED, environment: here, services: [], version: null, accept_volume_loss: [] });
       yield* recordStoreDeploymentRun("early-run", admitted(UNCLAIMED).data).pipe(Effect.provide(services));
-      expect(yield* stop("early-run")).toEqual({ failed: UNCLAIMED });
+      expect(yield* stop("early-run")).toMatchObject({ failed: UNCLAIMED });
       expect(yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: UNCLAIMED }))).toMatchObject({ status: "failed" });
 
       // A run that gave up moving its Volumes fails the Deployment and returns them to staged.
       yield* write({ command: "admit", admit: "deploy", id: UNSTORED, environment: here, services: [], version: null, accept_volume_loss: [] });
       yield* claim(UNSTORED);
       expect(yield* failStoreDeploymentUnrun(ORGANIZATION, ENVIRONMENT, UNSTORED, "storage-run", "data: web-2 did not answer").pipe(Effect.provide(services)))
-        .toEqual({ failed: UNSTORED });
+        .toMatchObject({ failed: UNSTORED });
       expect(yield* claimOn(UNSTORED)).toBeNull();
 
       // An admission whose hand-off was lost is handed over again once it has waited a minute, unless a worker run
@@ -225,7 +226,7 @@ it.live(
         makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(Effect.provide(services)))),
       );
       const run = (deploymentId: string) =>
-        Effect.promise(() => new InngestTestEngine({ function: worker, events: [admitted(deploymentId)], steps: sentRetire() }).execute());
+        Effect.promise(() => new InngestTestEngine({ function: stableRunId(worker, `run-${deploymentId}`), events: [admitted(deploymentId)], steps: sentRetire() }).execute());
       const view = (deploymentId: string) =>
         Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: deploymentId }));
 
@@ -279,8 +280,10 @@ it.live(
         command: "admit", admit: "deploy", id, environment: here, services: [], version: null, accept_volume_loss: [],
       }));
       const worker = createRunStoreDeployment(inngest, makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(Effect.provide(services)))));
-      const run = (deploymentId: string, trigger?: DeploymentTrigger) =>
-        Effect.promise(() => new InngestTestEngine({ function: worker, events: [admitted(deploymentId, trigger)], steps: sentRetire() }).execute());
+      let runs = 0;
+      const run = (deploymentId: string, trigger?: DeploymentTrigger) => Effect.promise(() => new InngestTestEngine({
+        function: stableRunId(worker, `run-${(runs += 1)}`), events: [admitted(deploymentId, trigger)], steps: sentRetire(),
+      }).execute());
       const mails = () => send.mock.calls.flatMap(([payload]) => [payload].flat())
         .filter((event) => event.name === mailSendRequested.name)
         .map((event) => ({ id: event.id, ...(event.data as { to: string; subject: string; html: string; text: string }) }));
@@ -301,9 +304,9 @@ it.live(
         expect(mail?.text).toContain(line);
       }
 
-      // Inngest drops a sent event whose ID it has already seen.
+      // Inngest drops a sent event whose ID it has already seen. A later run of the ended Deployment runs nothing.
       send.mockClear();
-      expect((yield* run(DEPLOYED, "github")).result).toMatchObject({ nothingToRun: expect.any(String) });
+      expect((yield* run(DEPLOYED, "github")).result).toEqual({ outranked: DEPLOYED });
       expect(mails()).toEqual([]);
       yield* Effect.promise(() => invokeOnFailure(worker, "never-claimed", admitted(DEPLOYED, "github")));
       expect(new Set(mails().map((again) => again.id))).toEqual(new Set(told.map((first) => first.id)));

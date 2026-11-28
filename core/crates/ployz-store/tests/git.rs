@@ -7,6 +7,7 @@
 
 use ployz_core::config::ServiceGitAccess;
 use ployz_core::{RpcErrorCode, ServiceName};
+use ployz_store::testing::backend::PinAs;
 use ployz_store::{
     Actor, Admit, AuthorizedRepository, BuildLogQuery, BuildReport, BuildStatus, Change, Command,
     ConfigStore, CreateGitService, CreateProject, CreateService, Deploy, DeploymentId, DiffQuery,
@@ -16,7 +17,7 @@ use ployz_store::{
 };
 use ployz_store::{
     BuildOrder, BuildOrderQuery, Builder, GithubBuild, GithubBuildId, GithubClaims, GithubEnd,
-    GithubGrant, GithubHandOff, GithubReport, GithubRun, SetBuildOrder,
+    GithubGrant, GithubHandOff, GithubRecorded, GithubReport, GithubRun, SetBuildOrder,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -494,15 +495,23 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
     let a = backend::sha(&"a".repeat(40));
     let b = backend::sha(&"b".repeat(40));
     assert_eq!(
-        store.pin(&first, &pins(&a), &backend::members()).unwrap()[0].commit,
+        store
+            .pin_as(&first, &pins(&a), &backend::members(), ATTEMPT)
+            .unwrap()[0]
+            .commit,
         Some(a.clone())
     );
     assert_eq!(
-        store.pin(&first, &pins(&b), &backend::members()).unwrap()[0].commit,
+        store
+            .pin_as(&first, &pins(&b), &backend::members(), ATTEMPT)
+            .unwrap()[0]
+            .commit,
         Some(a.clone())
     );
     let other = BTreeMap::from([(ServiceName::parse("api").unwrap(), a.clone())]);
-    let error = store.pin(&first, &other, &backend::members()).unwrap_err();
+    let error = store
+        .pin_as(&first, &other, &backend::members(), ATTEMPT)
+        .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
 
     // Its runner gets the pin, and reports the build as it goes.
@@ -587,7 +596,7 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
         .unwrap();
     assert_eq!(
         store
-            .pin(&first, &pins(&b), &backend::members())
+            .pin_as(&first, &pins(&b), &backend::members(), ATTEMPT)
             .unwrap_err()
             .code,
         RpcErrorCode::Conflict
@@ -615,7 +624,9 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
     // A new Deployment pins afresh and gets the receipt as a hint.
     let retry = admit(&store, &who, 2, &[]);
     assert_eq!(store.sources(&retry).unwrap()[0].commit, None);
-    store.pin(&retry, &pins(&b), &backend::members()).unwrap();
+    store
+        .pin_as(&retry, &pins(&b), &backend::members(), ATTEMPT)
+        .unwrap();
     let claimed = store.claim(&retry, &runner).unwrap();
     assert_eq!(
         claimed.receipts[&ServiceName::parse("web").unwrap()],
@@ -665,10 +676,14 @@ fn redeploying_an_older_applied_deployment_builds_the_commit_it_pinned() {
     let a = backend::sha(&"a".repeat(40));
     let b = backend::sha(&"b".repeat(40));
     let first = admit(&store, &who, 1, &[]);
-    store.pin(&first, &pins(&a), &backend::members()).unwrap();
+    store
+        .pin_as(&first, &pins(&a), &backend::members(), ATTEMPT)
+        .unwrap();
     applied(&store, &first, &runner);
     let second = admit(&store, &who, 2, &[]);
-    store.pin(&second, &pins(&b), &backend::members()).unwrap();
+    store
+        .pin_as(&second, &pins(&b), &backend::members(), ATTEMPT)
+        .unwrap();
     applied(&store, &second, &runner);
 
     // The branch is at b now; redeploying #1 builds a, which #1 pinned.
@@ -810,10 +825,11 @@ fn a_service_that_reaches_no_data_builds_free_on_a_server_until_it_ran_signed() 
         [Builder::Servers]
     );
     store
-        .pin(
+        .pin_as(
             &first,
             &pins(&backend::sha(&"a".repeat(40))),
             &backend::members(),
+            ATTEMPT,
         )
         .unwrap();
     let runner = RunnerId::parse("cloud-1").unwrap();
@@ -902,6 +918,38 @@ fn a_corrupt_preferred_builder_fails_only_the_walk_and_can_be_repaired() {
 }
 
 const RUN: u64 = 555;
+/// The worker attempt that runs each Deployment's GitHub builds, unless a test says.
+const ATTEMPT: &str = "cloud-1";
+
+/// Ends a build as Cloud does, for [`ATTEMPT`]: a run's own check-in ends an unstarted
+/// run, the walk settles any other end for the run, and with no run it passes on.
+trait EndBuild {
+    fn github_end(
+        &self,
+        id: &GithubBuildId,
+        run_id: Option<u64>,
+        end: &GithubEnd,
+    ) -> Result<BuildStatus, ployz_core::RpcError>;
+}
+
+impl EndBuild for ConfigStore {
+    fn github_end(
+        &self,
+        id: &GithubBuildId,
+        run_id: Option<u64>,
+        end: &GithubEnd,
+    ) -> Result<BuildStatus, ployz_core::RpcError> {
+        match (run_id, end) {
+            (Some(run_id), GithubEnd::Unstarted { .. }) => self.github_run_end(id, run_id, end),
+            (Some(run_id), _) => self
+                .github_settle(id, run_id, end, ATTEMPT, false)
+                .map(|settled| settled.status),
+            (None, _) => self
+                .github_pass_on(id, end, None, ATTEMPT)
+                .map(|settled| settled.status),
+        }
+    }
+}
 const WORKFLOW: &str = "acme/web/.github/workflows/ployz-build.yml@refs/heads/main";
 
 fn github_run(run_id: u64) -> GithubRun {
@@ -911,6 +959,8 @@ fn github_run(run_id: u64) -> GithubRun {
         workflow_ref: WORKFLOW.into(),
         repository: backend::repo_name("acme/web"),
         installation_id: 7,
+        push: Some(false),
+        attempt: Some(ATTEMPT.into()),
     }
 }
 
@@ -952,28 +1002,590 @@ fn held(store: &ConfigStore, id: &GithubBuildId) -> GithubBuild {
     }
 }
 
-/// A pinned Git build of a fresh Deployment, handed to GitHub run `RUN`.
-fn dispatched(store: &ConfigStore, who: &Actor) -> GithubBuildId {
+/// A pinned Git build of a fresh Deployment, waiting for its first Builder.
+fn pinned(store: &ConfigStore, who: &Actor) -> GithubBuildId {
     store
         .write_trusted(who, &create("acme/web", None), &evidence())
         .unwrap();
     let deployment = admit(store, who, 1, &[]);
     store
+        .pin_as(
+            &deployment,
+            &pins(&backend::sha(&"a".repeat(40))),
+            &backend::members(),
+            ATTEMPT,
+        )
+        .unwrap();
+    store.github_begin(&deployment, ATTEMPT).unwrap();
+    GithubBuildId::parse(&format!("{deployment}.web")).unwrap()
+}
+
+/// A pinned Git build of a fresh Deployment, handed to GitHub run `RUN`.
+fn dispatched(store: &ConfigStore, who: &Actor) -> GithubBuildId {
+    let id = pinned(store, who);
+    store.github_dispatched(&id, &github_run(RUN)).unwrap();
+    // A retried dispatch step replays; another run can't take it.
+    store.github_dispatched(&id, &github_run(RUN)).unwrap();
+    assert_eq!(
+        store.github_dispatched(&id, &github_run(RUN + 1)).unwrap(),
+        GithubRecorded::Owed
+    );
+    id
+}
+
+#[test]
+fn only_one_try_reserves_asking_github_and_its_run_or_a_pass_on_settles_the_build() {
+    let skip = || GithubEnd::Skipped {
+        message: "GitHub may already be running this build".into(),
+    };
+    for settle in ["run", "pass-on"] {
+        let (store, who) = shop();
+        let id = pinned(&store, &who);
+        store.github_ask(&id, ATTEMPT).unwrap();
+        // Another try finds it reserved, so it never asks GitHub.
+        assert_eq!(
+            store.github_ask(&id, ATTEMPT).unwrap_err().code,
+            RpcErrorCode::Conflict
+        );
+        if settle == "run" {
+            // Only the reserving attempt's run takes it.
+            assert_eq!(
+                store
+                    .github_dispatched(&id, &attempt_run(RUN, "cloud-b"))
+                    .unwrap(),
+                GithubRecorded::Owed
+            );
+            store
+                .github_dispatched(&id, &attempt_run(RUN, ATTEMPT))
+                .unwrap();
+            // A replay's pass-on behind the record is refused: it follows the run instead.
+            assert_eq!(
+                store.github_end(&id, None, &skip()).unwrap_err().code,
+                RpcErrorCode::Conflict
+            );
+            assert_eq!(held(&store, &id).run.run_id, RUN);
+        } else {
+            store.github_end(&id, None, &skip()).unwrap();
+            // The run the reserving try may have started lands too late to hold the build.
+            assert_eq!(
+                store
+                    .github_dispatched(&id, &attempt_run(RUN, ATTEMPT))
+                    .unwrap(),
+                GithubRecorded::Owed
+            );
+        }
+        assert_eq!(
+            store.github_ask(&id, ATTEMPT).unwrap_err().code,
+            RpcErrorCode::Conflict
+        );
+    }
+}
+
+fn attempt_run(run_id: u64, attempt: &str) -> GithubRun {
+    GithubRun {
+        attempt: Some(attempt.into()),
+        ..github_run(run_id)
+    }
+}
+
+/// A pinned build reserved and dispatched by worker attempt `attempt`.
+fn dispatched_by(store: &ConfigStore, who: &Actor, attempt: &str) -> GithubBuildId {
+    let id = pinned(store, who);
+    store.github_begin(&id.deployment, attempt).unwrap();
+    store.github_ask(&id, attempt).unwrap();
+    store
+        .github_dispatched(&id, &attempt_run(RUN, attempt))
+        .unwrap();
+    id
+}
+
+fn owed_runs(owed: &[ployz_store::GithubOwed]) -> Vec<u64> {
+    owed.iter().map(|owed| owed.run.run_id).collect()
+}
+
+#[test]
+fn a_stop_owes_its_attempt_s_run_a_cancel_until_github_confirms_it() {
+    let (store, who) = shop();
+    let id = dispatched_by(&store, &who, "cloud-a");
+    let attempt = RunnerId::parse("cloud-a").unwrap();
+    // While the Deployment still takes GitHub runs, a stop ends nothing.
+    assert_eq!(
+        store
+            .github_stop(&id.deployment, &attempt)
+            .unwrap_err()
+            .code,
+        RpcErrorCode::Conflict
+    );
+    store.claim(&id.deployment, &attempt).unwrap();
+    store
+        .record(&id.deployment, &attempt, RunEvidence::Abandoned)
+        .unwrap();
+    let owed = store.github_stop(&id.deployment, &attempt).unwrap();
+    assert_eq!(owed_runs(&owed), [RUN]);
+    assert_eq!(owed[0].build, id.to_string());
+    // The stop's answer was lost: the next one still owes the run its cancel.
+    let again = store.github_stop(&id.deployment, &attempt).unwrap();
+    assert_eq!(owed_runs(&again), [RUN]);
+    store.github_cancel_confirmed(&id, RUN + 1).unwrap();
+    assert_eq!(
+        owed_runs(&store.github_stop(&id.deployment, &attempt).unwrap()),
+        [RUN]
+    );
+    store.github_cancel_confirmed(&id, RUN).unwrap();
+    assert!(
+        store
+            .github_stop(&id.deployment, &attempt)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_sweep_reaches_a_cancellable_run_behind_a_full_page_of_cancels_github_keeps_refusing() {
+    // Fresh debts, and debts every sweep already tried once: GitHub refused them all then.
+    for tried_before in [false, true] {
+        let (store, who) = shop();
+        store
+            .write_trusted(&who, &create("acme/web", None), &evidence())
+            .unwrap();
+        // 201 Deployments, each with a run holding its build and a later run owed a
+        // cancel. GitHub refuses to cancel the first 200 on every try; the last
+        // Deployment's run it cancels.
+        let owed = (0..201u64)
+            .map(|n| {
+                let deployment = admit_numbered(&store, &who, n);
+                store
+                    .pin_as(
+                        &deployment,
+                        &pins(&backend::sha(&"a".repeat(40))),
+                        &backend::members(),
+                        ATTEMPT,
+                    )
+                    .unwrap();
+                store.github_begin(&deployment, ATTEMPT).unwrap();
+                let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
+                store
+                    .github_dispatched(&id, &github_run(RUN + 2 * n))
+                    .unwrap();
+                let late = RUN + 2 * n + 1;
+                assert_eq!(
+                    store.github_dispatched(&id, &github_run(late)).unwrap(),
+                    GithubRecorded::Owed
+                );
+                (id, late)
+            })
+            .collect::<Vec<_>>();
+        if tried_before {
+            assert_eq!(store.github_owed(1000).unwrap().len(), 201);
+        }
+        let (cancellable_build, cancellable) = owed.last().unwrap().clone();
+        // Each sweep takes a page of 200 and GitHub cancels only the cancellable run.
+        let reached = (0..2).any(|_| {
+            let page = store.github_owed(200).unwrap();
+            let found = page.iter().any(|owed| owed.run.run_id == cancellable);
+            if found {
+                store
+                    .github_cancel_confirmed(&cancellable_build, cancellable)
+                    .unwrap();
+            }
+            found
+        });
+        assert!(
+            reached,
+            "the cancellable run is still owed after two sweeps (tried before: {tried_before})"
+        );
+        // The runs GitHub keeps refusing stay owed.
+        let mut left = owed_runs(&store.github_owed(1000).unwrap());
+        left.sort_unstable();
+        assert_eq!(
+            left,
+            owed[..200].iter().map(|(_, run)| *run).collect::<Vec<_>>()
+        );
+    }
+}
+
+/// Admits Deployment number `n`, whose id sorts by `n`.
+fn admit_numbered(store: &ConfigStore, who: &Actor, n: u64) -> DeploymentId {
+    let id = DeploymentId::parse(format!("00000000-0000-4000-8000-ee{n:010}")).unwrap();
+    store
+        .write_trusted(
+            who,
+            &Admit::Deploy(Deploy {
+                id: id.clone(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+                versions: Vec::new(),
+                copies: Vec::new(),
+                recreate: Vec::new(),
+                rule: None,
+            }),
+            &ployz_store::Trusted::default(),
+        )
+        .unwrap();
+    id
+}
+
+#[test]
+fn an_older_attempt_s_delayed_first_write_on_another_build_leaves_the_newer_one_owning() {
+    let (store, who) = shop();
+    store
+        .write_trusted(&who, &create("acme/web", None), &evidence())
+        .unwrap();
+    store
+        .write_trusted(
+            &who,
+            &CreateGitService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-0000000000a1").unwrap(),
+                name: ServiceName::parse("api").unwrap(),
+                ..create("acme/web", None)
+            },
+            &evidence(),
+        )
+        .unwrap();
+    let deployment = admit(&store, &who, 1, &[]);
+    let a = backend::sha(&"a".repeat(40));
+    let both = BTreeMap::from([
+        (ServiceName::parse("web").unwrap(), a.clone()),
+        (ServiceName::parse("api").unwrap(), a),
+    ]);
+    store
+        .pin_as(&deployment, &both, &backend::members(), ATTEMPT)
+        .unwrap();
+    let web = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
+    let api = GithubBuildId::parse(&format!("{deployment}.api")).unwrap();
+    store.github_begin(&deployment, "cloud-a").unwrap();
+    store.github_begin(&deployment, "cloud-b").unwrap();
+    store.github_ask(&web, "cloud-b").unwrap();
+    // `cloud-a` never wrote a build before `cloud-b` began; its first write lands now.
+    let skip = GithubEnd::Skipped {
+        message: "GitHub may already be running this build".into(),
+    };
+    let refused = store
+        .github_pass_on(&api, &skip, None, "cloud-a")
+        .unwrap_err();
+    assert_eq!(refused.details.get("newer"), Some(&json!(true)));
+    assert_eq!(
+        store
+            .github_dispatched(&web, &attempt_run(RUN, "cloud-b"))
+            .unwrap(),
+        GithubRecorded::Held
+    );
+}
+
+#[test]
+fn a_retried_cancel_comes_back_within_a_few_sweeps_while_new_debts_flood_in() {
+    let (store, who) = shop();
+    let id = dispatched(&store, &who);
+    // `dispatched` owed RUN + 1. A cancel GitHub refused is retried behind new debts
+    // only so far: each sweep after takes 10, and 10 new debts arrive before each, all
+    // with lower run IDs, so they sort first among debts of one turn.
+    assert_eq!(owed_runs(&store.github_owed(10).unwrap()), [RUN + 1]);
+    let mut flood = 1;
+    let mut back = None;
+    for sweep in 1..=6 {
+        for _ in 0..10 {
+            assert_eq!(
+                store.github_dispatched(&id, &github_run(flood)).unwrap(),
+                GithubRecorded::Owed
+            );
+            flood += 1;
+        }
+        if owed_runs(&store.github_owed(10).unwrap()).contains(&(RUN + 1)) {
+            back = Some(sweep);
+            break;
+        }
+    }
+    assert!(
+        back.is_some_and(|sweep| sweep <= 2),
+        "the retried cancel came back after {back:?} sweeps"
+    );
+}
+
+#[test]
+fn a_pin_from_an_outranked_attempt_is_refused_and_the_newer_attempt_s_commit_builds() {
+    let (store, who) = shop();
+    store
+        .write_trusted(&who, &create("acme/web", None), &evidence())
+        .unwrap();
+    let deployment = admit(&store, &who, 1, &[]);
+    store.github_begin(&deployment, "cloud-a").unwrap();
+    store.github_begin(&deployment, "cloud-b").unwrap();
+    // `cloud-a` read the branch at `a` before `cloud-b` began; its pin lands now.
+    let refused = store
         .pin(
             &deployment,
             &pins(&backend::sha(&"a".repeat(40))),
             &backend::members(),
+            "cloud-a",
+        )
+        .unwrap_err();
+    assert_eq!(
+        (refused.code, refused.details.get("newer")),
+        (RpcErrorCode::Conflict, Some(&json!(true)))
+    );
+    let sources = store
+        .pin(
+            &deployment,
+            &pins(&backend::sha(&"b".repeat(40))),
+            &backend::members(),
+            "cloud-b",
+        )
+        .unwrap();
+    assert_eq!(sources[0].commit, Some(backend::sha(&"b".repeat(40))));
+}
+
+#[test]
+fn a_run_recorded_after_its_deployment_or_environment_is_gone_is_owed_its_cancel() {
+    for gone in ["config_deployment", "config_environment"] {
+        let (store, who, url, _dir) = own_git_shop();
+        let deployment = admit(&store, &who, 1, &[]);
+        store
+            .pin_as(
+                &deployment,
+                &pins(&backend::sha(&"a".repeat(40))),
+                &backend::members(),
+                ATTEMPT,
+            )
+            .unwrap();
+        let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
+        store.github_ask(&id, ATTEMPT).unwrap();
+        // GitHub took the dispatch, and its answer lands once the rows are gone.
+        backend::execute(&url, &format!("DELETE FROM {gone}"));
+        assert_eq!(
+            store.github_dispatched(&id, &github_run(RUN)).unwrap(),
+            GithubRecorded::Owed,
+            "{gone}"
+        );
+        assert_eq!(owed_runs(&store.github_owed(10).unwrap()), [RUN], "{gone}");
+    }
+}
+
+#[test]
+fn a_build_a_github_run_held_at_upgrade_stays_building_through_its_first_begin() {
+    let (store, who, url, _dir) = own_git_shop();
+    let deployment = admit(&store, &who, 1, &[]);
+    store
+        .pin_as(
+            &deployment,
+            &pins(&backend::sha(&"a".repeat(40))),
+            &backend::members(),
+            ATTEMPT,
         )
         .unwrap();
     let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
     store.github_dispatched(&id, &github_run(RUN)).unwrap();
-    // A retried dispatch step replays; another run can't take it.
+    drop(store);
+    // The schema and rows of a Store from before 0060: no attempts, no debts, and a
+    // held run that names neither its attempt nor whose it is.
+    for sql in [
+        "UPDATE config_build SET github = \
+         REPLACE(REPLACE(github, ',\"attempt\":\"cloud-1\"', ''), ',\"push\":false', '')",
+        "DROP TABLE config_github_cancel",
+        "DROP TABLE config_github_attempt",
+        "ALTER TABLE config_build DROP COLUMN attempt",
+        "ALTER TABLE config_build DROP COLUMN reservable",
+        "DELETE FROM config_migration WHERE name = '0060_github_stop'",
+    ] {
+        backend::execute(&url, sql);
+    }
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    let legacy = held(&store, &id);
+    assert_eq!(
+        (
+            legacy.status,
+            legacy.run.run_id,
+            legacy.run.attempt,
+            legacy.run.push
+        ),
+        (BuildStatus::Building, RUN, None, None)
+    );
+    // The worker that was running it upgrades and begins: it keeps its build, and its
+    // run's own writes still land.
+    assert_eq!(store.github_begin(&deployment, ATTEMPT).unwrap(), 1);
+    assert_eq!(store.github_begin(&deployment, ATTEMPT).unwrap(), 1);
+    let kept = held(&store, &id);
+    assert_eq!((kept.status, kept.run.run_id), (BuildStatus::Building, RUN));
+    let unstarted = GithubEnd::Unstarted {
+        message: "The runner's ployz is too old".into(),
+    };
+    assert_eq!(
+        store.github_run_end(&id, RUN, &unstarted).unwrap(),
+        BuildStatus::Pending
+    );
+}
+
+#[test]
+fn only_the_attempt_that_began_last_writes_a_deployment_s_builds() {
+    let (store, who) = shop();
+    // `ATTEMPT` began first; `cloud-b` began after it, before either wrote a build.
+    let id = pinned(&store, &who);
+    assert_eq!(store.github_begin(&id.deployment, "cloud-b").unwrap(), 2);
+    assert_eq!(store.github_begin(&id.deployment, "cloud-b").unwrap(), 2);
+    let newer = |error: ployz_core::RpcError| {
+        (error.code, error.details.get("newer").cloned())
+            == (RpcErrorCode::Conflict, Some(json!(true)))
+    };
+    // The older attempt's delayed first write is refused, whatever it is, and changes nothing.
+    assert!(newer(
+        store
+            .github_pass_on(
+                &id,
+                &GithubEnd::Skipped {
+                    message: "GitHub may already be running this build".into()
+                },
+                None,
+                ATTEMPT,
+            )
+            .unwrap_err()
+    ));
+    assert!(newer(store.github_ask(&id, ATTEMPT).unwrap_err()));
+    assert!(newer(
+        store.github_begin(&id.deployment, ATTEMPT).unwrap_err()
+    ));
+    let runner = RunnerId::parse(ATTEMPT).unwrap();
+    assert_eq!(
+        store.claim(&id.deployment, &runner).unwrap_err().code,
+        RpcErrorCode::Conflict
+    );
+    // A run its record names no attempt for, or the older attempt's, never takes it.
+    let unnamed = GithubRun {
+        attempt: None,
+        ..github_run(RUN)
+    };
+    assert_eq!(
+        store.github_dispatched(&id, &unnamed).unwrap(),
+        GithubRecorded::Owed
+    );
+    assert_eq!(
+        store
+            .github_dispatched(&id, &attempt_run(RUN + 1, ATTEMPT))
+            .unwrap(),
+        GithubRecorded::Owed
+    );
+    assert_eq!(
+        store.github_build(&id).unwrap_err().code,
+        RpcErrorCode::NotFound,
+        "still waiting for its first Builder"
+    );
+    // The newer attempt asks and holds it; the older one can't end it.
+    store.github_ask(&id, "cloud-b").unwrap();
+    assert_eq!(
+        store
+            .github_dispatched(&id, &attempt_run(RUN + 2, "cloud-b"))
+            .unwrap(),
+        GithubRecorded::Held
+    );
+    let skipped = GithubEnd::Skipped {
+        message: "no runner started the build in time".into(),
+    };
+    assert!(newer(
+        store
+            .github_settle(&id, RUN + 2, &skipped, ATTEMPT, true)
+            .unwrap_err()
+    ));
+    assert_eq!(held(&store, &id).status, BuildStatus::Building);
+    // Even the owner settles only the run that holds the build.
+    assert_eq!(
+        store
+            .github_settle(&id, RUN, &skipped, "cloud-b", true)
+            .unwrap_err()
+            .code,
+        RpcErrorCode::Conflict
+    );
+    assert_eq!(
+        owed_runs(&store.github_owed_by(&id.deployment).unwrap()),
+        [RUN, RUN + 1]
+    );
+}
+
+#[test]
+fn a_cancel_owed_outlives_its_environment_until_github_confirms_it() {
+    let (store, who, url, _dir) = own_git_shop();
+    let deployment = admit(&store, &who, 1, &[]);
+    store
+        .pin_as(
+            &deployment,
+            &pins(&backend::sha(&"a".repeat(40))),
+            &backend::members(),
+            ATTEMPT,
+        )
+        .unwrap();
+    store.github_begin(&deployment, ATTEMPT).unwrap();
+    let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
     store.github_dispatched(&id, &github_run(RUN)).unwrap();
-    let error = store
-        .github_dispatched(&id, &github_run(RUN + 1))
-        .unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::Conflict);
-    id
+    assert_eq!(
+        store.github_dispatched(&id, &github_run(RUN + 1)).unwrap(),
+        GithubRecorded::Owed
+    );
+    // The Environment goes, and its Deployments and builds with it.
+    backend::execute(&url, "DELETE FROM config_environment");
+    assert_eq!(
+        store.github_build(&id).unwrap_err().code,
+        RpcErrorCode::NotFound
+    );
+    let owed = store.github_owed(10).unwrap();
+    assert_eq!(owed_runs(&owed), [RUN + 1]);
+    assert_eq!(owed[0].run.installation_id, 7);
+    store.github_cancel_confirmed(&id, RUN + 1).unwrap();
+    assert!(store.github_owed(10).unwrap().is_empty());
+}
+
+#[test]
+fn a_stop_of_an_older_attempt_leaves_a_newer_attempt_s_run_alone() {
+    let (store, who) = shop();
+    let id = dispatched_by(&store, &who, "cloud-b");
+    let older = RunnerId::parse("cloud-a").unwrap();
+    // The older attempt can't claim it to fail it either.
+    assert_eq!(
+        store.claim(&id.deployment, &older).unwrap_err().code,
+        RpcErrorCode::Conflict
+    );
+    store
+        .write(
+            &who,
+            &ployz_store::Cancel {
+                deployment: id.deployment.clone(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        store.github_stop(&id.deployment, &older).unwrap_err().code,
+        RpcErrorCode::Conflict
+    );
+    assert_eq!(held(&store, &id).run.run_id, RUN);
+    let newer = RunnerId::parse("cloud-b").unwrap();
+    assert_eq!(
+        owed_runs(&store.github_stop(&id.deployment, &newer).unwrap()),
+        [RUN]
+    );
+}
+
+#[test]
+fn a_push_s_run_and_one_recorded_before_runs_were_marked_are_never_owed_a_cancel() {
+    for push in [Some(true), None] {
+        let (store, who) = shop();
+        let id = pinned(&store, &who);
+        let run = GithubRun {
+            push,
+            ..github_run(RUN)
+        };
+        store.github_dispatched(&id, &run).unwrap();
+        store
+            .write(
+                &who,
+                &ployz_store::Cancel {
+                    deployment: id.deployment.clone(),
+                },
+            )
+            .unwrap();
+        assert!(store.github_owed_by(&id.deployment).unwrap().is_empty());
+    }
 }
 
 #[test]
@@ -1186,11 +1798,8 @@ fn a_skipped_github_build_goes_back_to_the_next_builder_and_cancellation_lists_o
         )
         .unwrap();
     assert_eq!(
-        store
-            .github_dispatched(&id, &github_run(RUN + 1))
-            .unwrap_err()
-            .code,
-        RpcErrorCode::Conflict
+        store.github_dispatched(&id, &github_run(RUN + 1)).unwrap(),
+        GithubRecorded::Owed
     );
 }
 
@@ -1558,12 +2167,14 @@ fn a_build_names_the_server_that_built_it_and_why_github_passed_it_on() {
         .unwrap();
     let deployment = admit(&store, &who, 1, &[]);
     store
-        .pin(
+        .pin_as(
             &deployment,
             &pins(&backend::sha(&"a".repeat(40))),
             &backend::members(),
+            ATTEMPT,
         )
         .unwrap();
+    store.github_begin(&deployment, ATTEMPT).unwrap();
     let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
     let why = "acme/web has no .github/workflows/ployz-build.yml on its default branch";
     store
@@ -1648,14 +2259,16 @@ fn a_build_github_passed_on_stays_passed_on_for_its_deployment() {
                 "{what} ({why})"
             );
         };
-        refused(
-            store.github_dispatched(&id, &github_run(RUN + 1)),
-            "a retried start's new run",
-        );
-        refused(
-            store.github_dispatched(&id, &github_run(RUN)),
-            "the run it passed on",
-        );
+        for (run, what) in [
+            (RUN + 1, "a retried start's new run"),
+            (RUN, "the run it passed on"),
+        ] {
+            assert_eq!(
+                store.github_dispatched(&id, &github_run(run)).unwrap(),
+                GithubRecorded::Owed,
+                "{what} ({why})"
+            );
+        }
         refused(
             store
                 .github_end(
@@ -2224,10 +2837,11 @@ fn github_gets_only_its_own_sealed_values() {
     let id = {
         let deployment = admit(&store, &who, 1, &[]);
         store
-            .pin(
+            .pin_as(
                 &deployment,
                 &pins(&backend::sha(&"a".repeat(40))),
                 &backend::members(),
+                "runner",
             )
             .unwrap();
         GithubBuildId::parse(&format!("{deployment}.web")).unwrap()
@@ -2275,10 +2889,11 @@ fn github_gets_only_its_own_sealed_values() {
         .unwrap();
     let deployment = admit(&store, &who, 2, &[]);
     let sources = store
-        .pin(
+        .pin_as(
             &deployment,
             &pins(&backend::sha(&"b".repeat(40))),
             &backend::members(),
+            ATTEMPT,
         )
         .unwrap();
     assert_eq!(sources[0].builders, [Builder::Github, Builder::Servers]);
@@ -2314,10 +2929,11 @@ fn a_build_s_input_and_routing_need_no_key_to_open_a_secret() {
     let source = &store.sources(&deployment).unwrap()[0];
     assert_eq!(source.builders, [Builder::Github, Builder::Servers]);
     let pinned = store
-        .pin(
+        .pin_as(
             &deployment,
             &pins(&backend::sha(&"a".repeat(40))),
             &backend::members(),
+            ATTEMPT,
         )
         .unwrap();
     assert_eq!(pinned[0].commit, Some(backend::sha(&"a".repeat(40))));
@@ -2348,10 +2964,11 @@ fn own_git_shop() -> (ConfigStore, Actor, String, tempfile::TempDir) {
 fn building(store: &ConfigStore, who: &Actor) -> (DeploymentId, RunnerId) {
     let first = admit(store, who, 1, &[]);
     store
-        .pin(
+        .pin_as(
             &first,
             &pins(&backend::sha(&"a".repeat(40))),
             &backend::members(),
+            ATTEMPT,
         )
         .unwrap();
     let runner = RunnerId::parse("cloud-1").unwrap();
@@ -2546,10 +3163,11 @@ fn a_build_its_deployment_ended_under_does_not_read_building() {
     case("C3 never started", &|store, who, _| {
         let first = admit(store, who, 1, &[]);
         store
-            .pin(
+            .pin_as(
                 &first,
                 &pins(&backend::sha(&"a".repeat(40))),
                 &backend::members(),
+                ATTEMPT,
             )
             .unwrap();
         let runner = RunnerId::parse("cloud-1").unwrap();
@@ -2681,14 +3299,15 @@ fn a_build_its_deployment_ended_under_does_not_read_building() {
                 1,
                 0
             ),
+            // The cancel's own write ends what GitHub held, owing its run a cancel.
             kept(
                 "C6 held by GitHub, cancelled",
-                BuildStatus::Building,
-                None,
+                BuildStatus::Failed,
+                Some("cancelled"),
                 true,
-                Finished::No,
-                1,
-                1
+                Finished::Yes,
+                0,
+                0
             ),
         ]
     );
@@ -2995,4 +3614,89 @@ fn a_build_marked_interrupted_that_did_not_fail_is_unreadable() {
     backend::execute(&url, "UPDATE config_build SET status = 'failed'");
     let (build, ..) = shown_build((&store, &who, &url), &first);
     assert!(build.is_interrupted());
+}
+
+#[test]
+fn a_run_recorded_after_its_deployment_stopped_holds_nothing_and_is_owed_a_cancel() {
+    let (store, who, _url, _dir) = own_git_shop();
+    let deployment = admit(&store, &who, 1, &[]);
+    store
+        .pin_as(
+            &deployment,
+            &pins(&backend::sha(&"a".repeat(40))),
+            &backend::members(),
+            ATTEMPT,
+        )
+        .unwrap();
+    let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
+    store.github_ask(&id, ATTEMPT).unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::Cancel {
+                deployment: id.deployment.clone(),
+            },
+        )
+        .unwrap();
+    // The stop passed the reservation on and owes nothing yet: GitHub never answered.
+    assert!(store.github_owed_by(&id.deployment).unwrap().is_empty());
+    // GitHub's answer lands after the stop: refused, and owed its cancel in the same write.
+    assert_eq!(
+        store
+            .github_dispatched(&id, &attempt_run(RUN, ATTEMPT))
+            .unwrap(),
+        GithubRecorded::Owed
+    );
+    assert_eq!(owed_runs(&store.github_owed(100).unwrap()), [RUN]);
+    assert_eq!(
+        owed_runs(&store.github_owed_by(&id.deployment).unwrap()),
+        [RUN]
+    );
+    // A push's own run is never owed.
+    let push = GithubRun {
+        push: Some(true),
+        ..attempt_run(RUN + 1, ATTEMPT)
+    };
+    assert_eq!(
+        store.github_dispatched(&id, &push).unwrap(),
+        GithubRecorded::Refused
+    );
+    assert_eq!(owed_runs(&store.github_owed(100).unwrap()), [RUN]);
+    // Confirming the cancel deletes the debt.
+    store.github_cancel_confirmed(&id, RUN).unwrap();
+    assert!(store.github_owed(100).unwrap().is_empty());
+    // A replay of the refused record owes the run again; its next cancel finds it
+    // completed, and confirming deletes the debt once more.
+    assert_eq!(
+        store
+            .github_dispatched(&id, &attempt_run(RUN, ATTEMPT))
+            .unwrap(),
+        GithubRecorded::Owed
+    );
+    assert_eq!(
+        owed_runs(&store.github_owed_by(&id.deployment).unwrap()),
+        [RUN]
+    );
+    store.github_cancel_confirmed(&id, RUN).unwrap();
+    assert!(store.github_owed(100).unwrap().is_empty());
+}
+
+#[test]
+fn a_run_of_a_cancelling_deployment_cannot_check_in() {
+    let (store, who) = shop();
+    let id = dispatched_by(&store, &who, "cloud-a");
+    let attempt = RunnerId::parse("cloud-a").unwrap();
+    store.claim(&id.deployment, &attempt).unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::Cancel {
+                deployment: id.deployment.clone(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        store.github_check_in(&id, RUN, &grant()).unwrap_err().code,
+        RpcErrorCode::Conflict
+    );
 }

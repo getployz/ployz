@@ -717,6 +717,8 @@ pub(crate) fn cancel(
         stored.cleanup = super::cleanup::interrupt(tx, id)?;
     }
     save(tx, &mut stored)?;
+    // Its GitHub builds stop in the same write, each run Cloud dispatched owed a cancel.
+    crate::build::end_github_builds(tx, id)?;
     Ok(stored.summary)
 }
 
@@ -747,6 +749,7 @@ pub(crate) fn cancel_in_flight(
             stored.standing = stored.standing.cancel(now());
         }
         save(tx, &mut stored)?;
+        crate::build::end_github_builds(tx, &id)?;
         cancelled.push(id);
     }
     Ok(cancelled)

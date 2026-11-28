@@ -1092,7 +1092,7 @@ pub(crate) fn auto_admit(
         saved.revision,
         &frozen,
     )?;
-    build::pin(tx, &summary.id, &pins, trusted)?;
+    build::pin_admitted(tx, &summary.id, &pins, trusted)?;
     Ok(summary)
 }
 

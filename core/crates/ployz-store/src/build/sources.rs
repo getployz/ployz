@@ -51,15 +51,29 @@ pub(crate) fn sources(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<GitSourc
     sources_of(tx, &stored)
 }
 
-/// Pin the commits of `commits` (by runtime Service name) that aren't pinned yet. A
-/// pinned commit never changes, and one its PR Environment's pull request doesn't
-/// admit by `trusted`'s members never pins.
+/// Pin the commits of `commits` (by runtime Service name) that aren't pinned yet, for
+/// worker attempt `attempt`. A pinned commit never changes, and one its PR
+/// Environment's pull request doesn't admit by `trusted`'s members never pins. Only the
+/// attempt that owns the Deployment chooses its commits: an outranked one is `newer`.
 pub(crate) fn pin(
     tx: &mut dyn Tx,
     id: &DeploymentId,
     commits: &BTreeMap<ServiceName, CommitSha>,
     trusted: &crate::Trusted,
+    attempt: &str,
 ) -> Result<(), RpcError> {
+    let stored = pinner(tx, id, attempt)?;
+    pin_stored(tx, &stored, commits, trusted)
+}
+
+/// Deployment `id`, locked, when worker attempt `attempt` may pin its commits: it is in
+/// flight and `attempt` owns it. Otherwise the refusal a pin from `attempt` gets, before
+/// the pin commits anything.
+pub(crate) fn pinner(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+    attempt: &str,
+) -> Result<Stored, RpcError> {
     let stored = deployment::locked(tx, id)?;
     if !stored.summary.status.in_flight() {
         return Err(error::conflict(
@@ -67,7 +81,32 @@ pub(crate) fn pin(
             json!({ "deployment": id, "status": stored.summary.status }),
         ));
     }
-    let sources = unrouted(tx, &stored)?;
+    if !super::github::owns(tx, &stored, attempt)? {
+        return Err(super::github::newer_attempt(id));
+    }
+    Ok(stored)
+}
+
+/// Pin the commits of `commits` for Deployment `id` in the write that admits it, before
+/// any worker attempt began: the Store chose them, so no attempt is checked.
+pub(crate) fn pin_admitted(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+    commits: &BTreeMap<ServiceName, CommitSha>,
+    trusted: &crate::Trusted,
+) -> Result<(), RpcError> {
+    let stored = deployment::locked(tx, id)?;
+    pin_stored(tx, &stored, commits, trusted)
+}
+
+fn pin_stored(
+    tx: &mut dyn Tx,
+    stored: &Stored,
+    commits: &BTreeMap<ServiceName, CommitSha>,
+    trusted: &crate::Trusted,
+) -> Result<(), RpcError> {
+    let id = &stored.summary.id;
+    let sources = unrouted(tx, stored)?;
     for (service, commit) in commits {
         let Some(source) = sources.iter().find(|source| source.service == *service) else {
             return Err(error::invalid(
@@ -97,8 +136,8 @@ pub(super) fn pending(
 ) -> Result<(), RpcError> {
     tx.execute(
         "INSERT INTO config_build \
-         (deployment_id, service, organization_id, commit_sha, status, message, log) \
-         SELECT id, ?2, organization_id, ?3, 'pending', NULL, '' \
+         (deployment_id, service, organization_id, commit_sha, status, message, log, reservable) \
+         SELECT id, ?2, organization_id, ?3, 'pending', NULL, '', 1 \
          FROM config_deployment WHERE id = ?1 \
          ON CONFLICT (deployment_id, service) DO NOTHING",
         &[
@@ -120,9 +159,9 @@ pub(crate) fn retried(
     tx.execute(
         "INSERT INTO config_build \
          (deployment_id, service, organization_id, commit_sha, status, message, log, \
-          receipt, image_token, verified) \
+          receipt, image_token, verified, reservable) \
          SELECT ?1, service, organization_id, commit_sha, 'pending', NULL, '', receipt, \
-          image_token, verified \
+          image_token, verified, 1 \
          FROM config_build WHERE deployment_id = ?2",
         &[id.as_str().into(), source.as_str().into()],
     )

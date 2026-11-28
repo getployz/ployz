@@ -1,6 +1,7 @@
 //! Rung 1: cancellation polls the real Store and waits for owned SDK child outcomes.
 
 use super::*;
+use ployz_store::testing::backend::PinAs;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio_util::sync::CancellationToken;
 
@@ -2063,10 +2064,11 @@ async fn a_deploy_with_a_reused_build_still_recreates_the_services_its_claim_lis
         .unwrap();
     let commit = "a".repeat(40);
     store
-        .pin(
+        .pin_as(
             &deployment,
             &[(api.clone(), CommitSha::parse(commit.as_str()).unwrap())].into(),
             &Trusted::default(),
+            "owner",
         )
         .unwrap();
     let run = Run {
@@ -2197,13 +2199,14 @@ async fn redeploy(
         )
         .unwrap();
     store
-        .pin(
+        .pin_as(
             &deployment,
             &pinned
                 .iter()
                 .map(|service| (service.clone(), CommitSha::parse(commit).unwrap()))
                 .collect(),
             &ployz_store::Trusted::default(),
+            "owner",
         )
         .unwrap();
     let run = Run {

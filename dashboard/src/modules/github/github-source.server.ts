@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { createReadStream, createWriteStream } from "node:fs";
+import type { Stats } from "node:fs";
 import { chmod, mkdir, mkdtemp, open, readdir, realpath, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -9,7 +9,7 @@ import { createGunzip } from "node:zlib";
 import { Data, Effect } from "effect";
 import * as tar from "tar";
 import { accessFor } from "./github-access";
-import { GithubApi, resolveGithubBranchHead, resolveGithubRepository } from "./github-observation.api";
+import { resolveGithubBranchHead, resolveGithubRepository } from "./github-observation.api";
 import { getCachedGithubRepositoryForOrganization } from "./github.repository";
 
 /** A repository or uploaded source Cloud can't read or refuses; users read the message. */
@@ -17,8 +17,8 @@ export class GithubSourceError extends Data.TaggedError("GithubSourceError")<{
   readonly message: string;
 }> { readonly publicErrorCategory = "validation" as const; }
 
-type SourceIdentity = { organizationId: string; installationId: number | null; repositoryId: number };
-const authorizeRepository = Effect.fn("Github.authorizeSourceRepository")(function* (input: SourceIdentity) {
+export type SourceIdentity = { organizationId: string; installationId: number | null; repositoryId: number };
+export const authorizeRepository = Effect.fn("Github.authorizeSourceRepository")(function* (input: SourceIdentity) {
   if (input.installationId !== null && !(yield* getCachedGithubRepositoryForOrganization({ ...input, installationId: input.installationId }))) {
     return yield* new GithubSourceError({ message: "Repository is not connected to this Organization." });
   }
@@ -86,28 +86,45 @@ export const extractUploadedSource = Effect.fn("Github.extractUploadedSource")(f
   });
 });
 
-// The source is streamed to disk. Validate the complete archive before extraction,
-// including entries preceding a later symlink, rather than trusting archive order.
+/** git-lfs never reads a blob of this size or larger as a pointer, so only smaller files are opened to look for one. */
+const LFS_POINTER_MAX_BYTES = 1024;
+
+// One pass: the download streams through the limits into tar, which writes each entry it vets and skips links.
+// What needs the whole archive (one root, links, submodules) is checked after; a failure leaves only the workspace,
+// which its owner removes.
 async function extractSourceArchive(chunks: AsyncIterable<Uint8Array>, directory: string, signal: AbortSignal,
   { limits, uploaded }: { limits: typeof SOURCE_LIMITS; uploaded: boolean }) {
-  const archive = path.join(directory, "source.tar");
-  await pipeline(Readable.from(chunks), byteLimit(limits.downloadBytes), createGunzip(),
-    byteLimit(limits.expandedBytes), createWriteStream(archive, { flags: "wx", mode: 0o600 }), { signal });
   const entries = new Map<string, { type: string; link: string; mode: number }>();
+  const lfsCandidates: string[] = [];
+  const refused = new AbortController();
   let invalid: GithubSourceError | undefined;
-  const parser = new tar.Parser({ strict: true, onReadEntry(entry) {
+  const refuse = (error: GithubSourceError) => { invalid ??= error; refused.abort(error); };
+  const unpack = path.join(directory, "checkout");
+  await mkdir(unpack, { mode: 0o700 });
+  const vet = (_name: string, entry: tar.ReadEntry | Stats) => {
+    if (!("type" in entry) || invalid) return false;
     try {
-      signal.throwIfAborted();
       const name = safePath(entry.path);
       if (entries.size >= limits.entries || entries.has(name)) throw new GithubSourceError({ message: "Source archive has too many or duplicate entries." });
       if (!["File", "Directory", "SymbolicLink"].includes(entry.type)) throw new GithubSourceError({ message: "Source archive contains an unsupported entry." });
       const link = entry.type === "SymbolicLink" ? (entry.linkpath ?? "") : "";
       if (link && (path.posix.isAbsolute(link) || link.includes("\\") || link.includes("\0"))) throw new GithubSourceError({ message: "Source archive contains an unsafe link." });
       entries.set(name, { type: entry.type, link, mode: (entry.mode ?? 0) & 0o777 });
-    } catch (error) { invalid = error instanceof GithubSourceError ? error : new GithubSourceError({ message: "Source acquisition cancelled." }); }
-    entry.resume();
-  } });
-  await pipeline(createReadStream(archive), parser, { signal });
+      if (!uploaded && entry.type === "File" && (entry.size ?? 0) < LFS_POINTER_MAX_BYTES) lfsCandidates.push(name);
+    } catch (error) {
+      refuse(error instanceof GithubSourceError ? error : new GithubSourceError({ message: "Source acquisition cancelled." }));
+      return false;
+    }
+    // An upload's own modes come last; until then its owner may read and write everything.
+    if (uploaded && entry.mode !== undefined) entry.mode |= entry.type === "Directory" ? 0o700 : 0o600;
+    return entry.type !== "SymbolicLink";
+  };
+  try {
+    await pipeline(Readable.from(chunks), byteLimit(limits.downloadBytes), createGunzip(), byteLimit(limits.expandedBytes),
+      tar.x({ cwd: unpack, strict: true, noChmod: true, noMtime: true, filter: vet }), { signal: AbortSignal.any([signal, refused.signal]) });
+  } catch (error) {
+    throw invalid ?? error;
+  }
   if (invalid) throw invalid;
   const roots = new Set([...entries.keys()].map((name) => name.split("/")[0]));
   if (roots.size !== 1) throw new GithubSourceError({ message: "Source archive must have one root." });
@@ -145,14 +162,17 @@ async function extractSourceArchive(chunks: AsyncIterable<Uint8Array>, directory
     }
     if (!uploaded && path.posix.basename(name) === ".gitmodules") throw new GithubSourceError({ message: "Git submodules are not supported for Cloud builds." });
   }
-  const unpack = path.join(directory, "checkout");
-  await mkdir(unpack, { mode: 0o700 });
-  await pipeline(createReadStream(archive), tar.x({ cwd: unpack, strict: true, noChmod: true, noMtime: true, filter: (_name, entry) => {
-    if (!("type" in entry)) return true;
-    // An upload's own modes come last; until then its owner may read and write everything.
-    if (uploaded && entry.mode !== undefined) entry.mode |= entry.type === "Directory" ? 0o700 : 0o600;
-    return entry.type !== "SymbolicLink";
-  } }), { signal });
+  for (const name of lfsCandidates) {
+    signal.throwIfAborted();
+    const file = await open(path.join(unpack, name), "r");
+    try {
+      const prefix = Buffer.alloc(128);
+      const { bytesRead } = await file.read(prefix, 0, prefix.length, 0);
+      if (prefix.subarray(0, bytesRead).toString().startsWith("version https://git-lfs.github.com/spec/v1")) {
+        throw new GithubSourceError({ message: "Git LFS content is not supported for Cloud builds." });
+      }
+    } finally { await file.close(); }
+  }
   // Install validated links last; tar intentionally refuses even safe chained links.
   for (const [name, entry] of entries) {
     signal.throwIfAborted();
@@ -161,7 +181,6 @@ async function extractSourceArchive(chunks: AsyncIterable<Uint8Array>, directory
     await mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
     await symlink(entry.link, destination);
   }
-  await rm(archive);
   if (uploaded) {
     // The umask narrowed what tar created. Children first: a parent's final mode may forbid reaching them.
     const deepestFirst = [...entries].filter(([, entry]) => entry.type !== "SymbolicLink")
@@ -171,19 +190,6 @@ async function extractSourceArchive(chunks: AsyncIterable<Uint8Array>, directory
       // ponytail: setuid, setgid and sticky bits are dropped, so an upload holding them fails its digest check.
       await chmod(path.join(unpack, name), entry.mode);
     }
-    return path.join(unpack, root);
-  }
-  for (const [name, entry] of entries) {
-    signal.throwIfAborted();
-    if (entry.type !== "File") continue;
-    const file = await open(path.join(unpack, name), "r");
-    try {
-      const prefix = Buffer.alloc(128);
-      const { bytesRead } = await file.read(prefix, 0, prefix.length, 0);
-      if (prefix.subarray(0, bytesRead).toString().startsWith("version https://git-lfs.github.com/spec/v1")) {
-        throw new GithubSourceError({ message: "Git LFS content is not supported for Cloud builds." });
-      }
-    } finally { await file.close(); }
   }
   return path.join(unpack, root);
 }
@@ -210,21 +216,26 @@ export async function resolveSourcePaths(repositoryDirectory: string, rootDir: s
   return { repositoryDirectory: repository, rootDirectory, dockerfilePath: dockerfile };
 }
 
-export const materializeGithubSource = Effect.fn("Github.materializeSource")(function* (input: SourceIdentity & {
-  sha: string; rootDir: string; dockerfilePath?: string;
-}) {
-  const repository = yield* authorizeRepository(input);
-  const directory = yield* Effect.acquireRelease(
-    Effect.tryPromise({ try: () => mkdtemp(path.join(tmpdir(), "ployz-source-")), catch: () => new GithubSourceError({ message: "Could not create source workspace." }) }),
-    (directory) => Effect.tryPromise({
-      try: () => rm(directory, { recursive: true, force: true }),
-      catch: () => new GithubSourceError({ message: "Could not remove source workspace." }),
-    }).pipe(Effect.tapError((error) => Effect.logError("Source workspace cleanup failed.", error)), Effect.ignore),
+/** A fresh directory for a repository's checkout. */
+export const makeSourceWorkspace = Effect.tryPromise({
+  try: () => mkdtemp(path.join(tmpdir(), "ployz-source-")),
+  catch: () => new GithubSourceError({ message: "Could not create source workspace." }),
+});
+
+/** Remove a checkout's directory; one already gone, or one that can't be removed now, is left alone. */
+export const removeSourceWorkspace = (directory: string) =>
+  Effect.tryPromise(() => rm(directory, { recursive: true, force: true })).pipe(
+    Effect.catchCause((cause) => Effect.logWarning("Could not remove a source checkout.", cause)),
   );
-  const api = yield* GithubApi;
-  const response = yield* api.archive({ access: accessFor(input.organizationId, input.installationId), repository, sha: input.sha });
-  return yield* Effect.tryPromise({
-    try: async (signal) => resolveSourcePaths(await extractGithubSource(response, directory, signal), input.rootDir, input.dockerfilePath),
-    catch: (error) => error instanceof GithubSourceError ? error : new GithubSourceError({ message: "Could not acquire the pinned repository source." }),
-  });
+
+/** `response`'s repository archive, extracted into `directory`: its root. */
+export const extractGithubArchive = (response: Response, directory: string) => Effect.tryPromise({
+  try: (signal) => extractGithubSource(response, directory, signal),
+  catch: (error) => error instanceof GithubSourceError ? error : new GithubSourceError({ message: "Could not acquire the pinned repository source." }),
+});
+
+/** {@link resolveSourcePaths} as an Effect. */
+export const sourcePaths = (repositoryDirectory: string, rootDir: string, dockerfilePath?: string) => Effect.tryPromise({
+  try: () => resolveSourcePaths(repositoryDirectory, rootDir, dockerfilePath),
+  catch: (error) => error instanceof GithubSourceError ? error : new GithubSourceError({ message: "Could not acquire the pinned repository source." }),
 });

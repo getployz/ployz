@@ -138,6 +138,10 @@ fn take(tx: &mut dyn Tx, mut stored: Stored, runner: &RunnerId) -> Result<Taken,
         | DeploymentStatus::Cancelled => {
             return refuse(tx, stored, Refusal::Unclaimable(ended(&id)));
         }
+        // A later worker attempt began: it runs this one.
+        DeploymentStatus::Queued if build::github_outranked(tx, &id, runner)? => {
+            return refuse(tx, stored, Refusal::Unclaimable(owned_elsewhere(&id)));
+        }
         DeploymentStatus::Queued => {
             stored.standing = stored.standing.claim_for(runner, now);
             // A claim-time refusal below ends it from Running.

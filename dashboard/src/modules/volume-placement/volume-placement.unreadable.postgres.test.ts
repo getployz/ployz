@@ -15,6 +15,8 @@ import { acmeWeb, seedStoreOrganization, storeTestCloud } from "#/test/store-clo
 const ORGANIZATION = "00000000-0000-4000-8000-00000000e001";
 const SHOP = "00000000-0000-4000-8000-00000000e003";
 const BLOG = "00000000-0000-4000-8000-00000000e013";
+const DOCS_PROJECT = "00000000-0000-4000-8000-00000000e022";
+const DOCS = "00000000-0000-4000-8000-00000000e023";
 const web = (name: string) => name.padEnd(32, "0") as MachineId;
 const members = [member("web-1", "writer"), member("web-2", "mirror")];
 
@@ -66,6 +68,12 @@ it.live("a Deploy refreshes its own mirrors while another Environment is unreada
   expect(yield* refresh(SHOP)).toHaveLength(1);
   // The organization-wide pass skips the Environment it can't read and refreshes the rest.
   expect(yield* refresh(null)).toHaveLength(1);
+  // A Deploy's own Environment the Store can't read still fails its Deploy.
+  expect((yield* refresh(BLOG).pipe(Effect.flip))._tag).toBe("StoreRefused");
+  // An Environment without Volumes refreshes nothing, whatever the Cluster could say.
+  const store = yield* cloudStore.pipe(Effect.provide(services));
+  yield* Effect.promise(() => store.write(ORGANIZATION, { command: "create_project", id: DOCS_PROJECT, name: "docs", default_environment: DOCS }));
+  expect(yield* refreshMirrors(ORGANIZATION, DOCS, () => Effect.die("observed the Cluster")).pipe(answeringRuntime, Effect.provide(services))).toEqual([]);
 }));
 
 it.live("finds a Service while another Environment is unreadable", () => Effect.gen(function* () {

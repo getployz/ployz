@@ -6,6 +6,7 @@
 //! and check suites admit auto-deploys of Saved State, idempotently.
 
 use ployz_core::{RpcErrorCode, ServiceName};
+use ployz_store::testing::backend::PinAs;
 use ployz_store::{
     Actor, Automated, BranchHead, Change, Command, ConfigStore, Edit, EnvironmentRef, Publish,
     SettingPath, SystemEvent, Trusted, Written,
@@ -1333,13 +1334,14 @@ fn pin_web(
     head: &str,
     trusted: &Trusted,
 ) -> Result<Vec<ployz_store::GitSource>, ployz_core::RpcError> {
-    store.pin(
+    store.pin_as(
         id,
         &std::collections::BTreeMap::from([(
             ServiceName::parse("web").unwrap(),
             backend::sha(head),
         )]),
         trusted,
+        "runner",
     )
 }
 
@@ -1369,6 +1371,30 @@ fn a_build_of_a_trusted_pull_request_pins_only_while_its_author_is_a_member() {
         standings(&store, &who),
         [(5, ployz_store::Standing::NeedsApproval)]
     );
+}
+
+#[test]
+fn an_outranked_pin_leaves_the_pull_request_trusted_for_the_newer_attempt() {
+    let (store, who) = shop();
+    publish(&store, &who);
+    let opened = open_pull_request(&store, &who);
+    backend::run(&store, &opened.admitted[0].deployment.id);
+    let id = deploy_pr_5(&store, &who, 1);
+    let web =
+        std::collections::BTreeMap::from([(ServiceName::parse("web").unwrap(), backend::sha(H3))]);
+    store.github_begin(&id, "older").unwrap();
+    store.github_begin(&id, "newer").unwrap();
+
+    // The older attempt read the members while the author was briefly away.
+    let refused = store.pin(&id, &web, &ada_left(), "older").unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        standings(&store, &who),
+        [(5, ployz_store::Standing::Trusted)]
+    );
+
+    let pinned = store.pin(&id, &web, &backend::members(), "newer").unwrap();
+    assert_eq!(pinned[0].commit, Some(backend::sha(H3)));
 }
 
 #[test]
@@ -1472,13 +1498,14 @@ fn a_manual_deploy_never_pins_a_head_the_pull_request_has_not_approved() {
         )
         .unwrap();
     let refused = store
-        .pin(
+        .pin_as(
             &id,
             &std::collections::BTreeMap::from([(
                 ServiceName::parse("web").unwrap(),
                 backend::sha(H3),
             )]),
             &backend::members(),
+            "runner",
         )
         .unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
@@ -3011,6 +3038,7 @@ fn built_on_github(
     token: &str,
     image: &str,
 ) {
+    store.github_begin(&id.deployment, ATTEMPT).unwrap();
     store
         .github_dispatched(
             id,
@@ -3020,6 +3048,8 @@ fn built_on_github(
                 workflow_ref: "acme/build/.github/workflows/build.yml@refs/heads/main".into(),
                 repository: backend::repo_name("acme/web"),
                 installation_id: 7,
+                push: Some(false),
+                attempt: Some(ATTEMPT.into()),
             },
         )
         .unwrap();
@@ -3046,15 +3076,30 @@ fn built_on_github(
         .unwrap();
     let receipt = json!({"fingerprint": "f".repeat(64), "image": {"reference": image}});
     store
-        .github_end(id, Some(run), &ployz_store::GithubEnd::Built { receipt })
+        .github_settle(
+            id,
+            run,
+            &ployz_store::GithubEnd::Built { receipt },
+            ATTEMPT,
+            false,
+        )
         .unwrap();
 }
+
+/// The worker attempt that runs a Deployment's GitHub builds in these tests.
+const ATTEMPT: &str = "runner";
 
 /// End GitHub build `id` without a run, on the image `image` a Machine still holds.
 fn reused(store: &ConfigStore, id: &ployz_store::GithubBuildId, image: &str) {
     let receipt = json!({"fingerprint": "f".repeat(64), "image": {"reference": image}});
+    store.github_begin(&id.deployment, ATTEMPT).unwrap();
     store
-        .github_end(id, None, &ployz_store::GithubEnd::Built { receipt })
+        .github_pass_on(
+            id,
+            &ployz_store::GithubEnd::Built { receipt },
+            None,
+            ATTEMPT,
+        )
         .unwrap();
 }
 

@@ -21,7 +21,7 @@ use ployz_core::{
 };
 use ployz_store::{
     BuildStatus, ConfigStore, GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff,
-    GithubReport, GithubRule, RunEnd,
+    GithubReport, GithubRule, GithubSettled, RunEnd,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -74,12 +74,14 @@ pub enum GithubStart {
 /// Machines it left.
 ///
 /// # Errors
-/// Returns the Store's `conflict` when the build already started or ended.
+/// Returns the Store's `conflict` when the build already started or ended, or when
+/// another attempt than `attempt` owns the Deployment's GitHub runs.
 pub async fn github_start(
     store: Arc<ConfigStore>,
     id: GithubBuildId,
     connections: Vec<Connection>,
     expect: Option<ClusterExpectation>,
+    attempt: String,
 ) -> Result<Dialed<GithubStart>, RpcError> {
     // A push under a rule already started its own run; an older image has no image
     // token, so it isn't reused.
@@ -209,7 +211,11 @@ pub async fn github_start(
             GithubStart::Reused
         }
     };
-    store_call(&store, move |store| store.github_end(&id, None, &end)).await?;
+    // Only the attempt that owns the Deployment's GitHub runs ends a build before GitHub.
+    store_call(&store, move |store| {
+        store.github_pass_on(&id, &end, None, &attempt)
+    })
+    .await?;
     Ok(Dialed {
         outcome: start,
         foreign,
@@ -349,7 +355,7 @@ pub async fn github_check_in(
             };
             store_call(&store, {
                 let id = id.clone();
-                move |store| store.github_end(&id, Some(run_id), &end)
+                move |store| store.github_run_end(&id, run_id, &end)
             })
             .await?;
             return Err(RpcError::conflict(github_build::OLD_MINT_SKIPS));
@@ -368,7 +374,7 @@ pub async fn github_check_in(
                 // The runner still reads the refusal if the run no longer holds the build.
                 let _ = store_call(&store, {
                     let id = id.clone();
-                    move |store| store.github_end(&id, Some(run_id), &end)
+                    move |store| store.github_run_end(&id, run_id, &end)
                 })
                 .await;
             }
@@ -784,8 +790,9 @@ pub async fn github_report(
 pub enum GithubFinish {
     /// Still on GitHub: its Machine couldn't be reached to read the grant yet.
     Waiting,
-    /// Where the build is now: built, failed, or pending for the next Builder.
-    Ended(BuildStatus),
+    /// Where the build is now, built, failed, or pending for the next Builder, and whether
+    /// its run is owed a cancel.
+    Ended(GithubSettled),
 }
 
 /// End a GitHub build at Cloud's `look`: read its grant on the Machine that minted it,
@@ -795,14 +802,21 @@ pub enum GithubFinish {
 /// another Cluster fails the build with the connection's sentence, since waiting won't
 /// change it. One that doesn't answer reads as unreachable.
 ///
+/// Only for run `run_id`, the run the caller follows, and worker attempt `attempt`, which
+/// must own the Deployment: the Store checks both in the write that ends it. A run past
+/// its budget or its start limit is owed a cancel in that write.
+///
 /// # Errors
-/// Returns a storage error; the Store's `conflict` means the build already ended.
+/// Returns a storage error; the Store's `conflict` means the build already ended or
+/// another run holds it, and `newer` that another attempt owns the Deployment.
 pub async fn github_finish(
     store: Arc<ConfigStore>,
     id: GithubBuildId,
     look: GithubLook,
     connections: Vec<Connection>,
     expect: Option<ClusterExpectation>,
+    attempt: String,
+    run_id: u64,
 ) -> Result<GithubFinish, RpcError> {
     let build = match store_call(&store, {
         let id = id.clone();
@@ -811,12 +825,23 @@ pub async fn github_finish(
     .await?
     {
         GithubHandOff::Held(build) => *build,
-        GithubHandOff::PassedOn { .. } => return Ok(GithubFinish::Ended(BuildStatus::Pending)),
+        GithubHandOff::PassedOn { .. } => {
+            return Ok(GithubFinish::Ended(GithubSettled {
+                status: BuildStatus::Pending,
+                owed: false,
+            }));
+        }
     };
-    if build.status != BuildStatus::Building {
-        return Ok(GithubFinish::Ended(build.status));
+    if build.run.run_id != run_id {
+        return Err(RpcError::conflict("Another run holds this build"));
     }
-    let run_id = build.run.run_id;
+    if build.status != BuildStatus::Building {
+        return Ok(GithubFinish::Ended(GithubSettled {
+            status: build.status,
+            owed: false,
+        }));
+    }
+    let owe = matches!(look, GithubLook::Budget | GithubLook::StartLimit);
     let (end, waits) = match github_build::first(build.grant.as_ref(), look) {
         First::Unstarted(why) => (
             GithubEnd::Unstarted {
@@ -869,9 +894,16 @@ pub async fn github_finish(
             (end, false)
         }
     };
-    match settle(&store, id, run_id, end).await {
-        // It checked in meanwhile: the next look finds it started.
-        Err(error) if waits && error.code == RpcErrorCode::Conflict => Ok(GithubFinish::Waiting),
+    match settle(&store, id, run_id, end, attempt, owe).await {
+        // It checked in meanwhile: the next look finds it started. A newer attempt's
+        // refusal is not that: the caller no longer follows the build.
+        Err(error)
+            if waits
+                && error.code == RpcErrorCode::Conflict
+                && error.details.get("newer") != Some(&Value::Bool(true)) =>
+        {
+            Ok(GithubFinish::Waiting)
+        }
         finished => finished,
     }
 }
@@ -881,9 +913,11 @@ async fn settle(
     id: GithubBuildId,
     run_id: u64,
     end: GithubEnd,
+    attempt: String,
+    owe: bool,
 ) -> Result<GithubFinish, RpcError> {
     store_call(store, move |store| {
-        store.github_end(&id, Some(run_id), &end)
+        store.github_settle(&id, run_id, &end, &attempt, owe)
     })
     .await
     .map(GithubFinish::Ended)
@@ -948,30 +982,6 @@ fn grant_read(
             }
         }
     }
-}
-
-/// Stop Deployment `id`'s builds still on GitHub: fail each build. Returns them, for
-/// Cloud to cancel their runs. Their grants expire by themselves. Idempotent.
-///
-/// # Errors
-/// Returns a storage error.
-pub async fn github_cancel(
-    store: Arc<ConfigStore>,
-    deployment: ployz_store::DeploymentId,
-) -> Result<Vec<ployz_store::GithubBuild>, RpcError> {
-    let builds = store_call(&store, move |store| store.github_outstanding(&deployment)).await?;
-    for build in &builds {
-        let (id, run_id) = (build.id.clone(), build.run.run_id);
-        let end = GithubEnd::Failed {
-            message: github_build::CANCELLED.to_owned(),
-        };
-        // Another step may have ended it meanwhile.
-        let _ = store_call(&store, move |store| {
-            store.github_end(&id, Some(run_id), &end)
-        })
-        .await;
-    }
-    Ok(builds)
 }
 
 /// A session through one of `connections`, of `expect`'s Cluster when given.

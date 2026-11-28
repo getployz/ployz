@@ -8,17 +8,22 @@ mod proof;
 mod sources;
 
 pub use github::{
-    GithubBuild, GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff, GithubInput,
-    GithubReport, GithubRule, GithubRun, RunEnd,
+    GithubAsked, GithubBuild, GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff,
+    GithubInput, GithubOwed, GithubRecorded, GithubReport, GithubRule, GithubRun, GithubSettled,
+    RunEnd, UNRESERVED,
 };
 pub(crate) use github::{
-    github_authorize, github_build, github_by_run, github_check_in, github_dispatched, github_end,
-    github_input, github_outstanding, github_proven, github_report, github_rule,
+    end_github_builds, github_ask, github_authorize, github_begin, github_build, github_by_run,
+    github_cancel_confirmed, github_check_in, github_dispatched, github_input, github_outranked,
+    github_outstanding, github_owed, github_owed_by, github_pass_on, github_proven, github_report,
+    github_rule, github_run_end, github_settle, github_stop,
 };
 pub use proof::{ImageToken, VerifiedClaim};
 pub(crate) use proof::{image_tokens, keep_verified, verified, verified_proof};
 pub use sources::GitSource;
-pub(crate) use sources::{pin, pin_running, retried, routed, sources, uploads_of};
+pub(crate) use sources::{
+    pin, pin_admitted, pin_running, pinner, retried, routed, sources, uploads_of,
+};
 
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -317,6 +322,10 @@ struct BuildRow {
     /// What a Server issued for that image once it checked it online, or its source's
     /// for a redeploy.
     verified: Option<VerifiedClaim>,
+    /// The worker attempt that reserved or recorded its GitHub run.
+    attempt: Option<String>,
+    /// Pinned since Cloud reserves a build before asking GitHub for it.
+    reservable: bool,
 }
 
 /// Where a build is, with who holds it while it builds: a GitHub run or the Servers,
@@ -446,7 +455,8 @@ impl BuildRow {
 fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
     tx.query(
         "SELECT service, commit_sha, status, message, log, github, organization_id, \
-         started, finished, server, github_skipped, interrupted, receipt, image_token, verified \
+         started, finished, server, github_skipped, interrupted, receipt, image_token, verified, \
+         attempt, reservable \
          FROM config_build \
          WHERE deployment_id = ?1 ORDER BY service",
         &[id.as_str().into()],
@@ -471,6 +481,8 @@ fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
             receipt: row.optional_json(12, "build receipt")?,
             image_token: row.optional_json(13, "image token")?,
             verified: row.optional_json(14, "verified build")?,
+            attempt: row.optional_text(15)?.map(str::to_owned),
+            reservable: row.int(16)? != 0,
         })
     })
     .collect()

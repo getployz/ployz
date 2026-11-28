@@ -4,8 +4,8 @@ import type { ConfigCommand } from "@ployz/sdk";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { expect, vi } from "vitest";
-import { checkStoreGithubBuild } from "#/modules/config-store/store-github-builds.server";
-import { recordStoreDeploymentRun, type StoreServices } from "#/modules/config-store/store-deployment.server";
+import { cancelStoreGithubBuilds, checkStoreGithubBuild } from "#/modules/config-store/store-github-builds.server";
+import { failStoreDeploymentUnrun, recordStoreDeploymentRun, type StoreServices } from "#/modules/config-store/store-deployment.server";
 import type { EffectRunner } from "#/modules/inngest/run.server";
 import { disconnectGithub } from "#/modules/config-store/store-github-repositories.server";
 import { executeProcessGithubInstallationReceived } from "#/modules/github/inngest-sync/webhook";
@@ -60,10 +60,11 @@ for (const { stop, failed } of cases) {
       }));
       const write = (command: ConfigCommand) => Effect.promise(() => store.write(ORGANIZATION, command, acmeWeb()));
       yield* write({ command: "admit", admit: "deploy", id: DEPLOYMENT, environment: here, services: [], version: null, accept_volume_loss: [] });
-      yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: "c".repeat(40) }));
+      yield* Effect.promise(() => store.githubBegin(DEPLOYMENT, "cloud-walk-1"));
+      yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: "c".repeat(40) }, "cloud-walk-1"));
       yield* Effect.promise(() => store.githubDispatched(BUILD, {
         run_id: RUN, run_url: `https://github.com/acme/web/actions/runs/${RUN}`, workflow_ref: "acme/web/.github/workflows/ployz-build.yml@refs/heads/main",
-        repository: "acme/web", installation_id: 7,
+        repository: "acme/web", installation_id: 7, push: false, attempt: "cloud-walk-1",
       }));
       yield* provided(recordStoreDeploymentRun("walk-1", { organizationId: ORGANIZATION, environmentId: "00000000-0000-4000-8000-00000000c003", deploymentId: DEPLOYMENT }));
 
@@ -74,17 +75,18 @@ for (const { stop, failed } of cases) {
         yield* Effect.promise(() => executeProcessGithubInstallationReceived({ event: webhook(stop), step }, run, run));
       }
 
+      // Only the walk's stop cancels: it owes the run its cancel in the write that ends the build.
       const cancels = () => authority.calls.filter((call) => call.operation === "cancelBuild");
-      expect(cancels()).toEqual([CANCEL]);
+      expect(cancels()).toEqual([]);
       expect(sent.mock.calls).toEqual([[{ id: `stopped-${BUILD}`, name: githubBuildRunCompleted.name, data: { runId: RUN } }]]);
 
       const target = { build: BUILD, service: "web", repository: "acme/web", repositoryId: 42, installationId: 7, hasNext: true };
-      expect(yield* provided(checkStoreGithubBuild(ORGANIZATION, target, { ended: true, startLimit: false }))).toEqual({ failed });
+      expect(yield* provided(checkStoreGithubBuild(ORGANIZATION, target, { ended: true, startLimit: false }, "cloud-walk-1", RUN))).toEqual({ failed });
+      // The walk fails the Deployment with why, and its stop then ends the build GitHub held.
+      yield* provided(failStoreDeploymentUnrun(ORGANIZATION, "00000000-0000-4000-8000-00000000c003", DEPLOYMENT, "walk-1", failed));
+      yield* provided(cancelStoreGithubBuilds(DEPLOYMENT, "cloud-walk-1"));
       expect(yield* Effect.promise(() => store.githubBuild(BUILD))).toMatchObject({ held: { status: "failed" } });
-      expect(cancels()).toEqual([CANCEL, CANCEL]);
-      expect(github.calls.map((call) => call.access)).toEqual([
-        { type: "installation", installationId: 7 },
-        { type: "installation", installationId: 7 },
-      ]);
+      expect(cancels()).toEqual([CANCEL]);
+      expect(github.calls.map((call) => call.access)).toEqual([{ type: "installation", installationId: 7 }]);
     }), 60_000);
 }
