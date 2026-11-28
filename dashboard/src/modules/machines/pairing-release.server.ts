@@ -26,31 +26,15 @@ export const decrypt = Effect.fn("PairingRelease.decrypt")(function* (
 });
 
 /**
- * Serializes the writers that create an Organization's enrollments or tokens, or delete its enrollment state: Enroll,
- * a legacy claim, Fleet Token creation, Forget Servers, a pairing removal, a dead-claim release and Organization
- * removal. The pairing row can't do it, since it doesn't exist before the first server founds. Taken first in its
- * transaction; Organization removal alone then locks the Organization row, the row a claim locks without this lock. The
- * order after that is the pairing row, then `fleet_token`, `waiting_server` and `server_enrollment` rows (each in id
- * order), then enrollment tokens, then `operation_outbox` cancel events (in attempt id order). Cancel, Reject and the
- * run and sweep closers only end attempts; they skip this lock and start at `server_enrollment`, Reject after its
- * `waiting_server` rows. Fleet Token revoke and probe selection skip it too.
- * Revoke locks its token, then that token's `waiting_server` rows, and probe selection locks only `waiting_server` rows. A
- * check-in holds at most one `waiting_server` row, after its token, and stamps a probe handout on that same row. A cancel
- * event's outbox row stays locked until commit, so no path inserts one before it holds that attempt. A reset that ends a
- * founding claim expires the claim's tokens after its founder attempt's cancel event; that row is new, so nothing waits on it.
+ * Serializes the writers that create an Organization's enrollments, or delete its enrollment state: a claim, Forget
+ * Servers, a pairing removal, a dead-claim release and Organization removal. The pairing row can't do it, since it
+ * doesn't exist before the first server founds. Taken first in its transaction; Organization removal alone then locks
+ * the Organization row, the row a legacy claim locks without this lock. The order after that is the pairing row, then
+ * enrollment tokens.
  */
 export const lockOrganizationEnrollment = Effect.fn("PairingRelease.lockOrganizationEnrollment")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
   yield* drizzle.execute(sql`select pg_advisory_xact_lock(${ADVISORY_LOCK.organizationEnrollment}, hashtext(${organizationId}))`);
-});
-
-/**
- * The shared side of {@link lockOrganizationEnrollment}, for arrival enrolls. They add joiners to a founded
- * Organization, so they only need every writer above kept out, not each other; their token's row lock counts them.
- */
-export const shareOrganizationEnrollment = Effect.fn("PairingRelease.shareOrganizationEnrollment")(function* (organizationId: string) {
-  const { drizzle } = yield* Database;
-  yield* drizzle.execute(sql`select pg_advisory_xact_lock_shared(${ADVISORY_LOCK.organizationEnrollment}, hashtext(${organizationId}))`);
 });
 
 /** The witnessed pairing, locked for this transaction; null when it's gone, or no longer `generation`. */

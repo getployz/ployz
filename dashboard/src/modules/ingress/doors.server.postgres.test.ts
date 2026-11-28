@@ -148,17 +148,15 @@ it("opens both doors, flips to Cloudflare, closes the public door, and ends fini
   expect(await attempts()).toMatchObject([{ state: "finished", want: "tunnel", stage: "closing", failure: null }]);
 });
 
-/** The first Server joined on an instruction founding the Cluster with every Door closed, as Cloudflare's first-run card asks for. */
+/** The first Server founded with a line minted for Cloudflare's first-run card, so with every Door closed. */
 const foundedClosed = () => harness.pool.query(`
-  with fleet as (
-    insert into fleet_token (organization_id, name, token_hash, expires_at, founds_closed, created_by_user_id)
-    values ($1, 'fleet', 'hash', now() + interval '1 day', true, $2) returning id
-  ), waiting as (
-    insert into waiting_server (organization_id, fleet_token_id, checkin_key, report, observed_ip)
-    select $1, id, 'key', '{}'::jsonb, '203.0.113.9' from fleet returning id, fleet_token_id
+  with person as (select $2::uuid as id), token as (
+    insert into machine_enrollment_token (organization_id, created_by_user_id, token_hash, expires_at, ingress_closed)
+    select $1, id, repeat('c', 64), now() + interval '1 day', true from person returning token_hash
   )
-  insert into server_enrollment (organization_id, waiting_server_id, fleet_token_id, role, instruction, enroll_token_id, state)
-  select $1, id, fleet_token_id, 'founder', '{"ingressClosed": true}'::jsonb, gen_random_uuid(), 'joined' from waiting
+  insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_public_key, founder_claim_machine_id, founder_claim_token_hash)
+  select $1, '{}'::jsonb, 'founder-key', repeat('f', 32), token_hash from token
+  on conflict (organization_id) do update set founder_claim_token_hash = excluded.founder_claim_token_hash
 `, [ORG, ADA]);
 const CLOSED_FRAME = { ...EMPTY_FRAME, machines: [server("m1", "up")] };
 
@@ -448,7 +446,7 @@ describe("a Cluster's declared Door set", () => {
     session = answering((held) => held, Effect.succeed(PARTIAL_FRAME));
     enrollment = Effect.fail(new Error("Server didn't answer"));
     expect(await founding()).toEqual({ kind: "unknown" });
-    await harness.pool.query("truncate table server_enrollment cascade");
+    await harness.pool.query("update machine_enrollment_token set ingress_closed = false");
     enrollment = Effect.fail(new Error("Server didn't answer"));
     expect(await founding()).toEqual({ kind: "open" });
   });

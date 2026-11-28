@@ -3,7 +3,7 @@ import { Link } from "@tanstack/react-router";
 import { CopyButton } from "#/components/copy-button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { installLines, type InstallTarget } from "#/modules/machines/installer";
-import { installKeyQueryOptions } from "#/modules/machines/waiting/passkey-join.queries";
+import { installKeyQueryOptions } from "#/modules/machines/add-server/passkey-join.queries";
 import type { InstallKey } from "#/modules/passkeys/passkeys.server";
 
 export function CopyBlock({ value }: { value: string }) {
@@ -62,7 +62,7 @@ export function KeyedInstall({ organizationSlug, target, installKey }: { organiz
         </TabsList>
         <TabsContent value="shell" className="flex flex-col gap-2">
           <CopyBlock value={lines.shell} />
-          <p className="text-sm text-muted-foreground">Paste this Fleet Token when it asks. It doesn't show what you paste.</p>
+          <p className="text-sm text-muted-foreground">Paste this token when it asks. It doesn't show what you paste.</p>
           <CopyBlock value={target.token} />
         </TabsContent>
         <TabsContent value="cloud-init"><CopyBlock value={lines.cloudInit} /></TabsContent>

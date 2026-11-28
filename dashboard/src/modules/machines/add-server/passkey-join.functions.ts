@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { Schema } from "effect";
-import { approvePasskeyJoin, pendingPasskeyJoins } from "#/modules/machines/waiting/passkey-join.server";
+import { approvePasskeyJoin, pendingPasskeyJoins } from "#/modules/machines/add-server/passkey-join.server";
 import { authenticated, runActor, strictValidator } from "#/server/tanstack";
 
 const OrganizationSlug = Schema.String.check(Schema.isTrimmed(), Schema.isNonEmpty());

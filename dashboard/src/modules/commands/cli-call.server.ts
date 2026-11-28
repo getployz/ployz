@@ -46,7 +46,7 @@ export const refusedMissing = (missing: NotFound) => Effect.succeed(missingRefus
 
 /**
  * The refusal for a credential that isn't a signed-in person's, or null for one that is. A token can't make or revoke
- * tokens or Fleet Tokens (see `requireSignedIn`): refused before its request is read, so no field of it is blamed.
+ * tokens (see `requireSignedIn`): refused before its request is read, so no field of it is blamed.
  */
 export const personOnly = (caller: Caller, message: string) =>
   caller.credential.kind === "session"

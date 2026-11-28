@@ -21,7 +21,7 @@ import { deploymentDestination } from "#/modules/config-store/deployments/run-se
 import { ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 import { EnvironmentChangesReview } from "./EnvironmentChangesReview";
 import type { Busy } from "#/modules/config-store/store-pending";
-import { AddServersDialog } from "#/modules/machines/waiting/ui/add-servers-dialog";
+import { AddServerDialog } from "#/modules/machines/add-server/add-server-dialog";
 import type { DeployChoice } from "./useStoreChangeActions";
 import { CanvasKeepOut } from "#/modules/canvas/routed-edges";
 
@@ -230,7 +230,7 @@ export function BottomBar({
       <Button ref={triggerRef} variant="outline" aria-expanded={open} onClick={openReview}>Details</Button>
       {/* Deploying behind a running or queued attempt queues. */}
       {noServers ? (
-        <AddServersDialog organizationSlug={params.organizationSlug} label="Add servers" variant="intent" firstServer />
+        <AddServerDialog organizationSlug={params.organizationSlug} label="Add server" variant="intent" firstServer />
       ) : <Tooltip>
         <TooltipTrigger render={<Button variant="intent" disabled={savesOnly ? !saveable : !deployable || admitting} aria-keyshortcuts="Shift+Enter"
           onClick={(event) => { if (!savesOnly && !event.altKey) deploy(); else if (saveable) save(); }} />}>

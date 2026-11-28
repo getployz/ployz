@@ -1,33 +1,37 @@
 import { expect, it } from "vitest";
 import { installLines } from "./installer";
 
-const TOKEN = "pflt_example";
-const hosted = { cloudOrigin: "https://ployz.dev", ployzVersion: "1.2.3-beta.4", token: TOKEN };
+const TOKEN = "pmet_example";
+const hosted = { cloudOrigin: "https://ployz.dev", ployzVersion: "1.2.3-beta.4", token: TOKEN, ingressClosed: false };
 
 it("keeps the token off the Shell line, which asks for it, and puts it once in the cloud-init tab", () => {
   const lines = installLines(hosted, null);
   expect(lines.shell).not.toContain(TOKEN);
-  expect(lines.shell).toMatch(/ --enroll$/);
   expect(lines.cloudInit.split(TOKEN)).toHaveLength(2);
 });
 
-it("sets PLOYZ_CLOUD_URL only for a self-hosted Cloud", () => {
-  expect(installLines(hosted, null).shell).not.toContain("PLOYZ_CLOUD_URL");
-  expect(installLines({ ...hosted, cloudOrigin: "http://localhost:3000" }, null).shell).toBe("curl -fsSL https://ployz.sh | sudo PLOYZ_CLOUD_URL='http://localhost:3000' sh -s -- 1.2.3-beta.4 --enroll");
+it("prints the line ployz server add --command prints, so one Server joins and waits for its own approval", () => {
+  expect(installLines(hosted, "pk1_eyJraW5kIjoicGFzc2tleSJ9").shell).toBe(
+    "curl -fsSL https://ployz.sh | sh -s -- 1.2.3-beta.4 && sudo --preserve-env=PLOYZ_ENROLL_TOKEN ployz server add --key pk1_eyJraW5kIjoicGFzc2tleSJ9",
+  );
+});
+
+it("names a self-hosted Cloud on the line, and only then", () => {
+  expect(installLines(hosted, null).shell).not.toContain("--cloud-url");
+  expect(installLines({ ...hosted, cloudOrigin: "http://localhost:3000" }, null).shell).toContain(" ployz server add --cloud-url 'http://localhost:3000'");
 });
 
 it("pins the Cloud's own release in every tab, since the stable channel may not speak to this Cloud", () => {
-  for (const line of Object.values(installLines(hosted, null))) expect(line).toContain(" -- 1.2.3-beta.4");
+  for (const line of Object.values(installLines(hosted, null))) expect(line).toContain(" -- 1.2.3-beta.4 ");
 });
 
-it("keeps the token out of sudo's argv, where ps would show it", () => {
-  for (const cloudOrigin of [hosted.cloudOrigin, "http://localhost:3000"]) {
-    expect(installLines({ ...hosted, cloudOrigin }, null).shell).not.toContain(TOKEN);
+it("hands the passkey's key to ployz server add from both tabs, so a cloud-init Server trusts it too", () => {
+  for (const line of Object.values(installLines(hosted, "pk1_eyJraW5kIjoicGFzc2tleSJ9"))) {
+    expect(line).toMatch(/ ployz server add --key pk1_eyJraW5kIjoicGFzc2tleSJ9$/);
   }
 });
 
-it("hands the passkey's key to the installer from both tabs, so a cloud-init Server trusts it too", () => {
-  const lines = installLines(hosted, "pk1_eyJraW5kIjoicGFzc2tleSJ9");
-  expect(lines.shell).toMatch(/ --enroll --key pk1_eyJraW5kIjoicGFzc2tleSJ9$/);
-  expect(lines.cloudInit).toMatch(/ sh -s -- 1\.2\.3-beta\.4 --key pk1_eyJraW5kIjoicGFzc2tleSJ9$/);
+it("founds closed only when Cloudflare Tunnel was chosen", () => {
+  expect(installLines({ ...hosted, ingressClosed: true }, null).shell).toMatch(/ --ingress-closed$/);
+  expect(installLines(hosted, null).shell).not.toContain("--ingress-closed");
 });

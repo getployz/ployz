@@ -106,7 +106,7 @@ the call serves, and a call without one is refused with the line to send. The CL
 to Ployz with the tool or command name and how long the call took. Arguments, results and secrets
 never do. Give the reason in general terms and refer to people by role, not by name. You and your
 scripts need no `--why`; only a run that Ployz recognizes as a coding agent's is asked for one.
-`--version`, `--help`, `ployz completion`, `ployz server checkin` and `ployz mcp` itself need
+`--version`, `--help`, `ployz completion` and `ployz mcp` itself need
 none either. An agent that
 could not do something with the tools it has can say so with the `send_feedback` tool; the Ployz
 team reads it.
@@ -152,9 +152,8 @@ Some things are not tools. Run these yourself in a terminal:
 
 - `login`, `ctx use` and other commands that act on this computer.
 - `server add`, which installs Ployz over SSH or on this computer.
-- `server enroll`, which enrolls servers waiting in Cloud by name or glob.
 - `exec`, `service port-forward`, `logs --follow` and `up`.
-- Branches, tokens and Fleet Tokens (`server token`).
+- Branches and tokens.
 - Secrets and registry credentials. `ployz set web.env.KEY --secret` seals a secret on this
   computer, and `ployz set web.registryCredential --secret --username octo` seals an image's
   token and its username for its registry. It takes the registry from the image the same command sets, or from
@@ -441,8 +440,8 @@ before it does anything, naming the flag, so a placeholder is never sent as a va
 
 An error never repeats a word you typed that doesn't read as what its place takes, since it may
 be a secret typed in the wrong place. A value an option refuses shows as `<VALUE>`, and a word no
-command takes as `<WORD>`, unless it is a command or a flag. A context name or a `server reject`
-pattern shows as typed when it reads as one, else as `<CONTEXT>` or `<PATTERN>`. An error that
+command takes as `<WORD>`, unless it is a command or a flag. A context name shows as typed
+when it reads as one, else as `<CONTEXT>`. An error that
 names a Cloud or a connection shows its scheme, host and port, and marks what it leaves out:
 `<USER>` or `<USER>:<PASSWORD>`, then `/<PATH>`, `?<QUERY>` and `#<FRAGMENT>`, as in
 `https://<USER>@cloud.example/<PATH>`. When SSH to a server fails, Ployz says why in its own words,
@@ -492,13 +491,7 @@ sign-in or token also waits while Cloud sets up your access on each server.
 `ployz status` fails with exit code 1 if the Ployz config exists but cannot be read or parsed.
 The error names the file and keeps the underlying error as its cause. A missing config is allowed.
 
-`ployz status` works signed out too. It shows what it can and says `signed in as no one`. On a
-server waiting for approval, it leads with a **this server** line: `Installing Docker`,
-`Building ZFS`, `Waiting for approval`, `No cluster yet`, `Blocked`, `Rejected`, `Token expired`, `Token revoked`,
-`Can't reach Cloud`, `Clock is off` or `Needs a newer ployz`. Then it says when the server last checked in and lists anything that blocks
-it as `blocked` lines. With `--json` this is the `this_server` object. After `ployz server rm`
-resets a server that joined from a Fleet Token, its **this server** line says `Not in a Cluster`
-and `this_server` adds `"left": true`.
+`ployz status` works signed out too. It shows what it can and says `signed in as no one`.
 
 Run on a server whose daemon is running, with `sudo`, `ployz status` also shows a **wireguard key** line.
 It is the server's WireGuard key fingerprint. With
@@ -567,12 +560,6 @@ See
 A `read` or `deploy` token without server access doesn't show these lines yet. To check this, `ployz status`
 reaches your servers the way `ployz ps` does, so it takes the same `--context` and
 `--ssh-timeout` options.
-
-`ployz server enroll 'host-*' --name 'web-{n}'` prints Cloud's enrollment plan and asks before
-starting. Add `--yes` to accept it without a prompt, including with `--json`. `--status` follows
-the stages. Run `ployz server enroll --status` to resume following after Ctrl-C. See
-[Servers waiting to join](../servers/manage-servers.md#servers-waiting-to-join) for storage and
-selection flags.
 
 Human output names things: Servers by name and Deployments as `#3`. It shows a short Container
 ID only where two rows would otherwise read the same. `--json` keeps every ID.

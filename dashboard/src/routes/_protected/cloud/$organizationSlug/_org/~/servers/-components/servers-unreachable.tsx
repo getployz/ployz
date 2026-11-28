@@ -4,7 +4,7 @@ import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "#/components/ui/empty";
 import { SSH_UPGRADE } from "#/modules/machines/installer";
-import { CopyBlock } from "#/modules/machines/waiting/ui/copy-block";
+import { CopyBlock } from "#/modules/machines/add-server/copy-block";
 import type { UnreachableReason } from "#/modules/runtime/runtime.collection";
 import { ForgetServersDialog, useForgetServersGate } from "../../../-components/forget-servers-dialog";
 

@@ -5,7 +5,7 @@ import { toErrorMessage } from "#/lib/error-message";
 import { SERVERS_UNANSWERED_START } from "#/lib/refusal";
 import { setUpCloudflareServerFn } from "#/modules/ingress/doors.functions";
 import { clusterIngressKeys } from "#/modules/ingress/doors.queries";
-import { serverEnrollmentsQueryOptions } from "#/modules/machines/waiting/waiting.queries";
+import { clusterFoundedQueryOptions } from "#/modules/machines/enrollment.queries";
 
 /**
  * A Cloudflare choice made before the Cluster exists. The token lives in this tab's memory only, since Cloud keeps no
@@ -84,7 +84,7 @@ export async function runFirstSetup(organizationSlug: string, queryClient: Query
 export function useRunHeldCloudflareOnFounding(organizationSlug: string) {
   const queryClient = useQueryClient();
   const waiting = useHeldCloudflare(organizationSlug)?.kind === "waiting";
-  const founded = useQuery({ ...serverEnrollmentsQueryOptions(organizationSlug), enabled: waiting }).data?.founded === true;
+  const founded = useQuery({ ...clusterFoundedQueryOptions(organizationSlug), enabled: waiting }).data?.founded === true;
   useEffect(() => {
     if (waiting && founded) void runFirstSetup(organizationSlug, queryClient);
   }, [waiting, founded, organizationSlug, queryClient]);

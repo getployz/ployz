@@ -3,7 +3,6 @@ import { and, eq, inArray } from "drizzle-orm";
 import { Effect } from "effect";
 import { deleteEnrollmentTokens } from "#/modules/machines/pairing-removal.server";
 import { machineEnrollmentToken, machineRemoveAttempt, serverAccess } from "#/modules/machines/tables";
-import { fleetToken, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { Database } from "#/server/database.server";
 
 /**
@@ -23,22 +22,12 @@ export const reassignUserMachines = Effect.fn("Machines.reassignUserMachines")(f
     .where(inArray(machineRemoveAttempt.requestedByUserId, fromUserIds));
   yield* drizzle.update(machineEnrollmentToken).set({ createdByUserId: toUserId })
     .where(inArray(machineEnrollmentToken.createdByUserId, fromUserIds));
-  yield* drizzle.update(fleetToken).set({ createdByUserId: toUserId })
-    .where(inArray(fleetToken.createdByUserId, fromUserIds));
-  yield* drizzle.update(serverEnrollment).set({ requestedByUserId: toUserId })
-    .where(inArray(serverEnrollment.requestedByUserId, fromUserIds));
 });
 
 /**
  * An Organization's enrollment rows, in the row removal's transaction after `lockOrganizationEnrollment` and the
- * Organization's own row: locks the fleet tokens and waiting Servers that check-in and Reject lock, in that order and by
- * id, then ends open attempts, with their runs' cancel events, before it deletes the enrollment tokens.
+ * Organization's own row.
  */
 export const removeOrganizationMachines = Effect.fn("Machines.removeOrganizationMachines")(function* (organizationId: string) {
-  const { drizzle } = yield* Database;
-  yield* drizzle.select({ id: fleetToken.id }).from(fleetToken)
-    .where(eq(fleetToken.organizationId, organizationId)).orderBy(fleetToken.id).for("update");
-  yield* drizzle.select({ id: waitingServer.id }).from(waitingServer)
-    .where(eq(waitingServer.organizationId, organizationId)).orderBy(waitingServer.id).for("update");
   yield* deleteEnrollmentTokens(organizationId);
 });

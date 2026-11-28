@@ -17,7 +17,6 @@ import { claimOrganization, finishClaimSignIn, readClaim } from "#/modules/sandb
 import { organizationToken, session, user, verification } from "#/modules/identity/tables";
 import { member, organization } from "#/modules/organization/tables";
 import { machineEnrollmentToken, machineRemoveAttempt, organizationMachine, serverAccess } from "#/modules/machines/tables";
-import { fleetToken } from "#/modules/machines/waiting/tables";
 import { ensurePersonalOrganizationForUser } from "#/modules/organization/organization-state.server";
 import { AuthLive } from "#/modules/identity/auth.server";
 import { AppConfig } from "#/server/config.server";
@@ -211,11 +210,11 @@ it.live("a repeat claim deletes nothing, even once the person's own Organization
     const agent = yield* sandbox();
     const ada = yield* claimSignUp("Ada", "ada@example.test", agent.secret);
     const { drizzle } = yield* Database;
-    yield* drizzle.insert(fleetToken).values({
-      organizationId: ada.personalOrganizationId, name: "fleet", tokenHash: "c".repeat(64), expiresAt: new Date(Date.now() + DAY_MS), createdByUserId: ada.actor.userId,
+    yield* drizzle.insert(machineEnrollmentToken).values({
+      organizationId: ada.personalOrganizationId, tokenHash: "c".repeat(64), expiresAt: new Date(Date.now() + DAY_MS), createdByUserId: ada.actor.userId,
     });
     yield* claimOrganization(ada.actor, agent.secret);
-    yield* drizzle.delete(fleetToken).where(eq(fleetToken.organizationId, ada.personalOrganizationId));
+    yield* drizzle.delete(machineEnrollmentToken).where(eq(machineEnrollmentToken.organizationId, ada.personalOrganizationId));
     yield* claimOrganization(ada.actor, agent.secret);
     expect(yield* organizationIds()).toEqual([agent.organization.id, ada.personalOrganizationId].sort());
   })));
@@ -261,7 +260,6 @@ it.live("every row the agent made now names the person, so deleting the anonymou
     const ada = yield* person("Ada", "ada@example.test");
     const { drizzle } = yield* Database;
     const expiresAt = new Date(Date.now() + DAY_MS);
-    yield* drizzle.insert(fleetToken).values({ organizationId: agent.organization.id, name: "fleet", tokenHash: "a".repeat(64), expiresAt, createdByUserId: agent.userId });
     yield* drizzle.insert(machineEnrollmentToken).values({ organizationId: agent.organization.id, tokenHash: "b".repeat(64), expiresAt, createdByUserId: agent.userId });
     yield* drizzle.insert(machineRemoveAttempt).values({
       organizationId: agent.organization.id, requestedByUserId: agent.userId, machineId: machineId("0"), confirmDataLoss: [],
@@ -274,22 +272,11 @@ it.live("every row the agent made now names the person, so deleting the anonymou
     yield* drizzle.insert(serverAccess).values({
       organizationId: agent.organization.id, machineId: machineId("0"), credentialId: crypto.randomUUID(), credentialKind: "token", userId: agent.userId, revokedAt: new Date(),
     });
-    const [fleet] = yield* drizzle.select({ id: fleetToken.id }).from(fleetToken);
-    yield* drizzle.execute(sql`
-      with waiting as (
-        insert into waiting_server (organization_id, fleet_token_id, checkin_key, report, observed_ip)
-        values (${agent.organization.id}, ${fleet?.id}, 'key', '{}', '192.0.2.1') returning id
-      )
-      insert into server_enrollment (organization_id, waiting_server_id, fleet_token_id, role, instruction, enroll_token_id, state, requested_by_user_id)
-      select ${agent.organization.id}, waiting.id, ${fleet?.id}, 'founder', '{}', ${crypto.randomUUID()}, 'requested', ${agent.userId} from waiting`);
-
     yield* claimOrganization(ada.actor, agent.secret);
 
-    expect(yield* drizzle.select({ by: fleetToken.createdByUserId }).from(fleetToken)).toEqual([{ by: ada.actor.userId }]);
     expect(yield* drizzle.select({ by: machineEnrollmentToken.createdByUserId }).from(machineEnrollmentToken)).toEqual([{ by: ada.actor.userId }]);
     expect(yield* drizzle.select({ by: machineRemoveAttempt.requestedByUserId }).from(machineRemoveAttempt)).toEqual([{ by: ada.actor.userId }]);
     expect(yield* drizzle.select({ by: serverAccess.userId }).from(serverAccess)).toEqual([{ by: ada.actor.userId }]);
-    expect(yield* drizzle.execute<{ by: string }>(sql`select requested_by_user_id as by from server_enrollment`, "objects")).toEqual([{ by: ada.actor.userId }]);
   })));
 
 it.live("a claim leaves alone an Organization the person made outside the sign-in the claim page started", () =>

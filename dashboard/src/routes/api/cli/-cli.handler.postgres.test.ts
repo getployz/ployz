@@ -2,7 +2,6 @@ import { testConfigEnvironment } from "#/test/config-environment";
 import { assert, it } from "@effect/vitest";
 import { vi } from "vitest";
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
 import type { Client, DockerVolumeName, MachineId, MachineName, RuntimeWatchView } from "@ployz/sdk";
 import { and, eq, sql } from "drizzle-orm";
 import { Cause, ConfigProvider, Effect, Exit, Fiber, Layer, Schema } from "effect";
@@ -37,7 +36,6 @@ import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { syncOrganizationSlug } from "#/modules/organization/organization-state.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { organizationPairing } from "#/modules/runtime/tables";
-import { fleetToken, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { volumeRun } from "#/modules/volume-run/tables";
 import { deviceRequest } from "#/modules/devices/tables";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -244,11 +242,6 @@ const Reply = Schema.Struct({
   tokens: Schema.optionalKey(Schema.Array(Schema.Struct({
     id: Schema.String, kind: Schema.String, current: Schema.Boolean, expired: Schema.Boolean,
   }))),
-  fleet_token: Schema.optionalKey(Schema.Struct({ id: Schema.String, name: Schema.String, token: Schema.String, expires_at: Schema.String })),
-  fleet_tokens: Schema.optionalKey(Schema.Array(Schema.Struct({
-    id: Schema.String, name: Schema.String, expired: Schema.Boolean, auto_enroll_max: Schema.NullOr(Schema.Number),
-  }))),
-  waiting_removed: Schema.optionalKey(Schema.Number),
   devices: Schema.optionalKey(Schema.Array(Schema.Struct({ id: Schema.String, current: Schema.Boolean }))),
   removed: Schema.optionalKey(Schema.Union([Schema.Boolean, Named])),
   connections: Schema.optionalKey(Schema.Array(Schema.Struct({ machine_id: Schema.String, management: Schema.String }))),
@@ -471,99 +464,7 @@ it.live(
 );
 
 it.live(
-  "POST fleet-tokens discloses a pflt_ token once and stores only its hash",
-  () =>
-    Effect.gen(function* () {
-      const layer = yield* cliLayer();
-      yield* Effect.gen(function* () {
-        const database = yield* Database;
-        const alice = yield* signUp("alice");
-
-        assert.strictEqual((yield* cli("POST", "fleet-tokens", alice, { expires_in: "2d" })).status, 422);
-        assert.strictEqual((yield* cli("POST", "fleet-tokens", alice, { name: "Bad Name", expires_in: "1d" })).status, 422);
-        assert.strictEqual((yield* cli("POST", "fleet-tokens", alice,
-          { name: "00000000-0000-4000-8000-000000000001", expires_in: "1d" })).status, 422);
-
-        const made = yield* cli("POST", "fleet-tokens", alice, { expires_in: "7d" });
-        assert.strictEqual(made.status, 200);
-        const created = made.json.fleet_token ?? assert.fail("no fleet token");
-        assert.match(created.token, /^pflt_[\w-]{43}$/);
-        assert.match(created.name, /^[a-z]+-[a-z]+$/);
-
-        const rows = yield* database.drizzle.select().from(fleetToken);
-        assert.deepStrictEqual(rows.map((row) => [row.name, row.tokenHash]), [
-          [created.name, createHash("sha256").update(created.token).digest("hex")],
-        ]);
-        assert.notInclude(JSON.stringify(rows), created.token);
-
-        const named = yield* cli("POST", "fleet-tokens", alice, { name: "rack-1", expires_in: "1d", auto_enroll_max: 3 });
-        assert.strictEqual(named.json.fleet_token?.name, "rack-1");
-        assert.strictEqual((yield* cli("POST", "fleet-tokens", alice, { name: "rack-1", expires_in: "1d" })).status, 409);
-      }).pipe(Effect.provide(layer));
-    }),
-  60_000,
-);
-
-it.live(
-  "GET fleet-tokens lists the Organization's unrevoked tokens without their secrets",
-  () =>
-    Effect.gen(function* () {
-      const layer = yield* cliLayer();
-      yield* Effect.gen(function* () {
-        const database = yield* Database;
-        const alice = yield* signUp("alice");
-        const bob = yield* signUp("bob");
-        const first = (yield* cli("POST", "fleet-tokens", alice, { name: "rack-1", expires_in: "1d" })).json.fleet_token
-          ?? assert.fail("no fleet token");
-        yield* cli("POST", "fleet-tokens", alice, { name: "rack-2", expires_in: "30d", auto_enroll_max: 5 });
-        yield* database.drizzle.update(fleetToken)
-          .set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(fleetToken.id, first.id));
-
-        const listed = yield* cli("GET", "fleet-tokens", alice);
-        assert.notInclude(listed.text, first.token);
-        assert.deepStrictEqual(
-          listed.json.fleet_tokens?.map((row) => [row.name, row.expired, row.auto_enroll_max]),
-          [["rack-1", true, null], ["rack-2", false, 5]],
-        );
-        assert.deepStrictEqual((yield* cli("GET", "fleet-tokens", bob)).json.fleet_tokens, []);
-      }).pipe(Effect.provide(layer));
-    }),
-  60_000,
-);
-
-it.live(
-  "DELETE fleet-tokens revokes by id or name, frees the name, and refuses another Organization's token",
-  () =>
-    Effect.gen(function* () {
-      const layer = yield* cliLayer();
-      yield* Effect.gen(function* () {
-        const database = yield* Database;
-        const alice = yield* signUp("alice");
-        const bob = yield* signUp("bob");
-        const made = (yield* cli("POST", "fleet-tokens", alice, { name: "rack-1", expires_in: "1d" })).json.fleet_token
-          ?? assert.fail("no fleet token");
-
-        assert.strictEqual((yield* cli("DELETE", `fleet-tokens/${made.id}`, bob)).status, 404);
-        assert.strictEqual((yield* cli("DELETE", "fleet-tokens/rack-1", bob)).status, 404);
-        const [untouched] = yield* database.drizzle.select().from(fleetToken).where(eq(fleetToken.id, made.id));
-        assert.isNull(untouched?.revokedAt);
-
-        const revoked = yield* cli("DELETE", "fleet-tokens/rack-1", alice);
-        assert.strictEqual(revoked.status, 200);
-        assert.strictEqual(revoked.json.waiting_removed, 0);
-        assert.deepStrictEqual((yield* cli("GET", "fleet-tokens", alice)).json.fleet_tokens, []);
-        assert.strictEqual((yield* cli("DELETE", `fleet-tokens/${made.id}`, alice)).status, 200);
-        assert.strictEqual((yield* cli("DELETE", "fleet-tokens/rack-1", alice)).status, 404);
-
-        const reused = yield* cli("POST", "fleet-tokens", alice, { name: "rack-1", expires_in: "1d" });
-        assert.strictEqual(reused.json.fleet_token?.name, "rack-1");
-      }).pipe(Effect.provide(layer));
-    }),
-  60_000,
-);
-
-it.live(
-  "an Organization Token can't make or revoke tokens or Fleet Tokens, so none outlives the token that made it",
+  "an Organization Token can't make or revoke tokens, so none outlives the token that made it",
   () =>
     Effect.gen(function* () {
       const layer = yield* cliLayer();
@@ -588,20 +489,6 @@ it.live(
         assert.strictEqual((yield* cli("DELETE", `tokens/${device.id}`, asToken)).status, 403);
         assert.strictEqual((yield* cli("GET", "tokens", asToken)).status, 200);
         assert.strictEqual((yield* cli("GET", "tokens", alice)).status, 200);
-
-        const fleet = (yield* cli("POST", "fleet-tokens", alice, { name: "rack-1", expires_in: "1d" })).json.fleet_token ?? assert.fail("no fleet token");
-        for (const body of [{ expires_in: "30d" }, { expires_in: "2d" }]) {
-          const made = yield* cli("POST", "fleet-tokens", asToken, body);
-          assert.strictEqual(made.status, 403);
-          assert.deepStrictEqual(JSON.parse(made.text), {
-            error: { code: "forbidden", message: "Only a signed-in person can make Fleet Tokens. No changes made.", details: { next: "ployz login" } },
-          });
-        }
-        const revoked = yield* cli("DELETE", `fleet-tokens/${fleet.id}`, asToken);
-        assert.strictEqual(revoked.status, 403);
-        assert.deepStrictEqual(JSON.parse(revoked.text).error.details, { next: "ployz login" });
-        assert.deepStrictEqual((yield* database.drizzle.select().from(fleetToken)).map((row) => [row.name, row.revokedAt]), [["rack-1", null]]);
-        assert.strictEqual((yield* cli("GET", "fleet-tokens", asToken)).status, 200);
 
         // A cookie, which any page can make the browser send, signs no CLI request in.
         const forged = new Request(`${origin}/api/cli/tokens`, {
@@ -2824,118 +2711,6 @@ it.live(
         const malformed = yield* cli("POST", "namespaces/left-behind/clean", { ...alice, key: "short" });
         assert.deepStrictEqual([malformed.status, malformed.json.error?.code], [422, "invalid_argument"]);
         assert.lengthOf(sent.mock.calls, 1);
-      }).pipe(Effect.provide(layer));
-    }),
-  60_000,
-);
-
-it.live(
-  "POST enrollments/plan answers what POST enrollments then starts, writes nothing, and plans only the caller's own servers",
-  () =>
-    Effect.gen(function* () {
-      const layer = yield* cliLayer();
-      yield* Effect.gen(function* () {
-        const database = yield* Database;
-        const alice = yield* signUp("alice");
-        const bob = yield* signUp("bob");
-        const fleet = (yield* cli("POST", "fleet-tokens", alice, { name: "rack-1", expires_in: "1d" })).json.fleet_token
-          ?? assert.fail("no fleet token");
-        const report = {
-          hostname: "web", os: { id: "ubuntu", version: "24.04" }, kernel: "6.8.0", arch: "x86_64", virt: "kvm", cpuCount: 4,
-          memoryTotalBytes: 8_589_934_592, disks: [], docker: { kind: "absent" as const }, cgroup: "v2" as const,
-          zfs: { kind: "eligible" as const, targets: [{ kind: "main_disk" as const }] }, blockers: [], warnings: [], cliVersion: "0.3.0",
-        };
-        const hosts = yield* database.drizzle.insert(waitingServer).values(["web-a", "web-b", "web-c"].map((hostname, index) => ({
-          organizationId: alice.organization.id,
-          fleetTokenId: fleet.id,
-          checkinKey: String(index).repeat(64),
-          report: { ...report, hostname },
-          observedIp: "203.0.113.7",
-        }))).returning({ id: waitingServer.id, hostname: sql<string>`${waitingServer.report}->>'hostname'` });
-        const byName = new Map(hosts.map((row) => [row.hostname, row.id]));
-        const [a, b, c] = [byName.get("web-a"), byName.get("web-b"), byName.get("web-c")];
-        const body = {
-          ids: [a, b, c].map((id) => id ?? assert.fail("no host")),
-          first: b ?? assert.fail("no host"),
-          storage: { kind: "zfs", use_spare_disk: false, fallback_to_docker: false },
-          names: { kind: "pattern", pattern: "node-{n}" },
-          runs: { services: true, ingress: true, builds: false },
-        };
-
-        const planned = yield* cli("POST", "enrollments/plan", alice, body);
-        assert.strictEqual(planned.status, 200);
-        assert.deepStrictEqual(JSON.parse(planned.text), {
-          plan: [
-            { waiting_server_id: b, hostname: "web-b", role: "founder", name: "node-1", storage: { kind: "zfs" } },
-            { waiting_server_id: a, hostname: "web-a", role: "joiner", name: "node-2", storage: { kind: "zfs" } },
-            { waiting_server_id: c, hostname: "web-c", role: "joiner", name: "node-3", storage: { kind: "zfs" } },
-          ],
-          skipped: [],
-          spread: { providers: 1, networks: 1 },
-        });
-        assert.deepStrictEqual(yield* database.drizzle.select().from(serverEnrollment), []);
-
-        const outsider = yield* cli("POST", "enrollments/plan", bob, body);
-        assert.strictEqual(outsider.status, 422);
-        assert.notInclude(outsider.text, "web-b");
-        assert.strictEqual((yield* cli("POST", "enrollments/other", alice, body)).status, 404);
-
-        const started = yield* cli("POST", "enrollments", alice, body);
-        const plan = JSON.parse(planned.text) as { plan: Array<{ waiting_server_id: string; role: string; name: string }> };
-        const attempts = (JSON.parse(started.text) as { enrollments: Array<{ id: string; waiting_server_id: string; role: string; name: string }> }).enrollments;
-        assert.deepStrictEqual(
-          attempts.map((row) => [row.waiting_server_id, row.role, row.name]),
-          plan.plan.map((row) => [row.waiting_server_id, row.role, row.name]),
-        );
-        const listed = JSON.parse((yield* cli("GET", "enrollments", alice)).text) as { enrollments: Array<{ ahead: number | null }> };
-        assert.deepStrictEqual(listed.enrollments.map((row) => row.ahead), [null, null, null]);
-        const one = JSON.parse((yield* cli("GET", `enrollments/${attempts[0]?.id}`, alice)).text) as { enrollment: { ahead: number | null } };
-        assert.strictEqual(one.enrollment.ahead, null);
-      }).pipe(Effect.provide(layer));
-    }),
-  60_000,
-);
-
-const WAITING_FIXTURE = new URL("../../../../../core/crates/ployz/tests/fixtures/waiting-servers.json", import.meta.url);
-
-it.live(
-  "GET waiting-servers and GET waiting-servers/:id answer the core fixture ployz parses, so a changed reply cannot ship with a stale fixture",
-  () =>
-    Effect.gen(function* () {
-      const layer = yield* cliLayer();
-      yield* Effect.gen(function* () {
-        const database = yield* Database;
-        const alice = yield* signUp("alice");
-        const fleet = (yield* cli("POST", "fleet-tokens", alice, { name: "amber-falcon", expires_in: "1d" })).json.fleet_token
-          ?? assert.fail("no fleet token");
-        const id = "6b0f3c1e-0000-4000-8000-000000000001";
-        yield* database.drizzle.insert(waitingServer).values({
-          id,
-          organizationId: alice.organization.id,
-          fleetTokenId: fleet.id,
-          checkinKey: "0".repeat(64),
-          report: {
-            hostname: "web-1", publicIp: "198.51.100.4", provider: "hetzner", os: { id: "ubuntu", version: "24.04" }, kernel: "6.8.0",
-            arch: "x86_64", virt: "kvm", cpuCount: 4, memoryTotalBytes: 8_000_000_000,
-            disks: [
-              { path: "/dev/sda", sizeBytes: 40_000_000_000, role: "root", availableBytes: 30_000_000_000 },
-              { path: "/dev/sdb", byId: "/dev/disk/by-id/scsi-0HC_Volume_1", sizeBytes: 100_000_000_000, role: "empty" },
-            ],
-            docker: { kind: "present", version: "27.3.1", api: "1.47", compatible: true }, cgroup: "v2",
-            zfs: { kind: "eligible", targets: [{ kind: "main_disk" }, { kind: "disk", byId: "/dev/disk/by-id/scsi-0HC_Volume_1" }], buildMinutes: 6 },
-            blockers: [{ code: "ports", message: "Port 443 is in use." }], warnings: [{ code: "swap", message: "Swap is on." }],
-            prep: { docker: "ready", zfs: "off" }, cliVersion: "0.3.0",
-          },
-          observedIp: "203.0.113.9",
-          firstSeenAt: new Date("2026-10-16T00:00:00.000Z"),
-          lastCheckInAt: new Date("2026-10-16T00:05:00.000Z"),
-        });
-        const list = JSON.parse((yield* cli("GET", "waiting-servers", alice)).text) as unknown;
-        const detail = JSON.parse((yield* cli("GET", `waiting-servers/${id}`, alice)).text) as unknown;
-        const served = { list, detail };
-        if (process.env["PLOYZ_WRITE_WAITING_FIXTURE"] === "1") writeFileSync(WAITING_FIXTURE, `${JSON.stringify(served, null, 2)}\n`);
-        const fixture: unknown = JSON.parse(readFileSync(WAITING_FIXTURE, "utf8"));
-        assert.deepStrictEqual(served, fixture, "core's waiting-servers.json is stale: run `pnpm waiting:fixture` in dashboard/ and commit it");
       }).pipe(Effect.provide(layer));
     }),
   60_000,
