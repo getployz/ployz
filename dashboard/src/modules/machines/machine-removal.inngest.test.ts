@@ -116,7 +116,7 @@ describe("machine remove Inngest boundary", () => {
         { id: "claim-machine-remove", handler: () => ({ kind: "ready", attempt: { id: attemptId } }) },
         { id: "observe-leaving-server", handler: () => ({ machine: { id: "machine-1", name: "two" }, writes: ["data"] }) },
         { id: "remove-machine", handler: () => ({ kind: "superseded" }) },
-        ...["forget-machine", "release-volume-lanes", "release-server", "complete-succeeded", "complete-refused"].map((id) => ({ id, handler: touched })),
+        ...["release-volume-lanes", "release-server", "complete-succeeded", "complete-refused"].map((id) => ({ id, handler: touched })),
       ],
     }).execute();
 
@@ -125,18 +125,17 @@ describe("machine remove Inngest boundary", () => {
     expect(output.ctx.step.sendEvent).not.toHaveBeenCalled();
   });
 
-  it("finishes a Server that reset before its Forget with Forget alone, then releases it", async () => {
+  it("releases the Server its removal forgot, retrying release without forgetting it again", async () => {
     const attemptId = "00000000-0000-4000-8000-000000000a03";
-    const forgot = vi.fn(() => ({ kind: "removed", resetWarning: "Docker reset failed", generation: "1" }));
-    const released = vi.fn(() => ({ kind: "kept", reason: "its reset didn't finish" }));
+    const removed = vi.fn(() => ({ kind: "removed", last: false, generation: "1" }));
+    const released = vi.fn(() => ({ kind: "others_remain" }));
     const output = await new InngestTestEngine({
       function: createProcessMachineRemove(new Inngest({ id: "test" })),
       events: [{ name: "machine/remove.requested", data: { attemptId } }],
       steps: [
-        { id: "claim-machine-remove", handler: () => ({ kind: "ready", attempt: { id: attemptId, organizationId: "org-1", machineId: "machine-1", noReset: false } }) },
+        { id: "claim-machine-remove", handler: () => ({ kind: "ready", attempt: { id: attemptId, organizationId: "org-1", machineId: "machine-1" } }) },
         { id: "observe-leaving-server", handler: () => ({ machine: { id: "machine-1", name: "two" }, writes: ["data"] }) },
-        { id: "remove-machine", handler: () => ({ kind: "left", resetWarning: "Docker reset failed", generation: "1" }) },
-        { id: "forget-machine", handler: forgot },
+        { id: "remove-machine", handler: removed },
         { id: "release-volume-lanes", handler: () => [] },
         { id: "release-server", handler: released },
         { id: "complete-succeeded", handler: () => undefined },
@@ -145,7 +144,7 @@ describe("machine remove Inngest boundary", () => {
     }).execute();
 
     expect(output.result).toEqual({ attemptId, status: "succeeded" });
-    expect(forgot).toHaveBeenCalled();
+    expect(removed).toHaveBeenCalledTimes(1);
     expect(released).toHaveBeenCalled();
   });
 });

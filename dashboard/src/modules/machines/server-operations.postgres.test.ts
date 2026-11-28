@@ -16,7 +16,8 @@ import { nameLostVolumes, planRemove } from "./server-operations.server";
 const ORGANIZATION = "00000000-0000-4000-8000-00000000f001";
 const fra1 = "f".repeat(32) as MachineId;
 
-const cluster = Layer.succeed(OrganizationRuntime, {
+/** A Cluster of fra-1 alone, holding Docker volume `docker`. */
+const clusterHolding = (docker: string) => Layer.succeed(OrganizationRuntime, {
   cancel: () => Effect.void,
   open: () => Effect.succeed({
     status: "connected" as const,
@@ -24,6 +25,7 @@ const cluster = Layer.succeed(OrganizationRuntime, {
       watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
         machines: [{ machine: { id: fra1, name: "fra-1" } }],
         services: [],
+        volumes: [{ id: { machine_id: fra1, name: docker }, storage: { kind: "plain", driver: "local" } }],
       })),
     }),
   }),
@@ -50,7 +52,7 @@ it.live("a Server removal's ask names each Volume it deletes as Ployz names it, 
   const docker = dockerVolumeName(namespace, volumes[0]?.id ?? "");
 
   const plan = yield* planRemove(ORGANIZATION, fra1, [{ kind: "docker_volume", id: { machine_id: fra1, name: docker } }])
-    .pipe(Effect.provide(cluster), Effect.provide(services));
+    .pipe(Effect.provide(clusterHolding(docker)), Effect.provide(services));
 
   expect(plan?.name).toBe("fra-1");
   expect(plan?.effects).toEqual([
@@ -114,7 +116,7 @@ it.live("a Server removal refuses, naming the Environment the Store can't read a
   }).pipe(Effect.orDie, Effect.provide(services));
 
   const refused = yield* planRemove(ORGANIZATION, fra1, [{ kind: "docker_volume", id: { machine_id: fra1, name: docker } }])
-    .pipe(Effect.provide(cluster), Effect.provide(services), Effect.flip);
+    .pipe(Effect.provide(clusterHolding(docker)), Effect.provide(services), Effect.flip);
 
   expect(refused).toMatchObject({ _tag: "Conflict", userFacing: true, message: expect.stringContaining("can't read shop/production") });
 }), 60_000);

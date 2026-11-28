@@ -9,7 +9,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "#/component
 import { TraceLine } from "#/components/ui/trace";
 import { useMinute } from "#/hooks/use-minute";
 import { cn } from "#/lib/utils";
-import { approvalSubject, type ApprovalDecision, type ApprovalReview, destroyedLine, droppedLine, losesVolumeAccess, asksForAuthKey, prunes, renamedAddresses, shownServiceAct, switchedAddresses } from "#/modules/approvals/approvals";
+import { approvalSubject, type ApprovalDecision, type ApprovalReview, destroyedLine, droppedLine, asksForAuthKey, prunes, renamedAddresses, shownServiceAct, switchedAddresses } from "#/modules/approvals/approvals";
 import { Input } from "#/components/ui/input";
 import { authKeyProblem } from "#/modules/private-access/private-access";
 import { KeyNotApproved, sealAndApprove } from "#/modules/private-access/approved-key";
@@ -165,9 +165,9 @@ export function ReviewDestroys({ command, review }: { command: string; review: A
   const now = useMinute() ?? new Date();
   if (review.effects.length === 0 && !prunes(review)) return null;
   return (
-    <DestroysList label={losesVolumeAccess(review) ? "Effects" : "Destroys"}>
+    <DestroysList label="Destroys">
       {review.effects.map((effect) => {
-        const line = destroyedLine(effect, command, review);
+        const line = destroyedLine(effect, command);
         return (
           <DestroyedItem key={`${effect.kind}:${effect.path}`}>
             {line.verb}{line.name !== null && <> <b>{line.name}</b></>}{line.after}

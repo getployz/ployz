@@ -16,10 +16,9 @@
 //! survives the departure. A slot with no snapshot holds only a resumable receive that
 //! never completed, so it holds no point and a demote destroys it.
 //!
-//! A seal is a departure that keeps every mirror: a Machine fencing itself after the
-//! Cluster forgot it (#2927), or installing afresh (#3591), cannot tell whether a copy
-//! elsewhere still holds what its mirror holds, so it seals its roots and leaves every
-//! mirror where it is.
+//! A seal is a departure that keeps every mirror: a Machine installing afresh or
+//! enrolling again (#3591) cannot tell whether a copy elsewhere still holds what its
+//! mirror holds, so it seals its roots and leaves every mirror where it is.
 
 use std::collections::BTreeSet;
 

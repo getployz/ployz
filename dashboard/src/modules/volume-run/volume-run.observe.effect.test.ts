@@ -315,8 +315,8 @@ it.effect("database reads between a plan's Cluster reads are never interrupted a
   }),
 );
 
-/** One Server that never answers its inspect, whose last report in the frame holds `slotRole`'s slot of pg-data. */
-const lastReported = (slotRole: "mirror" | "old_copy") => makeOrganizationRuntimeLayer(
+/** One Server that never answers its inspect, whose last report in the frame holds pg-data as `role`. */
+const lastReported = (role: "writer" | "switching" | "slot") => makeOrganizationRuntimeLayer(
   () => Effect.succeed({ kind: "ready", generation: "current", connections }),
   noPairingChanges,
 ).pipe(
@@ -329,7 +329,7 @@ const lastReported = (slotRole: "mirror" | "old_copy") => makeOrganizationRuntim
           yield runtimeWatchFrameFixture({
             machines: [runtimeWatchMachineObservationFixture({ machine })],
             volumes: [runtimeWatchVolumeFixture(machine.id, "pg-data", {
-              storage: { kind: "provisioned", mountpoint: "/p", bound_bytes: 1, used_bytes: 0, role: "slot", slot_role: slotRole },
+              storage: { kind: "provisioned", mountpoint: "/p", bound_bytes: 1, used_bytes: 0, role, slot_role: "mirror" },
             })],
           });
         },
@@ -339,12 +339,14 @@ const lastReported = (slotRole: "mirror" | "old_copy") => makeOrganizationRuntim
   Layer.merge(Layer.succeed(Database, undefined as never)),
 );
 
-it.effect("a silent Server whose last report held a mirror is a member that didn't answer and last held a mirror", () =>
+it.effect("a silent Server whose last report held the primary's root is a member that didn't answer and last held it", () =>
   Effect.gen(function* () {
     const ref = { id: machine.id, name: machine.name };
-    assert.deepStrictEqual(yield* observeVolumeMembers("org-1", "pg-data").pipe(Effect.provide(lastReported("mirror"))),
-      [{ machine: ref, answered: false, lastMirror: true }]);
-    assert.deepStrictEqual(yield* observeVolumeMembers("org-1", "pg-data").pipe(Effect.provide(lastReported("old_copy"))),
+    for (const role of ["writer", "switching"] as const) {
+      assert.deepStrictEqual(yield* observeVolumeMembers("org-1", "pg-data").pipe(Effect.provide(lastReported(role))),
+        [{ machine: ref, answered: false, lastRoot: true }]);
+    }
+    assert.deepStrictEqual(yield* observeVolumeMembers("org-1", "pg-data").pipe(Effect.provide(lastReported("slot"))),
       [{ machine: ref, answered: false }]);
   }),
 );

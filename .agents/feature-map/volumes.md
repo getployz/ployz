@@ -83,13 +83,13 @@ Data that outlives containers: Managed Volumes on each Server's ZFS pool (and pl
 - **Compat:** Cloud→Server: a Server too old to shrink is named
 - **Docs:** services/volumes.md#choose-the-storage-limit
 
-### VOL-10 Turn a Volume's shared writes off
+### VOL-10 Share a Volume between writers
 - **Surface:** CLI
-- **Reach:** `ployz volume set uploads --shared-writes=false`; deploy a Volume that still has it on; redeploy a version saved with it on. Also: dashboard Settings → **Space** → **Allow shared writes**.
-- **Proof:** it applies at once (`volume inspect` `shared writes no`); the deploy with it on is refused naming the Volume; with 2 replicas mounting it the switch-off is refused until the Service is at 1; the old version's redeploy is refused even after
+- **Reach:** `ployz volume set uploads --shared-writes`, `ployz set web.replicas=2`, deploy; turn it off with `--shared-writes=false`. Also: dashboard Settings → **Space** → **Allow shared writes**.
+- **Proof:** it applies at once in the Store (`volume inspect` `shared writes yes`); the deploy runs both replicas on the Volume's Server, each Container labelled `ployz.shared-writes`; the switch-off is refused while 2 replicas mount it, in Working State or deployed, until a Deploy at 1 replica; the deploy after it replaces the Container without the label; once off and deployed, a second Container on the Volume is refused on the Server
 - **Needs:** 1 Machine · Volumes: Managed (ZFS) · Cloud: no (Standalone)
 - **Drive:** verify-server
-- **Compat:** none
+- **Compat:** Cloud→Server: a Server from before this release refuses every Container of a Volume with shared writes on (signed spec mismatch)
 - **Docs:** services/volumes.md#share-a-volume
 
 ### VOL-11 One container writes to a Managed Volume

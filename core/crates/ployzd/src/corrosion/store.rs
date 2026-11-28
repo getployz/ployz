@@ -19,9 +19,8 @@ use ipnet::Ipv4Net;
 use ployz_core::{
     CERTIFICATE_POLICY_CLUSTER_KEY, CertificateHost, ClusterName, ClusterRoute, ContainerId,
     ContainerKind, ContainerObservation, DockerVolume, DockerVolumeId, DockerVolumeName,
-    ForgottenAnswer, IngressDoors, IngressHost, IssuanceClock, KeptNames, Machine, MachineId,
-    ManagementIdentity, QualifiedService, RecoverySeed, SIGNED_SERVICE_KEY_PREFIX,
-    SealingPublicKey, signed_service_key,
+    IngressDoors, IngressHost, IssuanceClock, KeptNames, Machine, MachineId, QualifiedService,
+    RecoverySeed, SIGNED_SERVICE_KEY_PREFIX, SealingPublicKey, signed_service_key,
 };
 use serde_json::json;
 
@@ -492,34 +491,6 @@ impl ReplicatedStore {
     #[cfg(test)]
     pub(crate) async fn receive_forget(&self, machine_id: &MachineId) -> Result<(), Error> {
         self.api.execute(forget_statements(machine_id)).await
-    }
-
-    /// What this Machine knows about `identity`: Listed when a Machine row carries
-    /// it or the id its tombstone names is listed again, Forgotten when only the
-    /// tombstone remains, NoAnswer when nothing mentions it.
-    pub async fn forgotten(&self, identity: ManagementIdentity) -> Result<ForgottenAnswer, Error> {
-        let key = Tombstone::Identity(identity).key();
-        let query = self
-            .api
-            .query(Statement::new(
-                "SELECT (SELECT value FROM cluster WHERE key = ?) AS forgotten_id, \
-                 EXISTS (SELECT 1 FROM machines \
-                         WHERE json_extract(info, '$.runtime.management_identity') = ? \
-                         OR id = (SELECT value FROM cluster WHERE key = ?)) AS listed",
-                [json!(key), json!(identity.to_hex()), json!(key)],
-            ))
-            .await?;
-        let rows = query.rows(["forgotten_id", "listed"])?;
-        let Some([forgotten_id, listed]) = rows.first() else {
-            return Ok(ForgottenAnswer::NoAnswer);
-        };
-        Ok(if listed.as_i64() == Some(1) {
-            ForgottenAnswer::Listed
-        } else if forgotten_id.is_null() {
-            ForgottenAnswer::NoAnswer
-        } else {
-            ForgottenAnswer::Forgotten
-        })
     }
 
     pub(crate) async fn machine_publication(&self) -> MachinePublicationGuard<'_> {

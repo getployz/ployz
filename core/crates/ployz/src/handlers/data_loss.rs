@@ -8,12 +8,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ui::{self, Tree};
 
-#[derive(Clone, Copy)]
-pub(super) enum VolumeEffect {
-    Preserve,
-    LoseAccess,
-}
-
 /// The Volume name each Docker Volume keeps a Volume's data for, by Docker name.
 pub(super) type VolumeLabels = BTreeMap<String, String>;
 
@@ -38,7 +32,7 @@ impl<'a> Typed<'a> {
         }
     }
 
-    /// Confirmed by `dead`: a Server that does not answer, forgotten without a reset.
+    /// Confirmed by `dead`: a Server that does not answer.
     pub(super) fn dead(server: &'a str) -> Self {
         Self {
             server,
@@ -51,17 +45,12 @@ impl<'a> Typed<'a> {
 /// word and every lost Volume named by `--accept-volume-loss` accepts outright;
 /// without `--confirm` a terminal shows the loss and asks for the word, which
 /// accepts them all. Anywhere else, `refusal` gets the full retry.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "a managed removal runs through Cloud while its retry keeps the client's connection"
-)]
 pub(super) fn confirm_removal(
     root: &ArgMatches,
     client: &Client,
     removed_through: &ConnectionSource,
     observed: &ObservedDataLoss,
     typed: Typed<'_>,
-    volume_effect: VolumeEffect,
     labels: &VolumeLabels,
     refusal: impl FnOnce(Rerun) -> Error,
 ) -> Result<(DataLossConfirmation, Rerun), Error> {
@@ -76,10 +65,7 @@ pub(super) fn confirm_removal(
         typed: leaf.get_one::<String>("confirm").map(String::as_str),
         retry: retry_args(root, client.connection_source()),
     };
-    if matches!(volume_effect, VolumeEffect::LoseAccess)
-        && observed.data_loss.is_empty()
-        && !request.named.is_empty()
-    {
+    if observed.data_loss.is_empty() && !request.named.is_empty() {
         return Err(Error::usage(format!(
             "Server {server} has no Volumes requiring loss acceptance; drop --accept-volume-loss. No changes made."
         )));
@@ -87,13 +73,7 @@ pub(super) fn confirm_removal(
     if !request.check()? {
         let retry = request.accepting();
         if ui::can_prompt() {
-            ui::note_inline(loss(
-                observed,
-                labels,
-                server,
-                removed_through,
-                volume_effect,
-            ));
+            ui::note_inline(loss(observed, labels, server, removed_through));
         }
         ui::confirm_name(word, || refusal(retry), "Cancelled. Nothing was removed.")?;
     }
@@ -115,7 +95,6 @@ fn loss(
     labels: &VolumeLabels,
     server: &str,
     source: &ConnectionSource,
-    volume_effect: VolumeEffect,
 ) -> String {
     let context = match source {
         ConnectionSource::Context(name) => format!("context {name}"),
@@ -123,35 +102,27 @@ fn loss(
         ConnectionSource::LocalSocket => "the local socket".into(),
         ConnectionSource::Cloud => "Ployz Cloud".into(),
     };
-    let volumes = match volume_effect {
-        VolumeEffect::Preserve => Tree::leaf("Volumes are kept."),
-        VolumeEffect::LoseAccess if observed.data_loss.is_empty() => {
-            Tree::leaf("No Volumes are lost.")
-        }
-        VolumeEffect::LoseAccess => Tree::new(
-            "Volumes the Cluster loses; only the Server's disk keeps their data:",
+    let volumes = if observed.data_loss.is_empty() {
+        Tree::leaf("No Volumes are lost.")
+    } else {
+        Tree::new(
+            "Volumes only this Server holds, lost with it:",
             observed
                 .data_loss
                 .iter()
                 .map(|loss| Tree::leaf(volume_label(labels, loss)))
                 .collect(),
-        ),
+        )
     };
     let tree = Tree::new(
-        format!(
-            "{} Server {server} through {context}:",
-            match volume_effect {
-                VolumeEffect::Preserve => "Forgetting",
-                VolumeEffect::LoseAccess => "Removing",
-            }
-        ),
+        format!("Removing Server {server} through {context}:"),
         vec![volumes],
     );
-    match (volume_effect, source) {
-        (VolumeEffect::Preserve, _) | (VolumeEffect::LoseAccess, ConnectionSource::Cloud) => {
-            tree.to_string()
+    match source {
+        ConnectionSource::Cloud => tree.to_string(),
+        ConnectionSource::Direct | ConnectionSource::Context(_) | ConnectionSource::LocalSocket => {
+            format!("{tree}{CAVEAT}\n")
         }
-        (VolumeEffect::LoseAccess, _) => format!("{tree}{CAVEAT}\n"),
     }
 }
 
@@ -306,57 +277,35 @@ mod tests {
     }
 
     #[test]
-    fn the_loss_names_volumes_without_promising_their_data_is_safe() {
+    fn the_loss_names_the_volumes_only_this_server_holds() {
         let observed = ObservedDataLoss {
             data_loss: vec![loss('a', "shop-production_vol-1")],
         };
         let labels = VolumeLabels::from([("shop-production_vol-1".into(), "pgdata".into())]);
-        let lost = loss_text(&observed, &labels, VolumeEffect::LoseAccess);
+        let lost = loss_text(&observed, &labels);
         assert!(
             lost.contains("Removing Server worker through context prod:"),
             "{lost}"
         );
         assert!(
-            lost.contains("only the Server's disk keeps their data"),
+            lost.contains("Volumes only this Server holds, lost with it:"),
             "{lost}"
         );
         assert!(lost.contains("└─ pgdata\n"), "{lost}");
         assert!(!lost.contains(&"a".repeat(32)), "ids are machinery: {lost}");
-        assert!(!lost.contains("not be erased"), "{lost}");
         assert!(lost.ends_with(&format!("{CAVEAT}\n")), "{lost}");
-        let kept = loss_text(&observed, &labels, VolumeEffect::Preserve);
-        assert!(
-            kept.contains("Forgetting Server worker through context prod:"),
-            "{kept}"
-        );
-        assert!(kept.contains("Volumes are kept."), "{kept}");
-        assert!(!kept.contains("pgdata"), "{kept}");
-        assert!(
-            !kept.contains(CAVEAT),
-            "nothing lost, nothing to qualify: {kept}"
-        );
     }
 
-    fn loss_text(
-        observed: &ObservedDataLoss,
-        labels: &VolumeLabels,
-        effect: VolumeEffect,
-    ) -> String {
-        loss_through(
-            observed,
-            labels,
-            effect,
-            &ConnectionSource::Context("prod".into()),
-        )
+    fn loss_text(observed: &ObservedDataLoss, labels: &VolumeLabels) -> String {
+        loss_through(observed, labels, &ConnectionSource::Context("prod".into()))
     }
 
     fn loss_through(
         observed: &ObservedDataLoss,
         labels: &VolumeLabels,
-        effect: VolumeEffect,
         through: &ConnectionSource,
     ) -> String {
-        let shown = super::loss(observed, labels, "worker", through, effect);
+        let shown = super::loss(observed, labels, "worker", through);
         anstream::adapter::strip_str(&shown).to_string()
     }
 
@@ -365,12 +314,7 @@ mod tests {
         let observed = ObservedDataLoss {
             data_loss: Vec::new(),
         };
-        let lost = loss_through(
-            &observed,
-            &VolumeLabels::new(),
-            VolumeEffect::LoseAccess,
-            &ConnectionSource::Cloud,
-        );
+        let lost = loss_through(&observed, &VolumeLabels::new(), &ConnectionSource::Cloud);
         assert!(
             lost.starts_with("Removing Server worker through Ployz Cloud:"),
             "{lost}"
@@ -496,7 +440,7 @@ mod tests {
                 .check()
                 .unwrap()
         );
-        let text = loss_text(&observed, &labels, VolumeEffect::LoseAccess);
+        let text = loss_text(&observed, &labels);
         assert!(text.contains("No Volumes are lost."), "{text}");
     }
 

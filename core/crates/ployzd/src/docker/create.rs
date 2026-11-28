@@ -170,6 +170,11 @@ pub(super) fn container_create_body(
     if let Some(origins) = origins {
         labels.insert(labels::VOLUME_ORIGINS.into(), origins);
     }
+    labels.remove(labels::SHARED_WRITES);
+    let shared = super::holder::shared(spec);
+    if !shared.is_empty() {
+        labels.insert(labels::SHARED_WRITES.into(), shared.join(","));
+    }
     let mounts = docker_mounts(spec.volume_graph())?;
     let interface_addresses = if hook.is_none()
         && spec.ports.iter().any(|port| {

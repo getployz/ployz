@@ -48,8 +48,8 @@
 //!   every run that observes it waits and fails. Cloud may forget it while it is away
 //!   (`ployz server forget`); a `ployz volume restore` from the one copy Cloud still
 //!   sees (`restoreVolume`) then promotes that copy. The forgotten Machine keeps
-//!   writing its copy when it comes back, until it departs (`forgotten_fence.rs`,
-//!   `volume_plugin/departure.rs`), which snapshots its root and parks it in a slot;
+//!   writing its copy when it comes back, until it is added back and departs
+//!   (`volume_plugin/departure.rs`), which snapshots its root and parks it in a slot;
 //! - that Machine joining again with its parked copy, and a `volume mirror` onto it
 //!   (`mirrorVolume`'s round: snapshot the restored Writer, pull it). No Writer holds the
 //!   departure's snapshot, so the pull's incremental finds no base, and `pull_stream`
@@ -1410,7 +1410,7 @@ enum Action {
     Back(Machine),
     /// `ployz server forget` of a Machine that is away.
     Forget(Machine),
-    /// A forgotten Machine learns it and leaves.
+    /// A forgotten Machine is added back, and its enroll seals its roots as it leaves.
     Depart(Machine),
     /// A departed Machine joins the Cluster again, its parked copy still in its slot.
     Rejoin(Machine),
