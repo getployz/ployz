@@ -19,9 +19,10 @@ import { type RoleGate, useRoleGate } from "#/modules/organization/members.queri
 import { requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import {
-  cardLine, COPY_WORDS, HEARD_WORDS, isStale, LAST_REPORTED, LIVE_WORDS, type LiveState, type MirrorCopy, type OldCopy, STAGED_WORDS, type StagedCopy,
-  nothingElsewhere, unheardReason, type VolumeCopies, type VolumeCopy,
+  cardLine, COPY_WORDS, elsewhereLine, HEARD_WORDS, LIVE_WORDS, type LiveState, type MirrorCopy, type OldCopy, STAGED_WORDS, type StagedCopy,
+  type VolumeCopies, type VolumeCopy,
 } from "#/modules/volume-copies/volume-copies";
+import { holderUnknown } from "#/modules/volume-copies/volume-copies.placement";
 import { useRefreshMirror } from "#/modules/volume-copies/mirror-sync/mirror-sync.hooks";
 import { useVolumeCopiesOf } from "#/modules/volume-copies/volume-copies.hooks";
 import { MIRROR_ROUND_MINUTES, mirrorLast, skippedWords } from "#/modules/volume-copies/mirror-sync/mirror-sync.words";
@@ -128,6 +129,13 @@ export function VolumeCopiesPanel(props: CopiesPanelProps) {
   const target = targetPlacement(observePlacement(members), row);
   const seed = seedOffer(volume, members, props.restorable, floorless);
   const needs = props.upgrade.length ? <p className="text-sm text-muted-foreground">Upgrade {props.upgrade.join(", ")} to a newer Ployz</p> : null;
+  const unknown = row?.staged?.seed === undefined ? holderUnknown(volume, members) : null;
+  if (unknown !== null) {
+    return <div className="flex flex-col gap-4">
+      {alert}
+      <Empty variant="placeholder"><EmptyDescription>{unknown}</EmptyDescription></Empty>
+    </div>;
+  }
   if (copies === null || target === null) {
     if (recovered?.kind !== "restore") return <Empty variant="placeholder"><EmptyDescription>No server reports a copy.</EmptyDescription></Empty>;
     return <div className="flex flex-col gap-4">
@@ -234,14 +242,13 @@ function CopiesView({ volume, members, row, rows, owed, copies, target, servers,
       </Item> : null}
     </Group>
     <Group label="Elsewhere">
-      {copies.elsewhere.length === 0
-        ? <p className="text-sm text-muted-foreground">{nothingElsewhere(copies)}</p>
-        : copies.elsewhere.map((copy) => <CopyRow key={copy.id} copy={copy} now={now} locked={locked} blocked={blocked}
+      {copies.elsewhere.map((copy) => <CopyRow key={copy.id} copy={copy} now={now} locked={locked} blocked={blocked}
           onOpen={() => { if (copy.kind === "mirror") onOpen(copy.server.id); }} onDelete={copy.kind === "old"
             ? () => setDeleting({ old: copy, shown: shownCopy(members.find((member) => member.machine.id === copy.server.id)) })
             : null}
           restore={copy.kind === "old" ? restoreOffer(volume, members, rows, copy.server.id, disabled || deploying, restore) : null} seeds={seeds}
           seedRefused={seedRefused} />)}
+      {elsewhereLine(copies) === null ? null : <p className="text-sm text-muted-foreground">{elsewhereLine(copies)}</p>}
     </Group>
     {canAdd ? <Button variant="outline" className="border-dashed" disabled={locked} onClick={() => setAdding(true)}>
       <PlusIcon data-icon="inline-start" />Add copy
@@ -303,14 +310,12 @@ function CopyRow({ copy, now, locked, blocked, onOpen, onDelete, restore = null,
   seedRefused?: string | null;
 }) {
   const line = cardLine(copy, now);
-  const unheard = unheardReason(copy);
   const title = copy.server.name;
   const description = line.spin ? <Busy words={line.words} />
     : copy.staged === "new" ? `${COPY_WORDS[copy.kind]} · on deploy`
     : <>
-      {[line.words, copy.kind === "mirror" && !copy.lastReported ? "15 min" : null].filter(Boolean).join(" · ")}
+      {[line.words, copy.kind === "mirror" ? "15 min" : null].filter(Boolean).join(" · ")}
       {line.age ? <> · <span className={cn(line.stale && "text-warning")}>{line.stale ? <TriangleAlertIcon className="mr-1 inline size-3.5" /> : null}{copy.kind === "old" && copy.since ? lossMoment(copy.since, now) : line.age}</span></> : null}
-      {unheard ? ` · ${unheard}` : null}
     </>;
   const badge = copy.staged ? <Badge variant={STAGED_STATE[copy.staged]}>{STAGED_WORDS[copy.staged]}</Badge> : null;
   const content = <>
@@ -331,7 +336,7 @@ function CopyRow({ copy, now, locked, blocked, onOpen, onDelete, restore = null,
   const state = copy.staged ? STAGED_STATE[copy.staged] : undefined;
   if (copy.kind === "mirror") {
     return <div role="listitem" data-staged={copy.staged ?? undefined}>
-      <Item variant="outline" size="sm" state={state} render={<button type="button" aria-label={`${copy.lastReported ? `${LAST_REPORTED} mirror` : COPY_WORDS.mirror} on ${title}`} onClick={onOpen} />}
+      <Item variant="outline" size="sm" state={state} render={<button type="button" aria-label={`${COPY_WORDS.mirror} on ${title}`} onClick={onOpen} />}
         className="cursor-pointer text-left hover:bg-muted">
         {content}
       </Item>
@@ -398,13 +403,10 @@ function CopyView({ volume, members, row, rows, copy, upgrade, seeds, seedRefuse
   const target = targetPlacement(observed, row);
   const applied = appliedMirrors(observed, row);
   // A staged mirror is Details' to discard, and a Deploy running the placement holds it. A mirror the target holds as its
-  // primary, while Live names another Server, has no edit of its own, nor does one known only from its last report,
-  // which no placement holds.
-  const offered = !blocked && copy.staged === null && !copy.lastReported && !deploying && target?.primary !== copy.server.id ? target : null;
+  // primary has no edit of its own.
+  const offered = !blocked && copy.staged === null && !deploying && target?.primary !== copy.server.id ? target : null;
   const remove = offered === null ? null : editPlacement(offered, { kind: "remove_mirror", server: copy.server.id });
   const locked = disabled || deploying;
-  // Refresh skipped needs a refresh to have been skipped: a mirror with no recorded refresh only says why.
-  const skippedBadge = isStale(copy, now) && copy.refreshedAt !== null;
   const shown = refreshing && copy.busy === null ? { ...copy, busy: "Refreshing" } : copy;
   const last = mirrorLast(shown, now);
   const skipped = skippedWords(shown, now);
@@ -419,16 +421,14 @@ function CopyView({ volume, members, row, rows, copy, upgrade, seeds, seedRefuse
       {copy.staged ? <Badge variant={STAGED_STATE[copy.staged]}>{STAGED_WORDS[copy.staged]}</Badge> : null}
     </div>
     <Row title="Server">{copy.server.name}</Row>
-    <Row title="Refresh">
-      {copy.lastReported ? `${LAST_REPORTED} by ${copy.server.name}, which may have removed it since` : `Every ${MIRROR_ROUND_MINUTES} min · on deploy`}
-    </Row>
-    {copy.lastReported ? null : <Row title="Last">
+    <Row title="Refresh">Every {MIRROR_ROUND_MINUTES} min · on deploy</Row>
+    <Row title="Last">
       {last.spin ? <Busy words={last.words} />
         : <span className={cn(last.stale && "text-warning")}>{last.stale ? <TriangleAlertIcon className="mr-1 inline size-3.5" /> : null}{last.words}</span>}
-    </Row>}
+    </Row>
     {skipped === null ? null : <Field orientation="responsive">
       <FieldContent><FieldTitle>Status</FieldTitle><FieldDescription>{skipped}</FieldDescription></FieldContent>
-      {skippedBadge ? <Badge variant="warning">Refresh skipped</Badge> : null}
+      <Badge variant="warning">Refresh skipped</Badge>
     </Field>}
     {offer ? <Row title="Restore point">
       <span className="flex items-center gap-2">
@@ -439,7 +439,7 @@ function CopyView({ volume, members, row, rows, copy, upgrade, seeds, seedRefuse
       </span>
     </Row> : null}
     <div data-slot="copy-actions" className="flex flex-wrap gap-2">
-      {copy.staged === "new" || copy.lastReported ? null : <Button variant="outline" disabled={disabled || last.spin} onClick={refresh}>
+      {copy.staged === "new" ? null : <Button variant="outline" disabled={disabled || last.spin} onClick={refresh}>
         {last.spin ? <Spinner role="presentation" aria-hidden="true" data-icon="inline-start" /> : <RefreshCwIcon data-icon="inline-start" />}Refresh now
       </Button>}
     </div>

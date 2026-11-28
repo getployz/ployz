@@ -474,6 +474,7 @@ impl RegionPlacement {
                     .expect("at least one replica"),
             },
             container: ServiceContainerSpec {
+                shared_writes: Default::default(),
                 image: format!("ghcr.io/getployz/{name}:{}", made.version),
                 command: Vec::new(),
                 entrypoint: Vec::new(),

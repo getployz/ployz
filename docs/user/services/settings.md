@@ -148,7 +148,8 @@ update services that typed the old name in the same deploy. See
 ### Replicas
 
 1 by default, up to 50. Ployz gives each server one replica before any server gets a second. A
-service with a volume runs one replica, and the row then says **Limited to 1**. Preview environments run one of each service. See
+service with a volume runs one replica unless the volume allows shared writes, and the row
+then says **Limited to 1**. Preview environments run one of each service. See
 [Run more replicas](scaling.md#run-more-replicas).
 
 With [regions](regions.md), **Replicas** is a row for each region: a region and how many replicas
@@ -286,8 +287,8 @@ stays stopped.
 How a deploy replaces this service's replicas. **Automatic** by default: **Stop first** for a
 service with a volume, **Start first** for the rest. Choose **Start first** for no downtime,
 **Stop first** when two copies must never run at once, or **Rolling** to replace one server at a
-time, so a failure leaves the later servers on the old version. A service with a volume can't take
-**Start first** while shared writes are paused. See
+time, so a failure leaves the later servers on the old version. A service with a volume takes
+**Start first** only when the volume allows shared writes. See
 [Choose how a deploy replaces replicas](../deploy/zero-downtime.md#choose-how-a-deploy-replaces-replicas).
 
 ### Stop signal

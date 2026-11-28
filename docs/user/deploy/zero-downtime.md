@@ -45,9 +45,9 @@ is ready. With **Rolling**, they reach each server's new replica as soon as it's
 | **Rolling** | Stop first, one server at a time. A server's new replica takes traffic once it's ready, before the next server's old replica stops, so old and new versions serve together. If a server's new replica fails, the servers after it keep the old version. | None with replicas on two or more servers. On one server, as Stop first |
 | **Automatic** | **Stop first** for a service with a volume, **Start first** for the rest. | As above |
 
-**Automatic** is the default. A service with a volume can't use **Start first**: both copies would
-write to it at once, and [shared writes are paused](../services/volumes.md#share-a-volume). Ployz
-refuses the change and says to choose **Stop first**.
+**Automatic** is the default. A service with a volume can use **Start first** only when the volume
+allows shared writes, because both copies write to it at once. Otherwise Ployz refuses the change
+and says to choose **Stop first** or allow shared writes.
 
 If a new replica fails, Ployz starts the old replicas it stopped again, whichever order you chose.
 

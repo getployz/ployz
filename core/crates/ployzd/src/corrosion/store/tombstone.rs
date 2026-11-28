@@ -3,21 +3,16 @@
 //! Both key spellings are replicated and read by daemons of every release, so they
 //! are only ever added to.
 
-use ployz_core::{MachineId, ManagementIdentity};
+use ployz_core::MachineId;
 use serde_json::json;
 
 use crate::corrosion::Statement;
 
-/// A forgotten Machine's tombstone in the `cluster` table. Its value is the forgotten
-/// Machine's id. A row that named no identity leaves one keyed `forgotten-id:<id>`
-/// instead, outside the `forgotten:` prefix older daemons' guards read; only SQL writes
-/// and reads that one.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::corrosion) enum Tombstone {
-    /// Keyed by the Management Identity the forgotten Machine's row named, so the
-    /// Machine can learn it was forgotten (#2927).
-    Identity(ManagementIdentity),
-}
+/// A forgotten Machine's tombstone in the `cluster` table, keyed `forgotten:<identity>` by
+/// the Management Identity its row named. Its value is the forgotten Machine's id. A row
+/// that named no identity leaves one keyed `forgotten-id:<id>` instead, outside the
+/// `forgotten:` prefix older daemons' guards read; only SQL writes and reads that one.
+pub(in crate::corrosion) struct Tombstone;
 
 const FORGET_INSERT: &str = "INSERT INTO cluster (key, value) SELECT ";
 const IDENTITY_OF_ROW: &str = "json_extract(info, '$.runtime.management_identity')";
@@ -25,12 +20,6 @@ const IDENTITY_OF_ROW: &str = "json_extract(info, '$.runtime.management_identity
 impl Tombstone {
     const IDENTITY_PREFIX: &'static str = "forgotten:";
     const ID_PREFIX: &'static str = "forgotten-id:";
-
-    pub(super) fn key(self) -> String {
-        match self {
-            Self::Identity(identity) => format!("{}{}", Self::IDENTITY_PREFIX, identity.to_hex()),
-        }
-    }
 
     /// The SQL condition that holds when no tombstone of either kind forgets the id
     /// `id`, an expression of the statement it joins. A tombstone keyed by an identity
@@ -66,19 +55,5 @@ impl Tombstone {
             ),
             insert(format!("'{}' || id", Self::ID_PREFIX), "IS NULL"),
         ]
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_keys_keep_their_replicated_spelling() {
-        let identity = ManagementIdentity::from_bytes([0xab; 32]);
-        assert_eq!(
-            Tombstone::Identity(identity).key(),
-            format!("forgotten:{}", "ab".repeat(32))
-        );
     }
 }

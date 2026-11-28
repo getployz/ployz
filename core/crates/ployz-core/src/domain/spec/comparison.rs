@@ -13,6 +13,9 @@ pub fn compare_specs(
         // A new hook runs with new Containers; it isn't serving shape, so traffic stays on the old ones meanwhile.
         || current.pre_deploy != requested.pre_deploy
         || stop_changed(&current.container, &requested.container)
+        // Which Volumes a Container may share is fixed on its labels at create, so a
+        // change replaces it and the Machine never weighs a stale consent.
+        || current.container.shared_writes != requested.container.shared_writes
     {
         return SpecChange::NeedsRecreate;
     }

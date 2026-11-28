@@ -166,18 +166,18 @@ describe("cleanPlan and removePlan", () => {
   });
 
   it("removing a Server always destroys the Server, and each Volume it confirms losing", () => {
-    expect(removePlan(here, "fra-1", { reset: true, volumes: [] }).effects).toEqual([
+    expect(removePlan(here, "fra-1", { verb: "remove", volumes: [] }).effects).toEqual([
       { kind: "removes_server", name: "fra-1", node: here, path: `servers/${here}` },
     ]);
-    expect(removePlan(here, "fra-1", { reset: true, volumes: [volume(here, "data")] }).preview)
-      .toEqual({ server: here, reset: true, volumes: [`${here}/data`] });
+    expect(removePlan(here, "fra-1", { verb: "remove", volumes: [volume(here, "data")] }).preview)
+      .toEqual({ server: here, volumes: [`${here}/data`] });
   });
 
   it("forgetting a Server destroys the Server and each Volume whose only copy it holds", () => {
     const docker = "zz-production_vol-1";
-    expect(removePlan(here, "fra-1", { reset: false, volumes: [volume(here, docker)] }, new Map([[docker, "data"]]))).toMatchObject({
+    expect(removePlan(here, "fra-1", { verb: "forget", volumes: [volume(here, docker)] }, new Map([[docker, "data"]]))).toMatchObject({
       verb: "forget",
-      preview: { server: here, reset: false, volumes: [`${here}/${docker}`] },
+      preview: { server: here, volumes: [`${here}/${docker}`] },
       effects: [
         { kind: "removes_server", name: "fra-1" },
         { kind: "deletes_volume", name: "data", node: `${here}/${docker}` },
@@ -187,7 +187,7 @@ describe("cleanPlan and removePlan", () => {
 
   it("a removal names each Volume it deletes as Ployz does, keeping the Docker name as its identity", () => {
     const docker = "shop-production_vol-1";
-    const plan = removePlan(here, "fra-1", { reset: true, volumes: [volume(here, docker)] }, new Map([[docker, "cache-data"]]));
+    const plan = removePlan(here, "fra-1", { verb: "remove", volumes: [volume(here, docker)] }, new Map([[docker, "cache-data"]]));
     expect(plan.effects[1]).toEqual({ kind: "deletes_volume", name: "cache-data", node: `${here}/${docker}`, path: `volumes/${here}/${docker}` });
   });
 

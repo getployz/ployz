@@ -182,7 +182,7 @@ Approving automatic deploys for production:
   namespace   shop-production
   repository  acme/web on main
   workflow    .github/workflows/ployz-build.yml, on push and on rebuilds you approve
-  builder     getployz/build/.github/workflows/build.yml@39e1f488e492c0641e520777e481e8f5b266985b
+  builder     getployz/build/.github/workflows/build.yml@6f3b5a76ad939acfb605ba4070916e827a13cf2a
   servers     2 in the cluster
   web
     builds    Dockerfile Dockerfile, context ., platforms linux/amd64, with the Actions cache, build args LOG_LEVEL=info, build secrets DATABASE_URL
@@ -226,7 +226,7 @@ permissions:
 jobs:
   build:
     if: github.event_name != 'push' || vars.PLOYZ_BRANCH == '' || github.ref_name == vars.PLOYZ_BRANCH
-    uses: getployz/build/.github/workflows/build.yml@39e1f488e492c0641e520777e481e8f5b266985b
+    uses: getployz/build/.github/workflows/build.yml@6f3b5a76ad939acfb605ba4070916e827a13cf2a
     with:
       cloud: ${{ inputs.cloud || vars.PLOYZ_CLOUD || 'https://ployz.dev' }}
       commit: ${{ inputs.commit }}

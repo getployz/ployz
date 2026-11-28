@@ -168,7 +168,6 @@ fn typescript_declarations() -> String {
     declarations.add::<ployz_store::OrganizationRemoved>();
     declarations.add::<ployz_store::AppliedVolume>();
     declarations.add::<super::CopyObservation>();
-    declarations.add::<super::RetireOutcome>();
     declarations.add::<super::PreviewsSwept>();
     declarations.add::<super::PreviewHomes>();
     declarations.add::<ployz_store::OpenPreviewsQuery>();

@@ -193,6 +193,56 @@ async fn restart_reports_one_restart_or_the_start_that_failed() {
     }
 }
 
+/// When a two-copy Service's first copy does not come back, the restart stops there:
+/// the other copy is never stopped, so the Service keeps serving, and the result names it.
+#[tokio::test]
+async fn restart_stops_at_the_first_copy_that_does_not_come_back() {
+    let servers = [machine('a', "one"), machine('b', "two")];
+    let service = DeployService::new(servers[0].clone())
+        .with_machines(servers.to_vec())
+        .fail_starts("no start");
+    service
+        .listed_containers()
+        .lock()
+        .unwrap()
+        .extend(servers.iter().zip(['1', '2']).map(|(server, id)| {
+            let mut copy = running_container_in(server, &spec("web"), "app", id);
+            copy.try_update(|parts| parts.rotation = Some(ployz_core::CopyRotation::In))
+                .unwrap();
+            copy
+        }));
+    let (address, server) = listening(service).await;
+
+    let (code, result) = ployz(None, &address.to_string(), &["service", "restart", "web"]).await;
+    let name = |row: &Value| {
+        servers
+            .iter()
+            .find(|server| server.machine.id.to_string() == row["machine_id"].as_str().unwrap())
+            .unwrap()
+            .machine
+            .name
+            .to_string()
+    };
+    assert_eq!(code, 3, "{result}");
+    assert!(
+        result["containers"].as_array().unwrap().is_empty(),
+        "{result}"
+    );
+    let failed = result["container_failures"].as_array().unwrap();
+    let untouched = result["untouched"].as_array().unwrap();
+    assert_eq!((failed.len(), untouched.len()), (1, 1), "{result}");
+    assert_ne!(name(&failed[0]), name(&untouched[0]), "{result}");
+    assert_eq!(
+        result["warnings"][1],
+        format!(
+            "Stopped the restart. The rest are untouched: app/web on {}.",
+            name(&untouched[0])
+        ),
+        "{result}"
+    );
+    server.abort();
+}
+
 #[tokio::test]
 async fn restart_returns_once_a_slow_start_passes_its_healthcheck() {
     let machine = machine('a', "one");

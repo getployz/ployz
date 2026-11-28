@@ -61,7 +61,6 @@ const organizationOwnedWithoutChangeLog = {
   organization_change: "It is the Organization change log, written by the triggers on organization-owned tables.",
   config_create: "The Config Store's record of caller-minted IDs for replay; no view reads it, so it needs no change log.",
   deployment_run: "Which worker run owns a Deployment, read only when Inngest cancels the run; no view reads it, so it needs no change log.",
-  deployment_cleanup: "How a Cloud Deploy's cleanup ended, read by the Run page through its own polled query, never into the Org Store, so it needs no change log.",
   failed_restore: "A restored Volume whose copy failed, read only when a Deploy is admitted or advanced; no view reads it, so it needs no change log.",
   volume_mirror_status: "What the last mirror sync saw of each mirror, read as a Remote Read; no view reads it, so it needs no change log.",
   config_deployment_step: "When each step of a Deployment ran, read by `deployment show` through the Store; no view reads it, so it needs no change log.",

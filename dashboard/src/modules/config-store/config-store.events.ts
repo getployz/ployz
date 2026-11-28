@@ -12,8 +12,6 @@ export const configDeploymentAdmitted = defineEvent({
     /** Deployments of one Environment run one at a time. */
     environmentId: Schema.String,
     deploymentId: Schema.String,
-    /** Its place in its Environment's queue: a newer Deployment has a higher number. None before it queued. */
-    number: Schema.optionalKey(Schema.NullOr(Schema.Number)),
     trigger: Schema.optionalKey(DeploymentTrigger),
   }),
   id: ({ deploymentId }) => `config-deployment-admitted-${deploymentId}`,
@@ -23,19 +21,6 @@ export type ConfigDeploymentAdmittedEventData = typeof configDeploymentAdmitted.
 /** Deploy now: unkeyed, so it asks again for a queued Deployment its admission's event never ran. */
 export const createConfigDeploymentStartedEvent = (data: ConfigDeploymentAdmittedEventData) =>
   ({ name: configDeploymentAdmitted.name, data }) as const;
-
-/** A Cloud Deploy ran: Cloud retires the old copies its run replaced. */
-export const configDeploymentRetireRequested = defineEvent({
-  name: "config/deployment.retire-requested",
-  schema: Schema.Struct({
-    organizationId: Schema.String,
-    environmentId: Schema.String,
-    deploymentId: Schema.String,
-    /** Only a Deployment with a higher number takes the cleanup over. */
-    number: Schema.NullOr(Schema.Number),
-  }),
-  id: ({ deploymentId }) => `config-deployment-retire-requested-${deploymentId}`,
-});
 
 /**
  * A worker run of a Deployment stopped without finishing, and the Store didn't answer its stop: Cloud tries again until
@@ -86,7 +71,5 @@ export const configSweepRequested = defineEvent({
   name: "config/sweep.requested",
   schema: Schema.Struct({ organizationId: Schema.String }),
 });
-
-export type ConfigDeploymentRetireRequestedEventData = typeof configDeploymentRetireRequested.schema.Type;
 
 export type ConfigPrCheckRequestedEventData = typeof configPrCheckRequested.schema.Type;

@@ -12,35 +12,27 @@ use std::time::Duration;
 
 use ployz_agent_tools::{LogText, SealedValues, Withheld};
 use ployz_core::{
-    AnonymousVolumes, ContainerId, ContainerRuntimeObservation, DeployOperation, DeployOutcome,
-    DeployWarning, ExecutionError, FailedOperation, HealthFailure, LastRun, MachineId, MachineName,
-    MachineObservation, Operator, QualifiedService, RemoveContainerPurpose, RpcError, RpcErrorCode,
-    RunnerOptions, ServiceName,
+    ContainerId, ContainerRuntimeObservation, DeployOperation, DeployOutcome, DeployWarning,
+    ExecutionError, FailedOperation, HealthFailure, LastRun, MachineId, MachineName, Operator,
+    RpcError, RpcErrorCode, RunnerOptions, ServiceName,
 };
 use ployz_decide::standing::{Latch, Over, Read, Standing, standing};
 use ployz_store::{
-    Actor, BuildReport, BuildStatus, Builder, Claimed, CommitSha, ConfigStore, DeployedNode,
-    DeploymentId, DeploymentQuery, DeploymentStatus, DeploymentSummary, DeploymentView,
-    DeploymentWarning, EnvironmentId, Failure, NodeStatus, RowState, RowTracker, RunEvidence,
-    RunnerId,
+    BuildReport, BuildStatus, Builder, Claimed, CommitSha, ConfigStore, DeploymentId,
+    DeploymentStatus, DeploymentSummary, DeploymentWarning, EnvironmentId, Failure, RowState,
+    RowTracker, RunEvidence, RunnerId,
 };
-use serde::{Deserialize as _, Serialize};
+use serde::Deserialize as _;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
-use ts_rs::TS;
 
 use super::build::BuildOutcome;
 use super::preparation::{BuildReceipt, PreparationInput, UploadDigest, needs_upload};
 use super::run_support::{log_line, only};
 use super::sealed::{Names, values_under};
-use super::{
-    Dialed, ImageCleanup, PreparedDeploy, Running, RunningBuild, Session, Unprepared,
-    connect_expecting,
-};
+use super::{ImageCleanup, PreparedDeploy, Running, RunningBuild, Session, Unprepared};
 use crate::connect::{Client, SystemConnector};
 use crate::context::Connection;
-use crate::deploy::CopyLifecycle;
-use crate::deploy::cleanup::{self, Copy, Rotated};
 
 /// How often a running Deployment renews its lease and checks whether it was cancelled.
 const CANCEL_POLL: Duration = Duration::from_secs(2);
@@ -238,286 +230,6 @@ async fn run_deployment_in(
     let recorded = run.execute(&session, claimed, targets, built).await;
     session.close().await;
     recorded
-}
-
-/// The old copies a Deployment's retire left running.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, TS)]
-pub struct RetireOutcome {
-    /// Copies it tried to retire and could not: a retry may still retire them.
-    pub left: Vec<RetireLeft>,
-    /// Copies it never retires, and Machines the Deploy could not reach: a retry
-    /// changes nothing.
-    pub kept: Vec<RetireLeft>,
-}
-
-/// One old copy still running.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
-pub struct RetireLeft {
-    /// The Machine's name as the Deploy reported it, or its ID when the Deploy
-    /// did not know the name.
-    pub machine: String,
-    /// The Service as the Deployment names it, or none for a Machine the Deploy
-    /// could not reach, whose copies it never saw.
-    pub service: Option<ServiceName>,
-    /// Users read it.
-    pub reason: String,
-}
-
-/// Retire the old copies Deployment `deployment` of `who`'s Organization left
-/// running, on one of `connections`: each copy its Deploy reported left running,
-/// of a Service it deployed or removed. A failed or unattempted Service keeps its
-/// old copy, which may be the one serving, and is reported left. A copy already
-/// gone counts as retired, so a retry observes again and only retires what is
-/// still there. A Machine the Deploy could not reach is reported left, since a copy
-/// it never saw may run there. With `expect`, it retires only through an entry of
-/// its Cluster, as [`run_deployment_expecting`] runs, naming the Machines it left.
-///
-/// # Errors
-/// Returns `not_found` for a Deployment of another Organization, the connection's
-/// error when no Server can be reached or listing the Machines fails, or a storage
-/// error.
-pub async fn retire_old(
-    store: Arc<ConfigStore>,
-    who: Actor,
-    deployment: DeploymentId,
-    connections: Vec<Connection>,
-    expect: Option<crate::connect::ClusterExpectation>,
-) -> Result<Dialed<RetireOutcome>, RpcError> {
-    let view = super::store_call(&store, move |store| {
-        store.read(&who, &DeploymentQuery { id: deployment })
-    })
-    .await?;
-    let copies = left_copies(&view);
-    if copies.is_empty() {
-        return Ok(Dialed::undialed(named_left(&view, Vec::new())));
-    }
-    let connector = Arc::new(SystemConnector::default());
-    let session = connect_expecting(connections, connector, expect).await?;
-    let foreign = session.foreign();
-    let retired: Result<_, RpcError> = async {
-        let mut client = session.client()?;
-        let machines = client.machines().await.map_err(crate::connect::rpc_error)?;
-        Ok(retire_copies(&client, &machines, copies).await)
-    }
-    .await;
-    session.close().await;
-    Ok(Dialed {
-        outcome: named_left(&view, retired?),
-        foreign,
-    })
-}
-
-/// The Deploy's warnings, wherever its runner recorded them: the planner's on the
-/// Deploy Preview, the executor's on the Deployment.
-fn deploy_warnings(view: &DeploymentView) -> impl Iterator<Item = &DeployWarning> {
-    let ran = view.deployment.warnings.iter().filter_map(|warning| {
-        let DeploymentWarning::Deploy { warning } = warning else {
-            return None;
-        };
-        Some(warning)
-    });
-    ran.chain(view.preview.iter().flat_map(|preview| &preview.warnings))
-}
-
-/// What `retired` left, plus every old copy the Deploy kept and every Machine it
-/// could not reach, so nothing that may still run goes unnamed.
-fn named_left(view: &DeploymentView, left: Vec<RetireLeft>) -> RetireOutcome {
-    let mut kept = kept_copies(view);
-    let reported: BTreeSet<&str> = deploy_warnings(view)
-        .filter_map(|warning| {
-            let DeployWarning::LeftRunning { machine, .. } = warning else {
-                return None;
-            };
-            Some(machine.as_str())
-        })
-        .collect();
-    for warning in deploy_warnings(view) {
-        let DeployWarning::MixedAfterReturn { machine } = warning else {
-            continue;
-        };
-        if reported.contains(machine.as_str())
-            || left
-                .iter()
-                .chain(&kept)
-                .any(|entry| entry.machine == *machine)
-        {
-            continue;
-        }
-        kept.push(RetireLeft {
-            machine: machine.clone(),
-            service: None,
-            reason: format!(
-                "{machine} was cut off during the Deploy, so a copy there may still run. \
-                 Deploy again once it is back."
-            ),
-        });
-    }
-    RetireOutcome { left, kept }
-}
-
-struct LeftCopy {
-    service: ServiceName,
-    container_id: ContainerId,
-    machine: String,
-    /// Retire when the Deploy removed its Service, so it goes exactly as a plain
-    /// Service removal takes a copy out; Rollout when a new copy replaced it.
-    purpose: RemoveContainerPurpose,
-}
-
-/// Each copy the Deploy reported left running, with its Service's outcome.
-fn reported_copies(view: &DeploymentView) -> impl Iterator<Item = (LeftCopy, NodeStatus)> {
-    let services: BTreeMap<QualifiedService, (&ServiceName, NodeStatus)> = view
-        .nodes
-        .iter()
-        .filter_map(|node| {
-            let DeployedNode::Service { name, .. } = &node.node else {
-                return None;
-            };
-            let runtime = view.runtime_names.get(name)?;
-            let service = QualifiedService::new(view.namespace.clone(), runtime.clone());
-            Some((service, (name, node.outcome)))
-        })
-        .collect();
-    deploy_warnings(view).filter_map(move |warning| {
-        let DeployWarning::LeftRunning {
-            service,
-            container_id,
-            machine,
-            ..
-        } = warning
-        else {
-            return None;
-        };
-        let (name, outcome) = services
-            .get(service)
-            .map_or((&service.name, NodeStatus::Unknown), |(name, outcome)| {
-                (*name, *outcome)
-            });
-        let copy = LeftCopy {
-            service: name.clone(),
-            container_id: *container_id,
-            machine: machine.clone(),
-            purpose: if outcome == NodeStatus::Removed {
-                RemoveContainerPurpose::Retire
-            } else {
-                RemoveContainerPurpose::Rollout
-            },
-        };
-        Some((copy, outcome))
-    })
-}
-
-fn advanced(outcome: NodeStatus) -> bool {
-    match outcome {
-        NodeStatus::Deployed | NodeStatus::Removed => true,
-        NodeStatus::Pending
-        | NodeStatus::Failed
-        | NodeStatus::NotAttempted
-        | NodeStatus::Unchanged
-        | NodeStatus::Unknown => false,
-    }
-}
-
-fn left_copies(view: &DeploymentView) -> Vec<LeftCopy> {
-    reported_copies(view)
-        .filter(|(_, outcome)| advanced(*outcome))
-        .map(|(copy, _)| copy)
-        .collect()
-}
-
-/// The copies of every other Service: the old copy may be the one serving, so it stays.
-fn kept_copies(view: &DeploymentView) -> Vec<RetireLeft> {
-    reported_copies(view)
-        .filter(|(_, outcome)| !advanced(*outcome))
-        .map(|(copy, _)| RetireLeft {
-            reason: format!(
-                "{} did not deploy, so its old copy stays. Deploy again to replace it.",
-                copy.service
-            ),
-            machine: copy.machine,
-            service: Some(copy.service),
-        })
-        .collect()
-}
-
-async fn retire_copies<C: CopyLifecycle>(
-    client: &C,
-    machines: &[MachineObservation],
-    copies: Vec<LeftCopy>,
-) -> Vec<RetireLeft> {
-    let names: BTreeMap<MachineId, String> = machines
-        .iter()
-        .map(|observed| (observed.machine.id, observed.machine.name.to_string()))
-        .collect();
-    let retired = futures_util::future::join_all(copies.iter().map(|copy| async {
-        // Names are not unique: every Machine of that name may hold the copy.
-        let held_by: Vec<MachineId> = machines
-            .iter()
-            .map(|observed| &observed.machine)
-            .filter(|machine| {
-                machine.name.as_str() == copy.machine || machine.id.to_string() == copy.machine
-            })
-            .map(|machine| machine.id)
-            .collect();
-        if held_by.is_empty() {
-            return vec![format!("{} is not in the Cluster", copy.machine)];
-        }
-        let mut reasons = Vec::new();
-        for machine_id in held_by {
-            if let Some(reason) = retire_copy(client, &names, machine_id, copy).await {
-                reasons.push(reason);
-            }
-        }
-        reasons
-    }))
-    .await;
-    copies
-        .iter()
-        .zip(retired)
-        .flat_map(|(copy, reasons)| {
-            reasons.into_iter().map(|reason| RetireLeft {
-                machine: copy.machine.clone(),
-                service: Some(copy.service.clone()),
-                reason,
-            })
-        })
-        .collect()
-}
-
-async fn retire_copy<C: CopyLifecycle>(
-    client: &C,
-    names: &BTreeMap<MachineId, String>,
-    machine_id: MachineId,
-    copy: &LeftCopy,
-) -> Option<String> {
-    let observed = match client
-        .inspect_container(&machine_id, &copy.container_id)
-        .await
-    {
-        Ok(details) => details.container,
-        Err(error) if error.code == RpcErrorCode::NotFound => return None,
-        Err(error) => return Some(left_by(&copy.machine, error)),
-    };
-    let step = cleanup::retire(
-        client,
-        &Copy::observed(&observed),
-        copy.purpose.into(),
-        // The cleanup comes after the Deploy, which keeps no copy any longer.
-        AnonymousVolumes::keep(),
-        &CancellationToken::new(),
-    )
-    .await;
-    match step.map(Rotated::failure) {
-        Ok(Ok(())) => None,
-        Ok(Err(failure)) => {
-            Some(failure.left_reason(|id| names.get(id).cloned().unwrap_or_else(|| id.to_string())))
-        }
-        Err(error) => Some(left_by(&copy.machine, error)),
-    }
-}
-
-fn left_by(machine: &str, error: RpcError) -> String {
-    cleanup::did_not_answer(machine, &error).unwrap_or(error.message)
 }
 
 /// Every claim pair is kept, under its name: a name sealed after the claim

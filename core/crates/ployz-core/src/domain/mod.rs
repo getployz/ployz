@@ -5,7 +5,6 @@ mod data_loss;
 mod deploy;
 mod device;
 mod doors;
-mod forgotten;
 mod health_wait;
 mod hostname;
 #[cfg(not(target_arch = "wasm32"))]
@@ -37,7 +36,6 @@ pub use data_loss::*;
 pub use deploy::*;
 pub use device::*;
 pub use doors::*;
-pub use forgotten::*;
 pub use health_wait::*;
 pub use hostname::*;
 #[cfg(not(target_arch = "wasm32"))]

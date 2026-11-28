@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { InngestTestEngine } from "@inngest/test";
 import { Inngest } from "inngest";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
 import { configDeploymentAdmitted } from "#/modules/config-store/config-store.events";
 
@@ -11,12 +11,7 @@ const admitted = {
 };
 
 async function stepsOf(remove: boolean, status: "applied" | "failed" | "unknown" = "applied") {
-  return (await runOf({ ran: { id: "dep", status, remove } })).order;
-}
-
-type Ran = { ran: { id: string; status: "applied" | "failed" | "unknown"; remove: boolean } } | { nothingToRun: string };
-
-async function runOf(ran: Ran) {
+  const ran = { ran: { id: "dep", status, remove } };
   const order: string[] = [];
   const results = new Map<string, unknown>([
     ["begin", true],
@@ -30,30 +25,14 @@ async function runOf(ran: Ran) {
     ["sweep", { deployments: [], closing: [] }],
     ["delete-orphan-mirrors", []],
   ]);
-  const ids = ["record-run", ...results.keys(), "retire-old", "mail-failure", "sync-uptime", "forget-run"];
-  const { ctx } = await new InngestTestEngine({
+  const ids = ["record-run", ...results.keys(), "mail-failure", "sync-uptime", "forget-run"];
+  await new InngestTestEngine({
     function: createRunStoreDeployment(new Inngest({ id: "store-deployment-order-test" })),
     events: [admitted],
     steps: ids.map((id) => ({ id, handler: () => { order.push(id); return results.get(id) ?? null; } })),
   }).execute();
-  return { order, sent: vi.mocked(ctx.step.sendEvent).mock.calls };
+  return order;
 }
-
-describe("a Deployment's cleanup", () => {
-  it("is asked for once its runner ran it, whatever the outcome", async () => {
-    for (const status of ["applied", "failed", "unknown"] as const) {
-      const { sent } = await runOf({ ran: { id: "dep", status, remove: false } });
-      expect(sent).toEqual([["retire-old", {
-        id: "config-deployment-retire-requested-dep", name: "config/deployment.retire-requested",
-        data: { organizationId: "org", environmentId: "env", deploymentId: "dep" },
-      }]]);
-    }
-  });
-
-  it("is not asked for when nothing ran", async () => {
-    expect((await runOf({ nothingToRun: "Another runner owns it." })).sent).toEqual([]);
-  });
-});
 
 describe("an applied Deployment's orphan mirror scan", () => {
   it("runs after a removal's sweep, once the removed Environment no longer holds its Volumes' names", async () => {
@@ -73,7 +52,7 @@ describe("a Deployment's failure email", () => {
     for (const status of ["failed", "unknown"] as const) {
       const order = await stepsOf(false, status);
       expect(order.slice(order.indexOf("run-deployment")))
-        .toEqual(["run-deployment", "finish-volumes", "retire-old", "sync-uptime", "forget-run", "mail-failure"]);
+        .toEqual(["run-deployment", "finish-volumes", "sync-uptime", "forget-run", "mail-failure"]);
     }
   });
 
@@ -114,7 +93,7 @@ describe("a Deployment with several Git Services", () => {
     await new InngestTestEngine({
       function: createRunStoreDeployment(new Inngest({ id: "store-deployment-builds-test" }), fresh),
       events: [admitted],
-      steps: [...results.keys(), "record-run", "github-failed", "retire-old", "sync-uptime", "forget-run"]
+      steps: [...results.keys(), "record-run", "github-failed", "sync-uptime", "forget-run"]
         .map((id) => ({ id, handler: () => { ran.push(id); return results.get(id) ?? null; } })),
     }).execute();
     return ran;

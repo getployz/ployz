@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { requirementFor, requirements, ServerLacks, serversLacking, serverSupports } from "./daemon-compat";
-import { asSdkFailure, LeftNotForgotten, PloyzProviderError, rpcErrorCode, sdkFailureMessage } from "./ployz.server";
+import { asSdkFailure, PloyzProviderError, sdkFailureMessage } from "./ployz.server";
 
 describe("serverSupports", () => {
   it("reads the Server's record, and claims nothing when the record lists no capabilities", () => {
@@ -22,9 +22,7 @@ describe("serverSupports", () => {
   });
 
   it("leaves Server removal to the daemon on a record from before capabilities", () => {
-    expect(requirements.leave.capability).toBe("ployz.machine.leave.v1");
     expect(requirements.forget.capability).toBe("ployz.machine.forget.v1");
-    expect(serverSupports({ capabilities: [] }, requirements.leave)).toBe("unknown");
     expect(serverSupports({ capabilities: [] }, requirements.forget)).toBe("unknown");
   });
 
@@ -53,18 +51,6 @@ describe("asSdkFailure", () => {
     const failure = asSdkFailure("logs", rpcError({ code: "unsupported", message: "disabled", details: { cause: "disabled" } }));
     expect(failure).toBeInstanceOf(PloyzProviderError);
     expect(sdkFailureMessage(failure)).toBe("unsupported: disabled");
-  });
-
-  it("keeps the Leave a Server answered before its Forget failed, with the failure's code", () => {
-    const failure = asSdkFailure("remove machine", rpcError({ code: "unavailable", message: "the Cluster store is unavailable", details: { left: true, reset_warning: null } }));
-    expect(failure).toBeInstanceOf(LeftNotForgotten);
-    expect(failure).toMatchObject({ resetWarning: null });
-    expect(rpcErrorCode(failure)).toBe("unavailable");
-  });
-
-  it("keeps a failure without a Leave reply as the provider's own failure", () => {
-    const failure = asSdkFailure("remove machine", rpcError({ code: "unavailable", message: "down", details: { left: false, reset_warning: null } }));
-    expect(failure).toBeInstanceOf(PloyzProviderError);
   });
 });
 

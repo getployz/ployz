@@ -2513,28 +2513,53 @@ fn a_failed_row_keeps_its_cause_chain_and_unfinished_rows_end_not_attempted() {
 
 #[test]
 fn mounted_resource_rows_keep_distinct_machines_and_failed_mounting_services() {
-    // A Volume has one writer while shared writes are paused, so a Config is the
-    // resource several Services mount.
-    let resource = "sentry";
-    for api_status in [
-        json!({"type": "completed"}),
-        json!({"type": "pending"}),
-        waiting(1_000),
-    ] {
+    for (resource, api_status) in ["data", "sentry"].into_iter().flat_map(|resource| {
+        [
+            json!({"type": "completed"}),
+            json!({"type": "pending"}),
+            waiting(1_000),
+        ]
+        .map(|status| (resource, status))
+    }) {
         let api_finished = api_status["type"] == "completed";
         let (store, who) = shop();
-        sentry(&store, &who);
-        store
-            .write(
-                &who,
-                &AttachConfig {
-                    environment: EnvironmentRef::default(),
-                    service: ServiceName::parse("api").unwrap(),
-                    config: ConfigName::parse("sentry").unwrap(),
-                    dir: "/etc/sentry".into(),
-                },
-            )
-            .unwrap();
+        if resource == "data" {
+            store
+                .write(
+                    &who,
+                    &ployz_store::CreateVolume {
+                        id: ployz_store::VolumeId::parse("00000000-0000-4000-8000-000000000005")
+                            .unwrap(),
+                        environment: EnvironmentRef::default(),
+                        name: ployz_store::VolumeName::parse("data").unwrap(),
+                        storage: ployz_core::config::VolumeKind::Docker {},
+                        shared_writes: true,
+                        storage_locked: false,
+                        restored_from: None,
+                        mounts: ["web", "api"]
+                            .into_iter()
+                            .map(|service| ployz_store::Mount {
+                                service: ServiceName::parse(service).unwrap(),
+                                path: "/data".into(),
+                            })
+                            .collect(),
+                    },
+                )
+                .unwrap();
+        } else {
+            sentry(&store, &who);
+            store
+                .write(
+                    &who,
+                    &AttachConfig {
+                        environment: EnvironmentRef::default(),
+                        service: ServiceName::parse("api").unwrap(),
+                        config: ConfigName::parse("sentry").unwrap(),
+                        dir: "/etc/sentry".into(),
+                    },
+                )
+                .unwrap();
+        }
         admit(&store, &who, 1, &[], None).unwrap();
         let a = runner("runner-a");
         store.claim(&id(1), &a).unwrap();
@@ -5634,9 +5659,9 @@ fn unclaimed_lists_queued_deployments_no_runner_took() {
     assert_eq!(
         unclaimed
             .iter()
-            .map(|unclaimed| (&unclaimed.deployment, unclaimed.number))
+            .map(|unclaimed| &unclaimed.deployment)
             .collect::<Vec<_>>(),
-        [(&id(1), 1)]
+        [&id(1)]
     );
     assert!(store.unclaimed(0).unwrap().is_empty());
     store.claim(&id(1), &runner("runner-a")).unwrap();

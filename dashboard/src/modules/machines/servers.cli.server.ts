@@ -35,8 +35,6 @@ function serverRemoval(attempt: MachineRemoveAttemptView) {
     case "succeeded":
       return {
         state: attempt.state,
-        reset_warning: attempt.result.resetWarning,
-        departed: attempt.result.departed ?? null,
         release: attempt.result.release,
       };
     case "missing_identities":
@@ -47,8 +45,7 @@ function serverRemoval(attempt: MachineRemoveAttemptView) {
       });
     case "failed":
     case "cancelled":
-      // The CLI says when a sent reset didn't finish, and how to forget a Server that is gone.
-      return cliRefusalResponse({ code: "unavailable", message: attempt.failureMessage, details: attempt.unfinished ? { unfinished: true } : null });
+      return cliRefusalResponse({ code: "unavailable", message: attempt.failureMessage, details: null });
     default: {
       const _exhaustive: never = attempt;
       throw new Error(`Unhandled machine remove attempt: ${String(_exhaustive)}`);

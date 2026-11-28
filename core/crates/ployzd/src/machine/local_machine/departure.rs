@@ -1,5 +1,4 @@
-//! Departure: Leave, a member's Forget, the fence a forgotten Machine puts up, and what
-//! each does with this Machine's storage.
+//! Departure: Leave, a member's Forget, and what each does with this Machine's storage.
 
 use ployz_core::{
     ForgetRequest, Forgotten, LeaveRequest, Left, LeftPhase, LocalMachinePhase, RpcError,
@@ -66,20 +65,6 @@ impl LocalMachine {
     /// [`Error::OperationTask`] if the admitted operation task fails.
     pub async fn leave(&self, _: LeaveRequest) -> Result<Left, Error> {
         self.depart(StorageExit::Depart).await
-    }
-
-    /// Fence this Machine after the Cluster forgot it (#2927): the same reset as
-    /// [`Self::leave`], except that storage keeps every copy, since a forgotten Machine
-    /// cannot know what a copy elsewhere still holds.
-    ///
-    /// # Errors
-    /// As [`Self::leave`], and [`Error::FenceRefused`] where Leave would answer
-    /// [`Left::Refused`].
-    pub async fn fence_forgotten(&self) -> Result<(), Error> {
-        match self.depart(StorageExit::KeepEveryCopy).await? {
-            Left::Left { .. } => Ok(()),
-            Left::Refused { error, .. } => Err(Error::FenceRefused(error)),
-        }
     }
 
     async fn depart(&self, exit: StorageExit) -> Result<Left, Error> {
@@ -241,7 +226,7 @@ impl LocalMachine {
 }
 
 /// What a departure does with this Machine's mirrors: a leave destroys those a writer
-/// elsewhere holds; a forgotten Machine's fence and a fresh install keep every copy.
+/// elsewhere holds; a fresh install keeps every copy.
 #[derive(Clone, Copy)]
 pub(super) enum StorageExit {
     Depart,

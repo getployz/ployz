@@ -286,9 +286,6 @@ pub enum Error {
     Docker(#[from] crate::docker::Error),
     #[error("{0}")]
     Cleanup(String),
-    /// An upgrade is running; the fence is retried once it ends.
-    #[error(transparent)]
-    FenceRefused(RpcError),
     /// An Operator's pull asked for what this Server does only for a caller with Full
     /// access: write an image tag, or pull a free image with a registry login. The refusal
     /// names the route's capability in its details.

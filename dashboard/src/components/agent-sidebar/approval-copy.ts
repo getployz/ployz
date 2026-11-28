@@ -1,5 +1,5 @@
 import { rollbackConfirm } from "#/modules/config-store/store-deployments";
-import { type ApprovalReview, approvalSubject, asksForAuthKey, losesVolumeAccess, prunes, rollsBack, shutsDownAgain } from "#/modules/approvals/approvals";
+import { type ApprovalReview, approvalSubject, asksForAuthKey, prunes, rollsBack, shutsDownAgain } from "#/modules/approvals/approvals";
 import type { ApprovalView } from "#/modules/approvals/approvals.queries";
 
 /** The badge of an approval whose command alone says what it does. */
@@ -21,7 +21,6 @@ const counted = (count: number, one: string, many: string) => `${count} ${count 
 /** The card's badge: a Save deletes nothing until the next Deploy, and a Deploy that only deletes Volumes counts them. An agent's Deploy that destroys nothing still asks. */
 export function approvalBadge(command: string, review: ApprovalReview) {
   const { effects } = review;
-  if (losesVolumeAccess(review)) return "Removes server";
   if (command === "publish") return "Deletes on deploy";
   if (command === "retry" && !shutsDownAgain(review)) return rollsBack(review) ? "Rolls back" : "Redeploys";
   const named = BADGE.get(command);

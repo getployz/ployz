@@ -164,8 +164,7 @@ If the server stays silent, the release fails and your service stays down:
 
 Bring the server back and run `ployz volume release data` again. If the server is gone for good,
 [forget it](../servers/manage-servers.md#forget-a-server-that-is-gone) with **Forget server** on
-its page. `ployz server rm` can't reset a silent server, so from the CLI use
-`ployz server forget web-1 --confirm dead`.
+its page, or from the CLI with `ployz server forget web-1 --confirm dead`.
 
 Once you forget `web-1`, the release fails with "data has no stopped Service container", or "data
 changed since this release was planned; release it again" if you started it yourself. Either way,
@@ -334,7 +333,7 @@ this Machine's copy of … may hold writes … doesn't have, so the pull keeps i
 ```
 
 The server you moved or mirrored to already held a copy of the volume that may hold writes no
-other server has, such as the copy a server parks when it learns it was removed while away, and
+other server has, such as a copy a server kept when you added it back, and
 the writer can't send changes on top of it. Ployz keeps that copy and stops instead of replacing
 it. Delete it with `ployz volume mirror rm` only once you no longer need what it holds. The next
 move or mirror then copies the volume in full.
@@ -448,7 +447,7 @@ deleted. Look at it again before you delete it`. Open **Delete copy** again.
 
 After a deploy deletes a volume or an environment, Ployz deletes the volume's mirrors on your other
 servers. It keeps each copy that may hold writes no other server has, such as an old copy a move
-left or a copy a server parked when it learned it was removed while away. It also keeps every copy
+left or a copy a server kept when you added it back. It also keeps every copy
 on a server running Ployz 0.4.0-beta.2 or earlier, since that server would delete it whatever it
 holds. When the cleanup deletes some copies, its run names each one it kept, like `kept
 data-web-1, which may hold writes no other Server has (ployz volume leftovers rm

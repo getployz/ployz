@@ -25,7 +25,6 @@ import { useStoreWriter } from "#/modules/config-store/store-write";
 import { StoreRefused } from "#/lib/refusal";
 import { useVolumeLossCheck, type VolumeLossCheck } from "#/modules/config-store/use-volume-loss-check";
 import { useCopiesWait, useStorageSteps } from "#/modules/volume-placement/volume-placement.hooks";
-import { useDeploymentCleanup } from "#/modules/config-store/retire-old.queries";
 import { formatDuration } from "#/utils/relative-time";
 import { makeRunGraph, selectRunNode, type RunGraph, type RunNode } from "#/modules/config-store/deployments/run-graph";
 import { RunCanvas } from "./deployments/RunCanvas";
@@ -42,11 +41,10 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
   const result = useStoreView(organizationSlug, deploymentQuery(deploymentId));
   const writer = useStoreWriter(organizationSlug);
   const cancelling = useStoreCancelling(organizationSlug, deploymentId);
-  const cleanup = useDeploymentCleanup(organizationSlug, deploymentId, result.ok ? result.value : undefined).data ?? null;
   if (!result.ok) return <Empty variant="placeholder" className="m-4"><EmptyDescription>Deployment not found</EmptyDescription></Empty>;
   const deployment = showCancelling(result.value, cancelling);
   const cancel = () => void writer.commit({ command: "cancel", deployment: deployment.id });
-  const graph = makeRunGraph(deployment, cleanup);
+  const graph = makeRunGraph(deployment);
   const selected = selectRunNode(graph, search);
   return (
     // Stacked when the page is narrow, on a phone or beside the Agent, it scrolls. The canvas keeps its height and the panel gets a screen of its own.

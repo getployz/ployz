@@ -728,6 +728,80 @@ fn lowering_lists_every_kind_of_volume_an_earlier_deploy_applied() {
     );
 }
 
+/// A Volume with Shared Writes on reaches the Server in the spec of each Container
+/// that mounts it, so the Server lets that Container run beside another writer. A
+/// Volume without them is left out, and the Server keeps it to one.
+#[test]
+fn lowering_names_the_volumes_a_container_may_share() {
+    let config = json!({"version":2,"privateDns":"web","healthcheck":{"type":"none"},
+    "restartPolicy":"on-failure",
+    "source":{"version":1,"type":"image","image":"nginx:stable","credentials":{"type":"none"}},
+    "mounts":[
+        {"volumeResourceId":"shared","volumeName":"uploads","mountPath":"/uploads"},
+        {"volumeResourceId":"alone","volumeName":"data","mountPath":"/data"}
+    ]});
+    let intent = lowered(json!({
+        "namespace":"app","snapshots":[{"config":config}],
+        "volumes":[
+            {"volumeResourceId":"shared","storage":{"kind":"provisioned","maximumBytes":1_073_741_824},"sharedWrites":true},
+            {"volumeResourceId":"alone","storage":{"kind":"provisioned","maximumBytes":1_073_741_824}}
+        ]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        intent["target"][0]["container"]["shared_writes"],
+        json!(["vol-shared"]),
+        "{intent}"
+    );
+}
+
+/// The Machine reads a Container's sharing from labels fixed at create, so a Deploy
+/// that turns Shared Writes on or off replaces each Container that mounts the Volume,
+/// and one that leaves it alone keeps them.
+#[test]
+fn turning_shared_writes_on_or_off_replaces_the_containers_that_mount_it() {
+    let spec = |shared: bool| {
+        let config = json!({"version":2,"privateDns":"web","healthcheck":{"type":"none"},
+        "restartPolicy":"on-failure",
+        "source":{"version":1,"type":"image","image":"nginx:stable","credentials":{"type":"none"}},
+        "mounts":[{"volumeResourceId":"data","volumeName":"data","mountPath":"/data"}]});
+        let intent = lower_deployment(
+            serde_json::from_value(json!({
+                "namespace":"app","snapshots":[{"config":config}],
+                "volumes":[{"volumeResourceId":"data","storage":{"kind":"provisioned","maximumBytes":1_073_741_824},"sharedWrites":shared}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut requested = intent.target.into_iter().next().unwrap();
+        requested.mount_graph = requested
+            .mount_graph
+            .scope_to_namespace(&intent.namespace)
+            .unwrap();
+        requested
+    };
+    let running = |shared: bool| {
+        spec(shared)
+            .to_resolved(ployz_core::ServiceId::random(), Default::default())
+            .unwrap()
+    };
+
+    for (was, now) in [(false, true), (true, false)] {
+        assert_eq!(
+            ployz_core::compare_specs(&running(was), &spec(now)),
+            ployz_core::SpecChange::NeedsRecreate,
+            "shared writes {was} -> {now}"
+        );
+    }
+    for same in [false, true] {
+        assert_eq!(
+            ployz_core::compare_specs(&running(same), &spec(same)),
+            ployz_core::SpecChange::UpToDate
+        );
+    }
+}
+
 /// One service that uses every part of lowering, whole, so a split of the function cannot
 /// change what any part contributes.
 fn everything() -> Value {

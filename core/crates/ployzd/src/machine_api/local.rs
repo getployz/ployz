@@ -1315,7 +1315,6 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         }
         LocalMachineError::Docker(error) => Ok(RpcError::from(&error)),
         LocalMachineError::StoragePreparation(error)
-        | LocalMachineError::FenceRefused(error)
         | LocalMachineError::PullRefused(error) => Ok(error),
         LocalMachineError::Cleanup(message) => Ok(RpcError::internal(message)),
         LocalMachineError::Admission(crate::mutation::Error::Busy) => Ok(RpcError::conflict(

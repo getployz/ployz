@@ -229,14 +229,14 @@ fn every_store_follow_up_reads_as_main_wrote_it() {
             call("environment_show", scope.clone()),
         ),
         (
-            FollowUp::VolumeStopSharedWrites {
+            FollowUp::VolumeAllowSharedWrites {
                 volume: "data".into(),
                 place: staging(),
             },
-            json!("ployz volume set data --shared-writes=false --env staging --project shop"),
+            json!("ployz volume set data --shared-writes --env staging --project shop"),
             call(
                 "volume_update",
-                json!({ "volume": "data", "shared_writes": false, "environment": "staging", "project": "shop" }),
+                json!({ "volume": "data", "shared_writes": true, "environment": "staging", "project": "shop" }),
             ),
         ),
         (

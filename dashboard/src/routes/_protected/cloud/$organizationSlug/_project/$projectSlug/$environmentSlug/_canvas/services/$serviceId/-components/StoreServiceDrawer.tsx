@@ -189,7 +189,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
       <StoreReplicas state={state} home={home} oneRegion={hasVolume}
         sharing={sharedRegion(service.name, { home, volumes, copies: volumeCopies, servers: machines,
           services: services.map(({ name }) => ({ name, replicas: replicasValue(serviceSettingRows(settings, name).get("replicas")) })) })}
-        capped={capped ? <CappedHint volume={capped} /> : undefined} />
+        capped={capped ? <CappedHint params={params} volume={capped} /> : undefined} />
       <StoreResourceLimits state={state} />
     </>,
     build: state.source === "git" ? <>

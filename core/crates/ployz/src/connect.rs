@@ -49,8 +49,8 @@ use crate::context::{
 };
 
 pub use crate::cluster::{
-    Budgeted, Call, Carried, Client, Deadline, MachineImagesObservation, Once, Pacing, Remover,
-    Repeat, Replay, Wait, Waiting,
+    Budgeted, Call, Carried, Client, Deadline, MachineImagesObservation, Once, Pacing, Repeat,
+    Replay, Wait, Waiting,
 };
 
 pub(crate) const UNARY_RETRY_DELAYS: [Duration; 3] = [

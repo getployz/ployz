@@ -26,8 +26,8 @@ use iroh::{
     tls::CaTlsConfig,
 };
 use ployz_core::{
-    BUILD_GRANT_ALPN, ClientKey, DEFAULT_RELAY_URL, FORGOTTEN_ALPN, MANAGEMENT_ALPN,
-    MANAGEMENT_PORT, ManagementProof, TUNNEL_ALPN, separation,
+    BUILD_GRANT_ALPN, ClientKey, DEFAULT_RELAY_URL, MANAGEMENT_ALPN, MANAGEMENT_PORT,
+    ManagementProof, TUNNEL_ALPN, separation,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
@@ -40,10 +40,8 @@ use tonic::{
 use crate::machine::{LocalMachine, LocalMachineRecord};
 
 pub mod build_grant;
-pub mod forgotten;
 mod tunnel;
 pub use build_grant::{BuildGrants, IngestAt, IngestProcess, Mint};
-pub use forgotten::Roster;
 
 /// Application close code sent when the remote key is not admitted and no tombstone holds it.
 pub const CLIENT_REFUSED: VarInt = VarInt::from_u32(ployz_core::CLIENT_REFUSED_CLOSE);
@@ -165,8 +163,7 @@ impl std::fmt::Debug for ManagementSecret {
     }
 }
 
-/// Bind the management endpoint: the Machine RPC, tunnel, Build Grant and forgotten
-/// ALPNs, no address lookup, only the configured relay.
+/// Bind the management endpoint: the Machine RPC, tunnel and Build Grant ALPNs, no address lookup, only the configured relay.
 ///
 /// # Errors
 /// Returns the iroh bind error when the UDP port or crypto provider is unavailable.
@@ -180,7 +177,6 @@ pub async fn bind(
             MANAGEMENT_ALPN.to_vec(),
             TUNNEL_ALPN.to_vec(),
             BUILD_GRANT_ALPN.to_vec(),
-            FORGOTTEN_ALPN.to_vec(),
         ])
         .relay_mode(config.relay.mode())
         .ca_tls_config(config.relay_tls.clone())
@@ -223,16 +219,11 @@ fn transport() -> QuicTransportConfig {
 ///
 /// Connections on the tunnel ALPN each relay one port-forward TCP stream into the
 /// Cluster network for a slot's accepted key.
-///
-/// Connections on the forgotten ALPN are answered from `roster` by their transport key
-/// alone and closed; see [`forgotten`]. Only a Participating Machine answers; pass
-/// `None::<ReplicatedStore>` to have every asker hear NoAnswer.
-pub async fn serve<S, R>(
+pub async fn serve<S>(
     endpoint: Endpoint,
     local: LocalMachine,
     api: S,
     grants: Arc<BuildGrants>,
-    roster: R,
     shutdown: CancellationToken,
 ) where
     S: Service<http::Request<Body>, Response = http::Response<Body>, Error = Infallible>
@@ -240,9 +231,7 @@ pub async fn serve<S, R>(
         + Send
         + 'static,
     S::Future: Send,
-    R: Roster,
 {
-    let answers = Arc::new(forgotten::Answers::new(roster));
     let handshakes = Arc::new(Semaphore::new(MAX_CONCURRENT_HANDSHAKES));
     let mut connections = tokio::task::JoinSet::new();
     loop {
@@ -263,7 +252,6 @@ pub async fn serve<S, R>(
             local.clone(),
             api.clone(),
             Arc::clone(&grants),
-            Arc::clone(&answers),
             shutdown.clone(),
         ));
     }
@@ -271,13 +259,12 @@ pub async fn serve<S, R>(
     endpoint.close().await;
 }
 
-async fn serve_connection<S, R>(
+async fn serve_connection<S>(
     incoming: Incoming,
     permit: OwnedSemaphorePermit,
     local: LocalMachine,
     api: S,
     grants: Arc<BuildGrants>,
-    answers: Arc<forgotten::Answers<R>>,
     shutdown: CancellationToken,
 ) where
     S: Service<http::Request<Body>, Response = http::Response<Body>, Error = Infallible>
@@ -285,7 +272,6 @@ async fn serve_connection<S, R>(
         + Send
         + 'static,
     S::Future: Send,
-    R: Roster,
 {
     let mut records = local.owner().watch();
     let connection = match incoming.await {
@@ -303,12 +289,6 @@ async fn serve_connection<S, R>(
     if connection.alpn() == TUNNEL_ALPN {
         drop(permit);
         tunnel::serve(connection, local, records, shutdown).await;
-        return;
-    }
-    if connection.alpn() == FORGOTTEN_ALPN {
-        drop(permit);
-        let phase = records.borrow().phase();
-        forgotten::serve(connection, phase, &answers).await;
         return;
     }
     let Some((remote, streams)) = (tokio::select! {

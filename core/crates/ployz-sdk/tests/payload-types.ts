@@ -21,7 +21,6 @@ import type {
   CpuNanos,
   ProvisionedVolumeMaximumBytes,
   VolumeDriver,
-  LocalMachineRemoved,
   MachineId,
   MachinePath,
   PidMode,
@@ -242,10 +241,9 @@ const identity: RegisterRequest = {
 };
 client.preview(intent) satisfies Promise<PreparedDeploy>;
 client.runtime.watch() satisfies AsyncIterable<RuntimeWatchView>;
-client.removeMachine("machine", { confirmed: [] }) satisfies Promise<LocalMachineRemoved>;
 client.destroyCluster({ confirmed: [] }) satisfies Promise<ClusterTeardown>;
 // @ts-expect-error destructive methods require an explicit confirmation object
-client.removeMachine("machine", []);
+client.destroyCluster([]);
 // @ts-expect-error MachineId is branded; a plain string cannot cross the façade
 connect({ connections: [{ unix: "/tmp/machine.sock", machine_id: "machine" }] });
 

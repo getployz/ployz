@@ -9,7 +9,7 @@ import { inngestRunStatus, type PloyzInngest } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
 import { githubBuildRunCompleted } from "#/modules/github/github.events";
 import { inngestFunctionCancelledEnvelopeSchema, inngestFunctionCancelledEventType, inngestFunctionFinishedEventType } from "#/modules/inngest/events";
-import { type ConfigDeploymentAdmittedEventData, configDeploymentAdmitted, configDeploymentRetireRequested, configDeploymentStopRequested, configFirstServerJoined, createConfigDeploymentStartedEvent } from "#/modules/config-store/config-store.events";
+import { type ConfigDeploymentAdmittedEventData, configDeploymentAdmitted, configDeploymentStopRequested, configFirstServerJoined, createConfigDeploymentStartedEvent } from "#/modules/config-store/config-store.events";
 import { stopRun } from "#/modules/config-store/store-deployment-stop.inngest";
 import { clusterDomainSyncRequested } from "#/modules/cluster-domain/cluster-domain.events";
 import {
@@ -99,9 +99,6 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Effec
         await step.run("release-followed", () => runEffect(releaseFollowed(environmentId, runId, lanes)));
       }
       await step.run("finish-volumes", () => runEffect(finishDeployVolumes(runId, "done")));
-      if ("ran" in ran) {
-        await step.sendEvent("retire-old", configDeploymentRetireRequested.create({ organizationId, environmentId, deploymentId, number: ran.ran.number }));
-      }
       const applied = "ran" in ran && ran.ran.status === "applied";
       // A failed Deployment can still have advanced Applied State, so the checks follow it either way. Only an applied
       // one is probed: a failed one may have stopped partway, and the schedule still checks what it reached.
