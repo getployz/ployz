@@ -6,7 +6,8 @@ import { authSummary, requestPreference } from "#/server/content-negotiation";
 
 // Sign in and Deploy on the marketing site go straight to GitHub (/auth/github). This page is where the rest land: a
 // protected page while signed out, Self-hosted Cloud's /, and better-auth's OAuth errors (onAPIError, ?error=).
-const AuthSearch = Schema.Struct({ error: Schema.optional(Schema.String) });
+// `callbackURL` is the protected page that sent the person here; GitHub sign-in returns there, checked on this origin.
+const AuthSearch = Schema.Struct({ error: Schema.optional(Schema.String), callbackURL: Schema.optional(Schema.String) });
 
 const VIEWS = {
   start: { title: "Welcome to Ployz", description: "Keep the platform. Drop the bill.", action: "Continue with GitHub" },
@@ -44,12 +45,12 @@ export const Route = createFileRoute("/_public/auth")({
 });
 
 function RouteComponent() {
-  const { error } = Route.useSearch();
+  const { error, callbackURL } = Route.useSearch();
   const view = VIEWS[error === undefined ? "start" : "failed"];
   return (
     <main className="flex flex-1 items-center justify-center bg-[radial-gradient(60rem_26rem_at_50%_0%,var(--color-changed-soft),transparent_70%)] px-5 pt-16 pb-28">
       <div className="w-full max-w-sm">
-        <LoginPanel {...view} callbackURL="/cloud" />
+        <LoginPanel {...view} callbackURL={callbackURL?.startsWith("/") ? callbackURL : "/cloud"} />
       </div>
     </main>
   );
