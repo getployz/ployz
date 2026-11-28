@@ -36,9 +36,6 @@ const UNCLAIMED = "00000000-0000-4000-8000-00000000a105";
 const UNSTORED = "00000000-0000-4000-8000-00000000a106";
 const TOKEN = sealedSecret({ environment: ENVIRONMENT, service: SERVICE }, "TOKEN");
 const here = { project: null, environment: null };
-// A run that ran asks for its cleanup, and the test engine stops at a send nothing answers. Each engine gets its own
-// mock, since an engine keeps state in the mocks it is given.
-const sentRetire = () => [{ id: "retire-old", handler: () => ({ ids: [] }) }];
 
 const admitted = (deploymentId: string, trigger?: DeploymentTrigger) => ({
   name: configDeploymentAdmitted.name,
@@ -70,7 +67,7 @@ it.live(
       const inngest = new Inngest({ id: "store-deployment-test" });
       const worker = createRunStoreDeployment(inngest, runner);
       const run = (deploymentId: string) =>
-        Effect.promise(() => new InngestTestEngine({ function: stableRunId(worker, `run-${deploymentId}`), events: [admitted(deploymentId)], steps: sentRetire() }).execute());
+        Effect.promise(() => new InngestTestEngine({ function: stableRunId(worker, `run-${deploymentId}`), events: [admitted(deploymentId)] }).execute());
       const claim = (deploymentId: string) => Effect.gen(function* () {
         const { drizzle } = yield* Database;
         yield* drizzle.insert(volumePlacement).values({ volumeId: `vol-${deploymentId}`, organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId });
@@ -226,7 +223,7 @@ it.live(
         makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(Effect.provide(services)))),
       );
       const run = (deploymentId: string) =>
-        Effect.promise(() => new InngestTestEngine({ function: stableRunId(worker, `run-${deploymentId}`), events: [admitted(deploymentId)], steps: sentRetire() }).execute());
+        Effect.promise(() => new InngestTestEngine({ function: stableRunId(worker, `run-${deploymentId}`), events: [admitted(deploymentId)] }).execute());
       const view = (deploymentId: string) =>
         Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: deploymentId }));
 
@@ -282,7 +279,7 @@ it.live(
       const worker = createRunStoreDeployment(inngest, makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(Effect.provide(services)))));
       let runs = 0;
       const run = (deploymentId: string, trigger?: DeploymentTrigger) => Effect.promise(() => new InngestTestEngine({
-        function: stableRunId(worker, `run-${(runs += 1)}`), events: [admitted(deploymentId, trigger)], steps: sentRetire(),
+        function: stableRunId(worker, `run-${(runs += 1)}`), events: [admitted(deploymentId, trigger)],
       }).execute());
       const mails = () => send.mock.calls.flatMap(([payload]) => [payload].flat())
         .filter((event) => event.name === mailSendRequested.name)
@@ -333,7 +330,6 @@ it.live(
         steps: [
           { id: "run-deployment", handler: () => ({ ran: { id: QUEUED, number: 4, status, remove: false, outcome } }) },
           { id: "delete-orphan-mirrors", handler: () => null },
-          ...sentRetire(),
         ],
       }).execute());
       // A cancelled Deploy still lists web waiting, but the rest of it didn't go through.

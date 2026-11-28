@@ -1230,7 +1230,7 @@ async fn a_deploys_redial_tells_a_refusal_from_a_failed_dial() {
 }
 
 /// Parallel forgets through one entry: the Server's first answer is a retryable failure,
-/// and reconnecting to the busy entry outlasts the read, so whether it holds copies stays
+/// and reconnecting to the busy entry outlasts the read, so whether it answers stays
 /// unknown.
 #[tokio::test(start_paused = true)]
 async fn a_forget_whose_entry_reconnect_fails_says_to_run_it_again() {
@@ -1245,19 +1245,19 @@ async fn a_forget_whose_entry_reconnect_fails_says_to_run_it_again() {
         .await;
     client.enter_at(machine_id('a'));
 
-    let error = client.held_copies(&machine('b')).await.unwrap_err();
+    let error = client.reply(&machine('b')).await.unwrap_err();
 
     assert_eq!(
         error.message,
-        "Couldn't check whether Server machine-b holds Volume copies. No changes made. Run the \
-         command again, one Server at a time if you're forgetting several."
+        "Couldn't check whether Server machine-b answers. No changes made. Run the command \
+         again, one Server at a time if you're removing several."
     );
     assert_eq!(error.cause, ["entry Machine reconnect timed out"]);
     server.abort();
 }
 
 /// A forget racing Cloud's finished removal, #3612: the entry no longer lists the Server
-/// by the time its copies are read, so it is gone rather than unchecked.
+/// by the time it is read, so it is gone rather than unchecked.
 #[tokio::test]
 async fn a_server_the_entry_no_longer_lists_reads_gone() {
     let (client, server) =
@@ -1280,9 +1280,9 @@ async fn a_server_the_entry_no_longer_lists_reads_gone() {
         })
         .await;
 
-    let held = client.held_copies(&machine('b')).await;
+    let held = client.reply(&machine('b')).await;
 
-    assert!(matches!(held, Ok(HeldCopies::Gone(_))), "{held:?}");
+    assert!(matches!(held, Ok(Reply::Gone(_))), "{held:?}");
     server.abort();
 }
 
@@ -1310,9 +1310,9 @@ async fn a_server_the_entry_reports_silent_reads_dead_without_reconnecting_to_th
         .await;
     client.enter_at(machine_id('a'));
 
-    let held = client.held_copies(&machine('b')).await;
+    let held = client.reply(&machine('b')).await;
 
-    assert!(matches!(held, Ok(HeldCopies::Dead)), "{held:?}");
+    assert!(matches!(held, Ok(Reply::Dead)), "{held:?}");
     assert_eq!(reconnects.load(std::sync::atomic::Ordering::SeqCst), 0);
     server.abort();
 }
@@ -1407,104 +1407,6 @@ async fn a_client_reaches_a_machine_with_full_scope_only_over_ssh_the_socket_or_
         "no connection names it"
     );
     server.abort();
-}
-
-/// A daemon that lists Machines `a` and `b`, names itself `described` whenever asked, and
-/// refuses every other request. Each request it receives is logged in order.
-async fn lists_a_and_b_describing_itself_as(
-    described: char,
-) -> (
-    Client,
-    std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>,
-    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-) {
-    let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let logged = log.clone();
-    let (client, server) = crate::connect::test_support::rpc_client(move |rpc| {
-        let logged = logged.clone();
-        async move {
-            let body = rpc.into_inner().decode_request().unwrap().body;
-            logged.lock().unwrap().push(body.command());
-            let reply = if let ployz_core::RpcRequestBody::DescribeContract(_) = body {
-                ployz_core::RpcResponse::from(ployz_core::ContractDescription {
-                    attest: None,
-                    machine_id: machine_id(described),
-                    protocol_major: ployz_core::PROTOCOL_MAJOR,
-                    daemon_version: "test".into(),
-                    capabilities: Default::default(),
-                    sealing: None,
-                })
-            } else if let ployz_core::RpcRequestBody::ListMachines(_) = body {
-                ployz_core::RpcResponse::from(ployz_core::MachineList {
-                    enrollment: None,
-                    machines: vec![machine('a'), machine('b')],
-                })
-            } else {
-                return Err(tonic::Status::unimplemented("pinned"));
-            };
-            Ok(tonic::Response::new(reply.encode().unwrap()))
-        }
-    })
-    .await;
-    (client, log, server)
-}
-
-async fn removing(
-    removed: char,
-    confirmed: char,
-    described: char,
-) -> (Result<LocalMachineRemoved, RpcError>, Vec<&'static str>) {
-    let (mut client, log, server) = lists_a_and_b_describing_itself_as(described).await;
-    client.enter_at(machine_id(confirmed));
-    let nothing_lost = ployz_core::ObservedDataLoss {
-        data_loss: Vec::new(),
-    }
-    .confirm_names([])
-    .unwrap();
-    let removal = client
-        .remove_machine(
-            &MachineTarget::from(&machine_id(removed)),
-            &nothing_lost,
-            Remover::Operator,
-        )
-        .await;
-    server.abort();
-    let seen = log.lock().unwrap().clone();
-    (removal, seen)
-}
-
-const CURRENT_ENTRY_REFUSAL: &str =
-    "the current entry Machine cannot be removed while another Machine is visible";
-
-/// The entry is the Machine a describe names now, not the one confirmed when the channel
-/// opened: a daemon that reset and enrolled as another since is the one removed last.
-#[tokio::test]
-async fn remove_machine_refuses_the_machine_the_daemon_now_describes_as_its_entry() {
-    let (removal, seen) = removing('b', 'a', 'b').await;
-
-    let refused = removal.unwrap_err();
-    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
-    assert_eq!(refused.message, CURRENT_ENTRY_REFUSAL);
-    assert_eq!(
-        seen,
-        ["list_machines", "describe_contract"],
-        "refused before any volume is read"
-    );
-}
-
-/// And the Machine the entry was confirmed as, once the daemon no longer says so, is not
-/// refused as the current entry.
-#[tokio::test]
-async fn remove_machine_does_not_refuse_the_machine_the_daemon_no_longer_describes_as_its_entry() {
-    let (removal, seen) = removing('a', 'a', 'b').await;
-
-    if let Err(error) = removal {
-        assert_ne!(error.message, CURRENT_ENTRY_REFUSAL);
-    }
-    assert_eq!(
-        seen.get(..2),
-        Some(&["list_machines", "describe_contract"][..])
-    );
 }
 
 /// What a drain's image copy names on its destination. Over SSH only the entry takes a

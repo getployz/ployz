@@ -4,7 +4,7 @@
 
 use std::{collections::BTreeMap, time::Duration};
 
-use ployz_core::{Departed, MachineId, MachineName, RpcError};
+use ployz_core::{MachineId, MachineName, RpcError};
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize};
 
@@ -139,21 +139,7 @@ pub(crate) async fn forget_servers(
 /// What Cloud's removal of a Server did.
 #[derive(Debug, Deserialize)]
 pub(crate) struct CloudRemoval {
-    /// `departed` as prose, and all an older Cloud says.
-    pub(crate) reset_warning: Option<String>,
-    /// How the Server left. None from an older Cloud, for an attempt row older than the tag, for
-    /// a removal without a reset, or for a kind of departure newer than this CLI.
-    #[serde(default, deserialize_with = "known_departed")]
-    pub(crate) departed: Option<Departed>,
     pub(crate) release: Release,
-}
-
-/// A departure this CLI knows, or none: a newer Cloud may send a kind it doesn't.
-fn known_departed<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<Departed>, D::Error> {
-    Ok(Option::<serde_json::Value>::deserialize(deserializer)?
-        .and_then(|departed| serde_json::from_value(departed).ok()))
 }
 
 /// What became of Cloud's hold once the Server was gone.
@@ -179,8 +165,8 @@ enum RemovalRun {
 /// doesn't answer before it goes ahead.
 const REMOVAL_WAIT: std::time::Duration = std::time::Duration::from_secs(20 * 60);
 
-/// Have Cloud remove Server `machine` of the credential's Organization, resetting it
-/// and accepting exactly `confirmation`'s Data Loss. It is the same durable removal the
+/// Have Cloud remove Server `machine` of the credential's Organization, accepting
+/// exactly `confirmation`'s Data Loss. It is the same durable removal the
 /// dashboard starts, which Cloud runs under its own connection; [`follow_removal`]
 /// waits for it. The run keeps `machine`'s name, the one the CLI showed. `approval` is
 /// the id of the human's approval, when Cloud asked for one.
@@ -208,7 +194,7 @@ pub(crate) async fn start_removal(
 }
 
 /// Have Cloud forget Server `machine` of the credential's Organization: take it out of
-/// the Cluster without a reset. Cloud runs it as the same durable removal
+/// the Cluster and revoke its keys, as a removal does. Cloud runs it as the same durable removal
 /// [`follow_removal`] waits for, and it keeps `machine`'s name, the one the CLI
 /// showed. `approval` is the id of the human's approval, when Cloud asked for one.
 ///
@@ -234,7 +220,7 @@ pub(crate) async fn start_forget(
 }
 
 /// Wait for Cloud's removal `id` of Server `name` to settle. Cloud drops its row for
-/// the Server, and when it saw the last one reset, lets go of the Cluster.
+/// the Server, and with the last one lets go of the Cluster.
 ///
 /// # Errors
 ///
@@ -259,8 +245,8 @@ pub(crate) async fn follow_removal(
         Err(StoreCallError::Refused(refused))
             if refused.details.get("unfinished") == Some(&serde_json::Value::Bool(true)) =>
         {
-            // Any step after the reset was sent may be the one that ran out: the Server may
-            // have reset and Cloud dropped it, or neither.
+            // Any step after the forget was sent may be the one that ran out: the Server may
+            // be gone and Cloud dropped it, or neither.
             Err(StoreCallError::Refused(
                 RpcError::unavailable(format!(
                     "Cloud's removal of Server {name} didn't finish: it ran out of retries. If \
@@ -305,39 +291,6 @@ fn removal_unsettled(name: &MachineName) -> RpcError {
 mod tests {
     use super::*;
     use crate::cloud::account::testing::{fake_cloud, token};
-
-    #[test]
-    fn a_removal_reads_its_departure_and_an_older_or_newer_cloud_reads_without_one() {
-        let departed = |body: &str| serde_json::from_str::<CloudRemoval>(body).unwrap().departed;
-        let release = r#""release":{"kind":"others_remain"}"#;
-        assert_eq!(
-            departed(&format!(
-                r#"{{"reset_warning":"replicated delete failed","departed":{{"kind":"reset","row_warning":"replicated delete failed"}},{release}}}"#
-            )),
-            Some(Departed::Reset {
-                row_warning: Some("replicated delete failed".into())
-            })
-        );
-        assert_eq!(
-            departed(&format!(r#"{{"reset_warning":null,{release}}}"#)),
-            None,
-            "an older Cloud"
-        );
-        assert_eq!(
-            departed(&format!(
-                r#"{{"reset_warning":null,"departed":null,{release}}}"#
-            )),
-            None,
-            "a row older than the tag"
-        );
-        assert_eq!(
-            departed(&format!(
-                r#"{{"reset_warning":"moved","departed":{{"kind":"moved"}},{release}}}"#
-            )),
-            None,
-            "a newer Cloud"
-        );
-    }
 
     #[test]
     fn a_removal_the_cli_stopped_waiting_on_says_when_to_forget_but_not_to_now() {

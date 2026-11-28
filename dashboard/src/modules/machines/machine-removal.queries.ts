@@ -1,7 +1,6 @@
 /** @data-source remote: one Machine removal attempt, started by the user's confirmed Remove or Forget; polled every second until it settles, because the Servers finish it and no row change reaches the tab in time */
 import { queryOptions, QueryObserver, type QueryClient } from "@tanstack/react-query";
 import { getMachineRemoveAttemptServerFn } from "#/modules/machines/machine-removal.functions";
-import { removalFailureMessage } from "#/modules/machines/machine-removal";
 import type { MachineRemoveResult } from "#/modules/machines/machine-removal-states";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 
@@ -29,7 +28,6 @@ export function machineRemoveAttemptQueryOptions(organizationSlug: string, attem
 export function waitForMachineRemoveAttempt(
   queryClient: QueryClient,
   organizationSlug: string,
-  name: string,
   attemptId: string,
   stopped: () => boolean,
 ): Promise<MachineRemoveResult | "aborted" | { missing: DataLossIdentity[] }> {
@@ -55,7 +53,7 @@ export function waitForMachineRemoveAttempt(
           return settle(() => resolve({ missing: attempt.missingIdentities }));
         case "failed":
         case "cancelled":
-          return settle(() => reject(new Error(removalFailureMessage(name, attempt))));
+          return settle(() => reject(new Error(attempt.failureMessage)));
         default: {
           const _exhaustive: never = attempt;
           return settle(() => reject(new Error(`Unhandled machine remove attempt: ${_exhaustive}`)));

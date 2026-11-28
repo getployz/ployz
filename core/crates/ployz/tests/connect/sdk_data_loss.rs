@@ -56,6 +56,55 @@ async fn data_loss_if_machine_removed_lists_volumes_and_empty_without_mutating()
     );
 }
 
+/// Only a Volume no other Server holds is lost with the removed one: a copy elsewhere keeps
+/// it off the list, and a Server that can't say what it holds keeps everything on it.
+#[tokio::test]
+async fn data_loss_if_machine_removed_lists_only_volumes_no_other_server_holds() {
+    let (description, loaded, empty, mut service) = two_machine_cluster();
+    let bytes = ployz_core::ProvisionedVolumeMaximumBytes::new(
+        std::num::NonZeroU64::new(ployz_core::STORAGE_GIB).unwrap(),
+    );
+    service.storage_by_machine = BTreeMap::from([(
+        empty.machine.id,
+        ployz_core::StorageCapacity {
+            backing: ployz_core::StorageBacking::Unallocated {
+                host_total_bytes: 100 * ployz_core::STORAGE_GIB,
+                host_available_bytes: 90 * ployz_core::STORAGE_GIB,
+            },
+            unmanaged_used_bytes: 0,
+            slot_bound_bytes: 0,
+            volumes: BTreeMap::new(),
+            copies: BTreeMap::from([(
+                DockerVolumeName::parse("data").unwrap(),
+                ployz_core::ProvisionedCopy::new(ployz_core::CopyPlace::Slot(None), bytes, 0),
+            )]),
+        },
+    )]);
+    let session = UnixSession::start().await;
+    let _spawned = session.spawn_machine(description.machine_id, service).await;
+    let client = timeout(
+        Duration::from_secs(5),
+        unix_session::connect(&session.directory, description.machine_id.as_str()),
+    )
+    .await
+    .expect("connect must not hang")
+    .unwrap();
+
+    let lost = client
+        .data_loss_if_machine_removed(loaded.machine.name.as_str())
+        .await
+        .unwrap();
+    assert_eq!(
+        lost.data_loss,
+        [DataLoss::DockerVolume {
+            id: DockerVolumeId {
+                machine_id: loaded.machine.id,
+                name: DockerVolumeName::parse("logs").unwrap(),
+            }
+        }]
+    );
+}
+
 #[tokio::test]
 async fn data_loss_if_machine_removed_is_observer_relative() {
     let (client, _loaded, _empty, _session, _machine) = session_with_two_machines().await;

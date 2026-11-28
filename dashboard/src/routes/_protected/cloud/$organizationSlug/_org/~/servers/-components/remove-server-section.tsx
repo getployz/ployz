@@ -36,10 +36,10 @@ const volumes = (rust: DataLossList["rust"], names: readonly LostVolumeName[]) =
 });
 
 /**
- * Removing a Server resets it and takes it out of the cluster; its volumes stay on its disk, unused. The `last` one takes
- * everything running with it, and Cloud lets go of the cluster: Deploy asks for a server until one is added. It waits on
- * the runtime, and once the Server is gone the page returns to Servers. An `offline` Server can't be reset, so it is
- * forgotten instead: by another Server, or with Forget Servers when it is the last.
+ * Removing a Server takes it out of the cluster and revokes its keys; Ployz never touches the Server itself, and the
+ * Volumes only it holds are lost. With the `last` one Cloud lets go of the cluster: Deploy asks for a server until one is
+ * added. It waits on the runtime, and once the Server is gone the page returns to Servers. An `offline` Server is
+ * forgotten: by another Server, or with Forget Servers when it is the last.
  */
 export function RemoveServerSection({ machine, organizationSlug, last, offline, hint, gate }: {
   machine: RuntimeMachineRecord; organizationSlug: string; last: boolean; offline: boolean;
@@ -69,8 +69,8 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
         : <ForgetServerRow machine={machine} organizationSlug={organizationSlug} gate={gate} /> : <SettingsDanger
         label={`Remove ${machine.name}`}
         hint={last
-          ? "Resets it. It's your only server, so everything running here stops until you add another."
-          : "Resets it and takes it out of the cluster. Services that run only here stop."}
+          ? "Takes it out of the cluster. It's your only server, so nothing deploys until you add another."
+          : "Takes it out of the cluster and revokes its keys."}
         action={
           <Button variant="destructive" disabled={!gate.allowed} title={gate.reason} onClick={() => onOpenChange(true)}>
             <Trash2Icon data-icon="inline-start" />
@@ -89,8 +89,8 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
         confirmLabel="Remove"
         pendingLabel="Removing"
         sentence={<>
-          {last ? "Everything running on it stops. " : null}
-          Its volumes stay on its disk, but your services <span className="text-destructive">lose</span> them.
+          Volumes only this server holds <span className="text-destructive">are lost</span>.
+          {last ? " It keeps running its containers: run sudo ployz-uninstall on it to stop them, or ployz server add --reset to use it again." : null}
         </>}
         callbacks={{
           load: async () => {
@@ -108,7 +108,7 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
             // not the mount: this section unmounts once the Server leaves the runtime, and that user should still land on Servers.
             const stillHere = markHere();
             const queued = await enqueueMachineRemoveServerFn({ data: { organizationSlug, machineId: machine.id, confirmDataLoss: identities } });
-            const result = await waitForMachineRemoveAttempt(queryClient, organizationSlug, machine.name, queued.id,
+            const result = await waitForMachineRemoveAttempt(queryClient, organizationSlug, queued.id,
               () => abort.signal.aborted || !stillHere());
             if (result === "aborted") return;
             if ("release" in result) {
@@ -149,7 +149,7 @@ function ForgetLastServerRow({ machine, organizationSlug, gate }: { machine: Run
 }
 
 /**
- * Forgetting takes a Server that is gone for good out of the cluster without resetting it, then waits on the removal.
+ * Forgetting takes a Server that is gone for good out of the cluster, then waits on the removal.
  * A Server that doesn't answer can't list its volumes, so the list is often empty; the sentence still says which come
  * back from a mirror and which are lost.
  */
@@ -169,7 +169,7 @@ function ForgetServerRow({ machine, organizationSlug, gate }: { machine: Runtime
   const forget = async () => {
     const stillHere = markHere();
     const answer = await forgetServerServerFn({ data: { organizationSlug, machineId: machine.id, requestId: crypto.randomUUID() } });
-    const result = await waitForMachineRemoveAttempt(queryClient, organizationSlug, machine.name, answer.id, () => !stillHere());
+    const result = await waitForMachineRemoveAttempt(queryClient, organizationSlug, answer.id, () => !stillHere());
     if (result === "aborted") return;
     if ("missing" in result) throw new Error(`${machine.name} changed while it was being forgotten. Try again.`);
     toast(`${machine.name} forgotten`);
@@ -197,11 +197,7 @@ function ForgetServerRow({ machine, organizationSlug, gate }: { machine: Runtime
         pendingLabel="Forgetting"
         sentence={<>Ployz takes it out of the cluster without reaching it. A volume with a mirror on another server comes
           back from it: open the volume's Copies, click Use mirror, then deploy. Volumes with no copy elsewhere{" "}
-          <span className="text-destructive">are lost</span>. {machine.name} isn't told it was forgotten. If it runs
-          again as it is, its services keep writing to its own copies, and Ployz never brings that back: run sudo
-          ployz-uninstall on it as soon as it boots. As a best effort, if it and at least one other server ran 0.3.1 or
-          later while it was still connected, and the server that forgot it runs 0.3.1 or later, it stops them itself up
-          to about 15 minutes after its network returns.</>}
+          <span className="text-destructive">are lost</span>.</>}
         callbacks={{ load, confirm: forget }}
       />
     </>

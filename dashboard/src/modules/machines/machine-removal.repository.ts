@@ -44,7 +44,6 @@ function toContext(attempt: Attempt): MachineRemoveAttemptContext {
     state: attempt.state,
     inngestRunId: attempt.inngestRunId,
     confirmDataLoss: attempt.confirmDataLoss,
-    noReset: attempt.noReset,
   };
 }
 
@@ -134,7 +133,6 @@ export const requestMachineRemoveAttempt = Effect.fn(
   requestedByUserId: string;
   machineId: MachineId;
   confirmDataLoss: DataLossIdentity[];
-  noReset?: boolean;
   id?: string;
   /** The name the caller showed for the Server, which its run keeps; null when it showed none. */
   serverName: MachineName | null;
@@ -149,7 +147,8 @@ export const requestMachineRemoveAttempt = Effect.fn(
       machineId: input.machineId,
       serverName: input.serverName || null,
       confirmDataLoss: input.confirmDataLoss,
-      noReset: input.noReset ?? false,
+      // Every removal is a Forget now; a Cloud rolled back to before that reads this, and so never resets the Server.
+      noReset: true,
       state: "pending",
     })
     .returning()

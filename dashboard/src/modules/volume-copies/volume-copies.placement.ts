@@ -1,11 +1,11 @@
 import type { ChangeKind, MachineId, MachineName, VolumeCopy } from "@ployz/sdk";
 import {
-  appliedMirrors, detachedName, observePlacement, type PlacementItem, type PlacementRow, type PlacementVolume, placementForm, presumedPrimary,
+  appliedMirrors, detachedName, observePlacement, type PlacementItem, type PlacementRow, type PlacementVolume, placementForm,
 } from "#/modules/volume-placement/volume-placement";
 import { runWords } from "#/modules/volume-run/run-words";
 import { copyName, type Heard, heardFrom, type Member, type VolumeRunView } from "#/modules/volume-run/volume-run";
 import type { VolumeRunKind } from "#/modules/volume-run/volume-run-states";
-import type { MirrorCopy, OldCopy, PrimaryServer, ServerRef, StagedCopy, VolumeCopies } from "./volume-copies";
+import { HEARD_WORDS, type MirrorCopy, type OldCopy, type PrimaryServer, type StagedCopy, type VolumeCopies } from "./volume-copies";
 
 /** What a run says on the copy it targets: seeding or removing one; the others show on Live or on no copy. */
 const BUSY_ON_TARGET = {
@@ -53,7 +53,6 @@ export function copiesFromPlacement(input: {
 
   const busyOn = (server: MachineName): string | null => (active !== null && target === server ? BUSY_ON_TARGET[active.kind] : null);
   const mirror = (item: PlacementItem, staged: StagedCopy | null): MirrorCopy => {
-    const from = heard(item.server.id);
     const status = input.statuses.find((each) => each.machine === item.server.id);
     const matchedAt = status?.matchedAt == null ? null : new Date(status.matchedAt);
     const slot = slotOf(item.server.id);
@@ -63,9 +62,8 @@ export function copiesFromPlacement(input: {
       id: item.server.id,
       server: item.server,
       name: copyName(volume.name, item.server.name),
-      refreshedAt: from === "answered" ? syncedAt(item.newest, matchedAt) : matchedAt,
-      skipped: from !== "answered" ? from : failed ? "failed" : null,
-      lastReported: false,
+      refreshedAt: syncedAt(item.newest, matchedAt),
+      failed,
       staged,
       busy: active?.kind === "sync" || (slot !== null && pulling(slot)) ? "Refreshing" : busyOn(item.server.name),
     };
@@ -83,39 +81,15 @@ export function copiesFromPlacement(input: {
 
   const readOnly = (id: MachineId) => members.some((member) =>
     member.answered && member.machine.id === id && member.view.copy?.kind === "root" && member.view.copy.readonly);
-  // presumedPrimary names an answering Server only when it reports the primary, which the first arm takes.
-  const unreported = (server: ServerRef | null): PrimaryServer | null => {
-    if (server === null) return null;
-    const from = heard(server.id);
-    return from === "answered" ? null : { id: server.id, name: server.name, state: from };
-  };
-  const primary: PrimaryServer | null = observed.primary !== null
-    ? { ...observed.primary, state: readOnly(observed.primary.id) ? "read_only" : "live" }
-    : form.primary.change === null ? unreported(presumedPrimary(observed, row))
-    : null;
-  // The form's primary is the holder staging uses, not Live's presumption. One that Live doesn't name stays listed where
-  // the Volume records it as a mirror, with its staged-primary badge when it is staged.
-  const outranked = form.primary.change === null && primary !== null && primary.id !== form.primary.server.id
-    && appliedMirrors(observed, row).includes(form.primary.server.id);
-  // Display only: a mirror a silent Server last reported that no placement holds, as `ployz volume mirror` leaves one.
-  // Staging and recovery never read it, and nothing says when that report was, so it shows no age.
-  const placed = new Set([...form.mirrors, form.primary, ...form.detached].map((item) => item.server.id));
-  const lastReported = members.flatMap((member): MirrorCopy[] => {
-    const from = heardFrom(member);
-    if (from === "answered" || member.answered || member.lastMirror !== true) return [];
-    if (placed.has(member.machine.id) || member.machine.id === primary?.id) return [];
-    return [{
-      kind: "mirror",
-      id: member.machine.id,
-      server: member.machine,
-      name: copyName(volume.name, member.machine.name),
-      refreshedAt: null,
-      skipped: from,
-      lastReported: true,
-      staged: null,
-      busy: busyOn(member.machine.name),
-    }];
-  });
+  // Live names only the Server that claims the primary: by answering with it, or by its last report while it is unheard.
+  const { holder } = observed;
+  const primary = ((): PrimaryServer | null => {
+    if (holder === null) return null;
+    const from = heard(holder.id);
+    return { ...holder, state: from !== "answered" ? from : readOnly(holder.id) ? "read_only" : "live" };
+  })();
+  // A mirror shows only while its Server reports it; an unheard one is named in the unheard line instead.
+  const reported = (item: PlacementItem) => heard(item.server.id) === "answered";
   const seed = row?.staged?.seed;
   return {
     volume: { id: volume.id, name: volume.name },
@@ -126,9 +100,8 @@ export function copiesFromPlacement(input: {
       busy: active !== null && BUSIES_LIVE[active.kind] ? runWords(active) : null,
     },
     elsewhere: [
-      ...form.mirrors.map((item) => mirror(item, stagedOf(item.change))),
-      ...promoted ? [mirror(form.primary, "primary")] : outranked ? [mirror(form.primary, row?.staged?.primary === form.primary.server.id ? "primary" : null)] : [],
-      ...lastReported,
+      ...form.mirrors.filter(reported).map((item) => mirror(item, stagedOf(item.change))),
+      ...promoted && reported(form.primary) ? [mirror(form.primary, "primary")] : [],
       ...form.detached.map(old),
     ],
     unheard: members.flatMap((member) => {
@@ -136,6 +109,24 @@ export function copiesFromPlacement(input: {
       return from === "answered" || member.machine.id === primary?.id ? [] : [{ ...member.machine, heard: from }];
     }),
   };
+}
+
+/**
+ * Why Copies can't name the Server that holds the Volume, or null when one claims it or nothing keeps Copies from knowing.
+ * Several Servers claiming it is a conflict only a person can settle; with none, an unheard Server may hold it.
+ */
+export function holderUnknown(volume: PlacementVolume, members: readonly Member[]): string | null {
+  const { claims, holder } = observePlacement(members);
+  if (holder !== null) return null;
+  if (claims.length > 1) {
+    return `${claims.map((server) => server.name).join(" and ")} each report holding ${volume.name}, so Copies can't tell which one does or change its copies.`;
+  }
+  const unheard = members.flatMap((member) => {
+    const from = heardFrom(member);
+    return from === "answered" ? [] : [HEARD_WORDS[from].clause(member.machine.name)];
+  });
+  if (unheard.length === 0) return null;
+  return `${unheard.join(" and ")}, so Copies can't tell which server holds ${volume.name} or change its copies.`;
 }
 
 /** A Machine reports a landed pull until the same pull is asked for again, so a slot pulls only while short of its target. */

@@ -1567,33 +1567,6 @@ fn a_server_cloud_handed_a_connection_for_that_does_not_answer_is_named() {
 }
 
 #[test]
-fn removing_a_server_that_does_not_answer_points_to_forget() {
-    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let gone = "b".repeat(32);
-    let cloud = waiting_cloud(
-        routes,
-        WaitingCloud {
-            unreachable: vec![gone.clone()],
-            names: serde_json::json!({ gone: "web-1" }),
-            ..WaitingCloud::of(Vec::new())
-        },
-    );
-    let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
-
-    let (code, json, _) = run_json_with(&["server", "rm", "web-1", "--json"], &token);
-    assert_eq!(code, Some(1), "{json}");
-    let next = json
-        .pointer("/error/details/next")
-        .unwrap()
-        .as_str()
-        .unwrap();
-    assert!(
-        next.ends_with(" server forget web-1 --confirm dead"),
-        "{json}"
-    );
-}
-
-#[test]
 fn removing_a_server_that_refused_cloud_says_why_and_not_to_forget_it() {
     let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let refusing = "b".repeat(32);
@@ -1642,7 +1615,7 @@ fn removing_a_server_when_cloud_does_not_answer_says_to_retry_not_forget() {
     assert_eq!(json.pointer("/error/details/next"), None, "{json}");
     let retry = json
         .pointer("/error/details/retry")
-        .unwrap()
+        .unwrap_or_else(|| panic!("{json}"))
         .as_str()
         .unwrap();
     // The retry keeps the reason this run gave, so an agent can run it as is.

@@ -65,16 +65,9 @@ export async function executeProcessMachineRemove({
       lastTry: stepAttempt >= MACHINE_REMOVE_RETRIES,
     }, observe)),
   );
-  const sent = await step.run("remove-machine", () =>
+  const removed = await step.run("remove-machine", () =>
     runEffect(Effect.scoped(removeMachineActivity({ ...attempt, inngestRunId: runId }))),
   );
-  // The Server reset and its row is still listed. The memoized reply is the proof of the reset: Forget alone finishes,
-  // retried while the Server still reads as suspect, and never sends the removal again.
-  const removed = sent.kind === "left"
-    ? await step.run("forget-machine", () =>
-      runEffect(Effect.scoped(removeMachineActivity({ ...attempt, inngestRunId: runId }, { resetWarning: sent.resetWarning }))),
-    )
-    : sent;
 
   // The attempt is no longer this run's running attempt: it finished, was cancelled or failed, or another run claimed
   // it. This run asked nothing and leaves the outcome alone.
@@ -120,17 +113,13 @@ export async function executeProcessMachineRemove({
       writes: leaving.writes,
     })),
   );
-  const departed = removed.kind === "removed" ? removed.departed : undefined;
-  // Its own step: a retry after the reset releases again, never resets a Server that's gone.
+  // Its own step: a retry after the Forget releases again, never forgets a Server twice.
   const release = await step.run("release-server", () =>
     runEffect(
       releaseServerActivity({
         organizationId: attempt.organizationId,
         machineId: attempt.machineId,
         generation: removed.generation,
-        resetWarning: removed.resetWarning,
-        departed,
-        noReset: attempt.noReset,
       }),
     ),
   );
@@ -142,7 +131,7 @@ export async function executeProcessMachineRemove({
         inngestRunId: runId,
         completion: {
           state: "succeeded",
-          result: { resetWarning: removed.resetWarning, departed, release },
+          result: { release },
         },
         now: new Date(),
       }),

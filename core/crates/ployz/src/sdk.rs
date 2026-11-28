@@ -18,7 +18,7 @@ use crate::sealing_backfill::{BackfillSealingKeyReport, BackfillSealingKeyReques
 use ployz_core::{
     CertificateMaterialPublished, ClusterTeardown, ContractDescription, DataLossConfirmation,
     DeployEvent, DeployOutcome, DescribeContractRequest, EnrollmentAssignment, EnrollmentSnapshot,
-    ExecutionError, LocalMachineRemoved, MachineTarget, Namespace, ObservedDataLoss, OpaquePayload,
+    ExecutionError, MachineTarget, Namespace, ObservedDataLoss, OpaquePayload,
     PublishCertificateMaterialRequest, RUNTIME_WATCH_CAPABILITY, Registered, RemoveVolumesRequest,
     Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponseBody, RuntimeWatchFrame,
     RuntimeWatchRequest, ServiceObservation, VolumeRemoval, decode_runtime_watch_frame, op,
@@ -60,9 +60,7 @@ pub use preview::{
 pub use running::Running;
 pub use store_call::store_call;
 pub(crate) use store_runner::RunLease;
-pub use store_runner::{
-    RetireLeft, RetireOutcome, Sources, retire_old, run_deployment, run_deployment_expecting,
-};
+pub use store_runner::{Sources, run_deployment, run_deployment_expecting};
 pub use volume_start::{VolumeStartFields, VolumeStartProof, VolumeStartQuery, volume_start_proof};
 
 /// Cancellable preparation whose progress is retained until read, within a byte budget.
@@ -1133,35 +1131,6 @@ impl Session {
         let mut client = self.client()?;
         self.until_closed(client.data_loss_if_machine_removed(&target))
             .await
-    }
-
-    /// Remove `machine` after an exact Data Loss confirmation.
-    ///
-    /// `confirm_data_loss` is derived from the Live Observation the caller
-    /// showed a human. Re-reads Data Loss at execute time.
-    ///
-    /// # Errors
-    ///
-    /// Returns a generated [`RpcError`] when the session is closed, `machine`
-    /// is not a Machine Target, the Machine is not visible or is the current
-    /// entry while another Machine is visible, the Machine is the last one and a
-    /// Management Client other than Cloud holds a key, the Machine did not respond so Data Loss cannot
-    /// be listed, the confirmation does not cover the fresh Data Loss, or
-    /// reset or shared-row removal fails. Unconfirmed names are in
-    /// `UnconfirmedDataLoss` details.
-    pub async fn remove_machine(
-        &self,
-        machine: &str,
-        confirm_data_loss: &DataLossConfirmation,
-    ) -> Result<LocalMachineRemoved, RpcError> {
-        let target = resolve_target(machine)?;
-        let mut client = self.client()?;
-        self.until_closed(client.remove_machine(
-            &target,
-            confirm_data_loss,
-            crate::cluster::Remover::Cloud,
-        ))
-        .await
     }
 
     /// Drain `machine` within `scope`: turn its services role off, retire its chosen

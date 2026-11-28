@@ -59,7 +59,7 @@ Adding Servers (pasted line, SSH, standalone, Fleet Tokens and the waiting list)
 ### SRV-07 Trust the key on an install line, and replace it only at the Server's terminal
 - **Surface:** CLI
 - **Reach:** on the Server: `sudo ployz key add pk1_…`; a second install line with a different `--key` on a Server that already has a first key
-- **Proof:** `/var/lib/ployz-first-key.json` holds the key; a different key asks for the new key's code at the terminal and never takes it from `--yes` or the environment; with no terminal (or `--json`) it changes nothing and prints `sudo ployz key add pk1_…`; after `ployz server rm` or `ployz-uninstall` the file reads `"state":"spent"`
+- **Proof:** `/var/lib/ployz-first-key.json` holds the key; a different key asks for the new key's code at the terminal and never takes it from `--yes` or the environment; with no terminal (or `--json`) it changes nothing and prints `sudo ployz key add pk1_…`; after `ployz-uninstall` the file reads `"state":"spent"`
 - **Needs:** 1 Machine (`--bare`) · Volumes: none · Cloud: local Cloud
 - **Drive:** verify-server
 - **Compat:** install line→CLI: a 0.3.x `ployz` doesn't know `--key`
@@ -482,16 +482,16 @@ Adding Servers (pasted line, SSH, standalone, Fleet Tokens and the waiting list)
 ### SRV-54 Remove a server from the dashboard
 - **Surface:** dashboard
 - **Reach:** server page → **Danger** → **Remove server** → type name → **Remove**
-- **Proof:** dialog lists each Volume as `pg-data` in `shop/production` or **Anonymous volume**; while Services run it shows their count next to **Drain**; after removal the Server leaves the list; `sudo ployz status` on it says `this server = Not in a Cluster`; volume data stays in `zfs list`; an old intermediate Server stops it with `Server removal needs a newer Ployz on web-1`
+- **Proof:** dialog lists each Volume only that Server holds as `pg-data` in `shop/production` or **Anonymous volume**; while Services run it shows their count next to **Drain**; after removal the Server leaves the list and its containers keep running untouched; for the last Server the toast says it still runs its containers and names `sudo ployz-uninstall`; an old intermediate Server stops it with `Server removal needs a newer Ployz on web-1`
 - **Needs:** 2 Machines · Volumes: Managed (ZFS) · Cloud: local Cloud
 - **Drive:** verify-dashboard SERVERS=2; verify-member-removal
 - **Compat:** Cloud→Server
 - **Docs:** servers/manage-servers.md#remove-a-server
 
-### SRV-55 Remove and reset a server from the CLI
+### SRV-55 Remove a server from the CLI
 - **Surface:** CLI
 - **Reach:** `ployz server rm web-2 [--confirm web-2] [--accept-volume-loss <name>] [--json]`; MCP `server_remove` is SRV-76
-- **Proof:** warns which Services a drain could still move and prints the drain command; after removal warns of Services with no replicas and prints `ployz deploy`; `--json` lists `under_replicated`, `no_copies`, `departed` (`reset|unreachable|already_forgotten`), `cloud_kept`; outside a terminal without `--confirm` fails `confirmation_required` naming volumes; only from an approved device or over SSH; through Cloud it asks yes/no first; `ployz ps` meanwhile warns `machine-2 was removed while this ran; its rows are missing.` and exits 3
+- **Proof:** warns which Services a drain could still move and prints the drain command; after removal warns of Services with no replicas and prints `ployz deploy`; the Server is never reached and keeps running its containers, and for the last Server `still_running` is true; `--json` lists `under_replicated`, `no_copies`, `cloud_kept`; outside a terminal without `--confirm` fails `confirmation_required` naming the volumes only that Server holds; a Server that doesn't answer needs `--confirm dead`; only from an approved device or over SSH; through Cloud it asks yes/no first; `ployz ps` meanwhile warns `machine-2 was removed while this ran; its rows are missing.` and exits 3
 - **Needs:** 2 Machines · Volumes: Managed (ZFS) · Cloud: no (Standalone) and local Cloud
 - **Drive:** verify-server; verify-member-removal
 - **Compat:** CLI→daemon, CLI→Cloud: removal through a Server older than 0.3.4 names the Server's ID instead
@@ -509,19 +509,19 @@ Adding Servers (pasted line, SSH, standalone, Fleet Tokens and the waiting list)
 ### SRV-57 Forget a dead server from the CLI
 - **Surface:** CLI
 - **Reach:** `ployz server forget web-2 --confirm dead [--json]`; also MCP `server_forget`
-- **Proof:** prints `Forgot Server web-2.`; offline takes seconds, up-but-silent about 12 minutes with a progress line each minute; a Server that answers and holds a Volume copy is refused (use `server rm`); `--confirm not-this` on a silent Server asks for `dead`; prints the forgotten-Server warning each time
+- **Proof:** prints `Forgot Server web-2.`; offline takes seconds, up-but-silent about 12 minutes with a progress line each minute; a Server that answers is forgotten too, its sole-copy Volumes confirmed with `--accept-volume-loss`; `--confirm not-this` on a silent Server asks for `dead`
 - **Needs:** 2 Machines (one powered off, or management ports dropped per verify-server "Running but unreachable to forget") · Volumes: Managed (ZFS) · Cloud: local Cloud and Standalone
 - **Drive:** verify-server; verify-member-removal
 - **Compat:** CLI→Cloud, Server↔Server: a forgotten Server on 0.3.9 or earlier can put itself back on the list
 - **Docs:** servers/manage-servers.md#forget-a-server-that-is-gone
 
-### SRV-58 A forgotten server stops its services and stays out
+### SRV-58 A forgotten server stays out
 - **Surface:** daemon
 - **Reach:** forget a running Server cut off by `partition on`, then `partition off`; or rerun `ployz server add` for it
-- **Proof:** within about a minute (15 minutes after its network returns) `journalctl -u ployz` on it says `this Machine was forgotten by its Cluster` and its containers stop while `zfs list` keeps every copy; the other Servers refuse it as member or WireGuard peer; a plain re-add is refused and the token can't add it again
+- **Proof:** it keeps running its containers; the other Servers refuse it as member or WireGuard peer; a plain re-add is refused and the token can't add it again
 - **Needs:** 3 Machines · Volumes: Managed (ZFS) · Cloud: no (Standalone) or local Cloud
 - **Drive:** verify-server (`partition on/off`); verify-member-removal
-- **Compat:** Server↔Server: needs 0.3.1+ on both sides, 0.3.10+ for the running-but-unreachable case, 0.3.17+ for a Server forgotten mid-join
+- **Compat:** Server↔Server: 0.3.17+ for a Server forgotten mid-join
 - **Docs:** servers/manage-servers.md#forget-a-server-that-is-gone
 
 ### SRV-59 Add a removed or forgotten server back with a reset
