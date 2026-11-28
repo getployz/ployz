@@ -343,8 +343,9 @@ fn runtime_health_rank(runtime: &ContainerRuntimeObservation) -> u8 {
     }
 }
 
-/// Restart the addressed Environment's Services. Every Container is started again
-/// even when stopping one failed, so a failed restart never leaves a Service down.
+/// Restart the addressed Environment's Services one Container at a time. A Container is
+/// started again even when stopping it failed, and the first one that does not come back
+/// ends the restart, so the Containers not yet restarted keep serving.
 pub(super) fn restart(root: &ArgMatches) -> Result<(), Error> {
     lifecycle(root, Lifecycle::Restart)
 }
@@ -398,7 +399,8 @@ fn lifecycle(root: &ArgMatches, action: Lifecycle) -> Result<(), Error> {
             let observed = live.services();
             let services = select_services(&observed, &selectors)?;
             // A restart rolls: each Container is stopped, then started and serving, before the next one stops,
-            // so a Service with more than one replica keeps serving throughout.
+            // and it stops at the first that does not come back, so a Service with more than one replica keeps
+            // serving throughout.
             let rolling: Vec<ServiceObservation> = if action == Lifecycle::Restart {
                 services
                     .iter()
@@ -443,8 +445,30 @@ fn lifecycle(root: &ArgMatches, action: Lifecycle) -> Result<(), Error> {
                 }
             })
             .await?;
+            let untouched: Vec<UntouchedContainer> = rolling
+                .iter()
+                .skip(rolling.len().saturating_sub(outcome.untouched))
+                .flat_map(|one| {
+                    one.containers.iter().map(|container| UntouchedContainer {
+                        service: one.identity.clone(),
+                        machine_id: container.as_observation().machine_id,
+                        container_id: container.as_observation().container_id,
+                    })
+                })
+                .collect();
+            if !untouched.is_empty() {
+                let rest = untouched
+                    .iter()
+                    .map(|left| format!("{} on {}", left.service, server(&names, &left.machine_id)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                crate::ui::warn(format!(
+                    "Stopped the restart. The rest are untouched: {rest}."
+                ));
+            }
             crate::ui::emit(&ServiceActionResult {
                 next: outcome.finish().is_err().then_some(hint.as_str()),
+                untouched: &untouched,
                 ..outcome.result(&live)
             })?;
             outcome.finish()
@@ -452,8 +476,9 @@ fn lifecycle(root: &ArgMatches, action: Lifecycle) -> Result<(), Error> {
     })
 }
 
-/// Run the action on each batch in turn. A run `cancellation` cut short ends as
-/// cancelled.
+/// Run the action on each batch in turn. The first batch with a Container the action
+/// failed on ends the run, and the batches after it count as untouched. A run
+/// `cancellation` cut short ends as cancelled.
 async fn run_batches<'a, B, F, Fut>(
     batches: &'a [B],
     cancellation: &CancellationToken,
@@ -468,13 +493,18 @@ where
         container_failures: Vec::new(),
         partial: false,
         interrupted: false,
+        untouched: 0,
     };
-    for services in batches {
+    for (ran, services) in batches.iter().enumerate() {
         if cancellation.is_cancelled() {
             outcome.partial = true;
             break;
         }
         outcome = outcome.then(step(services).await?);
+        if !outcome.container_failures.is_empty() {
+            outcome.untouched = batches.len() - ran - 1;
+            break;
+        }
     }
     outcome.interrupted = cancellation.is_cancelled();
     Ok(outcome)
@@ -488,6 +518,15 @@ struct ServiceActionOutcome {
     partial: bool,
     /// Ctrl-C ended the command.
     interrupted: bool,
+    /// Batches left unrun because an earlier one failed a Container.
+    untouched: usize,
+}
+
+#[derive(Serialize)]
+struct UntouchedContainer {
+    service: QualifiedService,
+    machine_id: MachineId,
+    container_id: ContainerId,
 }
 
 #[derive(Serialize)]
@@ -511,6 +550,8 @@ struct ServiceActionResult<'a> {
     containers: &'a [ChangedContainer],
     /// Containers the action failed on.
     container_failures: &'a [ContainerFailure],
+    /// Containers a restart left as they were after an earlier one did not come back.
+    untouched: &'a [UntouchedContainer],
     /// Machines whose Live Observation failed before the action.
     failures: &'a [MachineFailure<RpcError>],
     omitted: &'a [MachineId],
@@ -523,6 +564,7 @@ impl ServiceActionOutcome {
         ServiceActionResult {
             containers: &self.containers,
             container_failures: &self.container_failures,
+            untouched: &[],
             failures: &live.containers.failures,
             omitted: &live.containers.omissions,
             next: None,
@@ -642,6 +684,7 @@ async fn apply_service_action(
         container_failures,
         partial,
         interrupted: false,
+        untouched: 0,
     })
 }
 
