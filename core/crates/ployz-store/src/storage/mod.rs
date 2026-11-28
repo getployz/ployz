@@ -397,6 +397,10 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0060_github_stop",
         Step::Sql(include_str!("migrations/0060_github_stop.sql")),
     ),
+    (
+        "0061_on_merge_gone",
+        Step::Sql(include_str!("migrations/0061_on_merge_gone.sql")),
+    ),
 ];
 
 enum Step {

@@ -2,7 +2,6 @@ import "@tanstack/react-start/server-only";
 import type { ConfigWritten, EnvironmentSummary, PullRequestView, SystemEvent } from "@ployz/sdk";
 import { and, eq, inArray } from "drizzle-orm";
 import { Effect, Option } from "effect";
-import { type Guarded, storePrCheckRun } from "./store-pull-requests";
 import { admittedEvents, callStore, storeSystem } from "#/modules/config-store/config-store.server";
 import { closeUnheldPreviews } from "#/modules/config-store/preview-evidence.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
@@ -20,12 +19,10 @@ import { organization } from "#/modules/organization/tables";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 
-/** What an observation left Cloud to do: runs to dispatch, Environments to take off the Servers, a check to publish. */
+/** What an observation left Cloud to do: runs to dispatch, and Environments whose removal is due to take off the Servers. */
 export type StoreOutcome = {
   deployments: ConfigDeploymentAdmittedEventData[];
-  /** `shutDown`: an idle PR Environment that comes off the Servers and stays; else a due removal. */
-  closing: { organizationId: string; environment: EnvironmentSummary; shutDown?: true }[];
-  check: boolean;
+  closing: { organizationId: string; environment: EnvironmentSummary }[];
 };
 
 /** Gather what `written` left Cloud to do into `into`; an Environment the Store skipped is logged. */
@@ -35,8 +32,6 @@ const collect = Effect.fn("StorePullRequest.collect")(function* (
   if (written.written !== "automated") return;
   into.deployments.push(...admittedEvents(organizationId, written, trigger));
   into.closing.push(...written.closing.map((environment) => ({ organizationId, environment })));
-  into.closing.push(...written.shutting_down.map((environment) => ({ organizationId, environment, shutDown: true as const })));
-  into.check ||= written.checks.length > 0;
   for (const skipped of written.skipped) {
     yield* Effect.logWarning("The Config Store skipped an Environment.", { organizationId, ...skipped });
   }
@@ -48,7 +43,7 @@ const collect = Effect.fn("StorePullRequest.collect")(function* (
  * closed one. The Store makes, retracks and closes PR Environments.
  */
 export const observeStorePullRequest = Effect.fn("StorePullRequest.observe")(function* (payload: GithubPullRequestReceivedEventData) {
-  const done: StoreOutcome = { deployments: [], closing: [], check: false };
+  const done: StoreOutcome = { deployments: [], closing: [] };
   const organizations = yield* listLinkedOrganizationIds(payload.installationId);
   if (organizations.length === 0) return done;
   const access = installationAccess(payload.installationId);
@@ -70,7 +65,7 @@ export const observeStorePullRequest = Effect.fn("StorePullRequest.observe")(fun
 export const sweepStores = Effect.fn("StorePullRequest.sweep")(function* (now: Date) {
   const { drizzle } = yield* Database;
   const organizations = yield* drizzle.select({ id: organization.id }).from(organization);
-  const done: StoreOutcome = { deployments: [], closing: [], check: false };
+  const done: StoreOutcome = { deployments: [], closing: [] };
   for (const { id } of organizations) {
     yield* sweepStore(id, now, done).pipe(
       // One Organization's Store failing never holds back the others; the next sweep retries it.
@@ -82,7 +77,7 @@ export const sweepStores = Effect.fn("StorePullRequest.sweep")(function* (now: D
 
 /** Sweep one Organization's Store now, gathering what it left Cloud to do into `done`. */
 export const sweepStore = Effect.fn("StorePullRequest.sweepOne")(function* (
-  organizationId: string, now: Date, done: StoreOutcome = { deployments: [], closing: [], check: false },
+  organizationId: string, now: Date, done: StoreOutcome = { deployments: [], closing: [] },
 ) {
   const event: SystemEvent = { event: "sweep", now: Math.floor(now.getTime() / 1000) };
   yield* collect(organizationId, yield* storeSystem(organizationId, event), done, "user");
@@ -94,19 +89,18 @@ export const sweepStore = Effect.fn("StorePullRequest.sweepOne")(function* (
 });
 
 /**
- * Take each Environment whose removal is due, or idle PR Environment that shuts down, off the Servers, admitted like any Deployment (and so handed to the
+ * Take each Environment whose removal is due off the Servers, admitted like any Deployment (and so handed to the
  * worker). Consent was given when the removal was asked for, so admitting asks for nothing more. Resolves to the
  * removals admitted. One that can't be admitted now (a Deployment still running, Servers not answering) waits for the
  * next sweep.
  */
 export const closeStoreEnvironments = Effect.fn("StorePullRequest.close")(function* (closing: StoreOutcome["closing"]) {
   const removals: string[] = [];
-  for (const { organizationId, environment: summary, shutDown } of closing) {
+  for (const { organizationId, environment: summary } of closing) {
     const environment = { project: summary.project, environment: summary.name };
-    const admit = shutDown ? "shut_down" as const : "remove" as const;
     const admitted = yield* callStore(organizationId, null, {
       operation: "write",
-      command: { command: "admit", admit, id: crypto.randomUUID(), environment },
+      command: { command: "admit", admit: "remove", id: crypto.randomUUID(), environment },
     }).pipe(Effect.option);
     const result = Option.getOrUndefined(admitted);
     if (result?.ok && result.value.written === "deployment") removals.push(result.value.id);
@@ -137,27 +131,19 @@ export const publishRequestedStorePrCheck = Effect.fn("StorePullRequest.publishR
 
 /**
  * Publish what Ployz says on the pull request, from the Store's views as they are now: its one comment, which offers a
- * preview or opens the live one, and, when `check` asks for it, its "Ployz · ready to merge" check. Nothing is
- * commented when no Store lists a preview, and nothing checked when no Store has a word (no PR Environments, closed
- * unmerged, or everything landed), or for an installation without Checks: write. An installation without Pull
- * requests: write gets the comment's link in the check instead (`previewInCheck`).
+ * preview or opens the live one. Nothing is said when no Store lists a preview. An installation without Pull requests:
+ * write gets the comment's link in a check instead (`previewInCheck`), unless it lacks Checks: write too.
  */
 export const publishStorePrCheck = Effect.fn("StorePullRequest.publishCheck")(function* (payload: {
   installationId: number; repositoryId: number; number: number;
-}, ask: { check: boolean } = { check: true }) {
+}) {
   const store = yield* cloudStore;
   const config = yield* AppConfig;
   const organizations = yield* listLinkedOrganizationIds(payload.installationId);
-  const views: { organizationId: string; view: PullRequestView; guarded: Guarded[] }[] = [];
+  const views: { organizationId: string; view: PullRequestView }[] = [];
   for (const organizationId of organizations) {
     const view = yield* storeTry(() => store.read(organizationId, { query: "pull_request", repository_id: payload.repositoryId, number: payload.number }));
-    if (!view.check && previewLinks(view).length === 0) continue;
-    const guarded: Guarded[] = [];
-    for (const { environment, destinations } of view.check ? view.environments : []) {
-      const { environments } = yield* storeTry(() => store.read(organizationId, { query: "environments", project: environment.project }));
-      guarded.push(...destinations.flatMap((into) => environments.some((each) => each.name === into.name && each.protected) ? [{ project: environment.project, environment: into.name }] : []));
-    }
-    views.push({ organizationId, view, guarded });
+    if (previewLinks(view).length > 0) views.push({ organizationId, view });
   }
   if (views.length === 0) return { check: "skipped" as const, comment: "skipped" as const };
   const { drizzle } = yield* Database;
@@ -171,15 +157,14 @@ export const publishStorePrCheck = Effect.fn("StorePullRequest.publishCheck")(fu
   }).pipe(
     Effect.as(preview.line === null ? "deleted" as const : "posted" as const),
     Effect.catchIf(githubLacksPermission, () => Effect.succeed("unpermitted" as const)),
-    // One GitHub won't take never holds back the check; one it may take later fails the step, which tries again.
+    // One GitHub won't take is logged; one it may take later fails the step, which tries again.
     Effect.catchIf((error) => !error.retriable, (error) =>
       Effect.logWarning("The preview comment was not posted.", { payload, error }).pipe(Effect.as("failed" as const))),
   );
-  const said = storePrCheckRun(named, config.app.url.href);
   const head = named.find((each) => each.view.pull_request)?.view.pull_request?.head ?? null;
   const run = preview !== null && comment === "unpermitted"
-    ? yield* previewInCheck(payload.installationId, said, preview.calls, head)
-    : ask.check ? said : null;
+    ? yield* previewInCheck(payload.installationId, preview.calls, head)
+    : null;
   if (!run) return { check: "skipped" as const, comment };
   const check = yield* postInstallationCheckRun(access, payload.repositoryId, {
     ...run,

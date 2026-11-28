@@ -247,8 +247,6 @@ queries! {
     /// What signing a repository's preview rule takes.
     PreviewRule(crate::PreviewRuleQuery) -> crate::PreviewRuleView as *
         => crate::pull_request::preview_rule(tx, who, trusted, q);
-    /// What a PR Environment's pull request lands when it merges.
-    OnMerge(crate::OnMergeQuery) -> crate::OnMerge => crate::pull_request::on_merge(tx, who, q);
     /// The signed versions kept for one spec of a Service.
     Versions(crate::VersionsQuery) -> crate::VersionsView
         => crate::deployment::versions::versions(tx, who.organization.as_str(), q);

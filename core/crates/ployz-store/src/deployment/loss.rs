@@ -59,19 +59,6 @@ fn drops(target: &SavedEnvironmentIntent, volume: &str) -> bool {
     target.volumes.iter().all(|kept| kept.resource_id != volume)
 }
 
-/// The losses of `consent` whose Volumes `target` still removes, so consent never
-/// outlives a revision that restores its Volume.
-pub(crate) fn still_removed(
-    consent: &[VolumeLoss],
-    target: &SavedEnvironmentIntent,
-) -> Vec<VolumeLoss> {
-    consent
-        .iter()
-        .filter(|loss| drops(target, loss.volume.id.as_str()))
-        .cloned()
-        .collect()
-}
-
 /// The Docker Volume a Volume's data lives in: lowering names it `vol-{id}`, and
 /// the Servers scope that to the Namespace.
 ///

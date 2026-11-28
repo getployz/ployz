@@ -582,7 +582,7 @@ pub(crate) fn sealed(
 /// `value` for secret `row` (labelled `label`) of `receiver`, once it is one the row
 /// takes. Plain text is refused, through `sealer` for the CLI. A client-sealed value
 /// binds to the receiver's own Service, so it needs that Service there already.
-pub(crate) fn seal_secret(
+fn seal_secret(
     row: &RowId,
     label: &str,
     value: &SecretValue,

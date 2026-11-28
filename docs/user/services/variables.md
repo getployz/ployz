@@ -239,7 +239,7 @@ PIN=${{ secret(8, "0-9") }}
   parent's value, and references to it read the parent's.
 - A value stays until you change it. Deploys, History and Discard never make a new one, and
   neither does writing `${{ secret() }}` again, or setting the value it shows back.
-- [Sync](../environments/environments.md) and pull request merges never carry a generated value.
+- [Sync](../environments/environments.md) never carries a generated value.
   A new generated variable, or a new length or set of characters, arrives as `${{ secret(…) }}`,
   and the receiving environment makes its own value.
 - To make a new value, write a different `secret(…)`, or set a plain value of your own. A

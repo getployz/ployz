@@ -830,8 +830,7 @@ fn unfit(
         return Ok(None);
     };
     if !matches!(record.phase, Phase::Open { .. }) {
-        let held = on_merge::holds_open(tx, who, &open.environment)?;
-        return Ok((!held).then_some(Closed::PullRequest));
+        return Ok(Some(Closed::PullRequest));
     }
     let parent = crate::branch::rows::parent_of(tx, open.environment.as_str())?;
     let target = &record.facts.target_branch;

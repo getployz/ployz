@@ -512,11 +512,6 @@ commands! {
         needs ChangesStage
         agent none "No tool works on branches."
         => crate::branch::never_sync(tx, who, c);
-    /// Give a row of a PR Environment's On merge list the value it lands with.
-    SetMergeValue(crate::SetMergeValue) -> OnMerge(crate::OnMerge)
-        needs ChangesStage
-        agent none "No tool works on branches."
-        => crate::pull_request::set_merge_value(tx, who, c, trusted);
     /// Keep a Branch, or stop keeping it.
     KeepBranch(crate::KeepBranch) -> Branch(crate::Branched)
         needs ChangesStage
@@ -796,8 +791,6 @@ written! {
     Taken(crate::Taken),
     /// An Environment's settings marked Never sync changed.
     NeverSynced(crate::NeverSynced),
-    /// A PR Environment's On merge list after an Edit.
-    OnMerge(crate::OnMerge),
     /// The Default Environment changed: the Project's Environments after it.
     DefaultEnvironment(crate::EnvironmentsView),
     /// A Branch setup changed: the Project's Environments after it.
@@ -895,7 +888,6 @@ touched! {
     crate::Undone => |it| [Touched::Config(&it.into.id)];
     crate::Removed => |it| [Touched::Config(&it.environment.id)];
     crate::NeverSynced => |it| [Touched::Config(&it.environment.id)];
-    crate::OnMerge => |it| [Touched::Config(&it.environment.id)];
     crate::ProtectedView => |it| [Touched::Protection(&it.environment)];
 }
 

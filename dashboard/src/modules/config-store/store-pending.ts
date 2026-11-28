@@ -29,7 +29,6 @@ export type Mark =
   | { mark: "busy"; environment: EnvironmentRef; why: Busy }
   | { mark: "never_sync"; environment: EnvironmentRef; rows: readonly string[]; off: boolean }
   | { mark: "domain"; environment: EnvironmentRef; service: string; name: string | null }
-  | { mark: "merge_value"; environment: EnvironmentRef; row: string }
   | { mark: "cancel"; deployment: string }
   | { mark: "pr_plan"; project: string | null; repository: string; change: PrPlanChange };
 
@@ -77,7 +76,6 @@ export function marksOf(command: ConfigCommand | BatchCommand): Mark[] {
       return [{ mark: "domain", environment: command.environment, service: command.service, name }];
     }
     case "set_generated_domain": return [{ mark: "domain", environment: command.environment, service: command.service, name: command.domain ?? command.prefix }];
-    case "set_merge_value": return [{ mark: "merge_value", environment: command.environment, row: command.row }];
     case "cancel": return [{ mark: "cancel", deployment: command.deployment }];
     case "set_pr_plan": return [{ mark: "pr_plan", project: command.project, repository: command.repository, change: setFields(command) }];
     case "admit": return command.admit === "deploy" ? [{ mark: "busy", environment: command.environment, why: "deploying" }] : [];
@@ -173,7 +171,6 @@ const KEEPS_REVIEW = {
   take: false,
   copy_node: false,
   never_sync: false,
-  set_merge_value: false,
   keep_branch: false,
   set_build_order: false,
   name_region: false,
@@ -295,12 +292,6 @@ export type NeverSyncing = { environment: string; rows: readonly string[]; off: 
 export function useStorePendingDomains(organizationSlug: string, environment: EnvironmentRef, service: string): (string | null)[] {
   return usePendingMarks(organizationSlug).flatMap((mark) =>
     mark.mark === "domain" && mark.service === service && sameEnvironment(mark, environment) ? [mark.name] : []);
-}
-
-/** The rows a pending On merge write or Never sync names in the Environment: each shows Saving until the answer. */
-export function useStoreMergeRowsPending(organizationSlug: string, environment: EnvironmentRef): ReadonlySet<string> {
-  return new Set(usePendingMarks(organizationSlug).flatMap((mark) => !sameEnvironment(mark, environment) ? []
-    : mark.mark === "merge_value" ? [mark.row] : mark.mark === "never_sync" ? mark.rows : []));
 }
 
 /** Whether a Cancel of the Deployment is pending: it reads Cancelling until the Store answers. */

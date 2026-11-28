@@ -632,27 +632,6 @@ pub(crate) fn held_for_head(
     .collect()
 }
 
-/// `environment`'s Deployment waiting for CI of `push`, if any.
-pub(crate) fn held_by_push(
-    tx: &mut dyn Tx,
-    environment: &EnvironmentId,
-    push: &GitPush,
-) -> Result<Option<DeploymentId>, RpcError> {
-    tx.query(
-        &format!("SELECT id FROM config_deployment WHERE environment_id = ?1 AND push_repository_id = ?2 \
-         AND push_branch = ?3 AND push_head = ?4 AND status = '{WAITING_FOR_CI}'"),
-        &[
-            environment.as_str().into(),
-            push.repository_id.into(),
-            push.branch.as_str().into(),
-            push.head.as_str().into(),
-        ],
-    )?
-    .first()
-    .map(|row| row.parse(0, "identity"))
-    .transpose()
-}
-
 /// The Services a Deployment waiting for CI selected, by ID; none selects every one.
 pub(crate) fn held_services(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<String>, RpcError> {
     tx.query(

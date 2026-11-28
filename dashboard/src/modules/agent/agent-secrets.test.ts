@@ -20,7 +20,6 @@ it("refuses a value sealed in a browser wherever a command carries one", () => {
     set("web.env.TOKEN", { secret: sealed }),
     patch({ env: { TOKEN: { secret: { ...sealed, value: null } } } }),
     { command: "sync", from: preview, into: production, picks: [row], values: { [row]: sealed }, version: "1:a", id: "s", close_after: false },
-    { command: "set_merge_value", environment: preview, into: production, row, value: sealed },
     { command: "batch", environment: production, commands: [{ command: "never_sync", environment: production, rows: [row], off: false }, { command: "edit", environment: production, expect: null, changes: [{ op: "set", path: "web.env.TOKEN", value: { secret: sealed } }] }] },
   ] satisfies ConfigCommand[]) {
     expect(agentSecretRefusal(command), command.command).toEqual(SEALED);
@@ -44,8 +43,6 @@ it("passes a Keep, a Not set, a generated secret and plain values", () => {
     set("web.env.TOKEN", { secret: { generate: true } }),
     set("web.env.LOG", "info"),
     patch({ env: { LOG: "info", TOKEN: { secret: true } }, replicas: 2 }),
-    { command: "set_merge_value", environment: preview, into: production, row, value: "http://c" },
-    { command: "set_merge_value", environment: preview, into: production, row },
   ] satisfies ConfigCommand[]) {
     expect(agentSecretRefusal(command)).toBeNull();
   }

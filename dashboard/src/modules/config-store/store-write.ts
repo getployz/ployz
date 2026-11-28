@@ -64,7 +64,6 @@ const SPANS = {
   take: true,
   copy_node: true,
   never_sync: false,
-  set_merge_value: false,
   keep_branch: false,
   set_build_order: false,
   name_region: false,
@@ -118,7 +117,6 @@ function writtenRevision(written: ConfigWritten): number | null {
     case "removed":
     case "taken":
     case "never_synced":
-    case "on_merge":
     case "default_environment":
     case "branch_setup":
     case "protected":

@@ -293,7 +293,6 @@ These `ployz env` commands do what the dashboard's environment controls do. See
 | **Default environment** in **Settings → Project** | `ployz env default staging` |
 | **Keep staging** in the Sync button's ▾ menu | `ployz env keep --env staging` |
 | **Never sync** on a variable | `ployz env never-sync web.env.APP_ENV --env staging` |
-| **On merge** on a preview environment | `ployz env on-merge --env pr-142` |
 | **Branch setup** in production's **Settings → Environment** | `ployz env setup --env production --setup 'web=pnpm db:seed'` |
 | **Make it separate** on a shared service | `ployz env copy web --env staging` |
 

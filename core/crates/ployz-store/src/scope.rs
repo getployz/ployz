@@ -894,8 +894,6 @@ pub(crate) struct Checked(());
 /// already holds in another place, or one it just wrote.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Reason {
-    /// A merge landing its Working State in the Destination.
-    Landing,
     /// A publish or discard that ends the draft's proposals.
     Publish,
     /// An Inherit sealing a value in a Branch.
@@ -909,8 +907,6 @@ pub(crate) enum WorkingWrite {
     /// Skips validation, for the `Reason`. Still re-runs [`crate::variables::make_generated`]
     /// and meets the Protected fence.
     Trusted(Reason),
-    /// Only the removals `environment` records; Working State stays as it is.
-    Removed,
 }
 
 /// Write `environment` as `write` says, meeting the Protected Environment fence as
@@ -923,10 +919,9 @@ pub(crate) fn write_working(
 ) -> Result<(), RpcError> {
     match write {
         WorkingWrite::Validated(Checked(()))
-        | WorkingWrite::Trusted(Reason::Landing | Reason::Publish | Reason::Inherit) => {
+        | WorkingWrite::Trusted(Reason::Publish | Reason::Inherit) => {
             persist_working(tx, evidence, environment)
         }
-        WorkingWrite::Removed => persist_removed(tx, environment),
     }
 }
 
@@ -993,22 +988,6 @@ fn persist_working(
     )?;
     // A row the draft changed is its own now, whatever proposal brought it.
     crate::branch::release_changed(tx, environment)
-}
-
-/// Persist the removals `environment` records, leaving its Working State as it is.
-fn persist_removed(tx: &mut dyn Tx, environment: &mut Environment) -> Result<(), RpcError> {
-    let mut removed = removed_of(tx, &environment.summary.id)?;
-    removed.adopt(&environment.removed);
-    environment.removed = removed;
-    ranked::take(Lock::environment(&environment.summary.id));
-    tx.execute(
-        "UPDATE config_environment SET removed = ?1 WHERE id = ?2",
-        &[
-            json_text(&environment.removed).as_str().into(),
-            environment.summary.id.as_str().into(),
-        ],
-    )?;
-    Ok(())
 }
 
 pub(crate) struct ValidatedWorking {

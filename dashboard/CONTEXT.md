@@ -151,12 +151,8 @@ An Environment made from another, its Parent; see the core glossary. In Cloud, a
 _Avoid_: Fork, clone, preview; "branch" alone for a Git branch (always "Git branch")
 
 **PR Environment**:
-A Branch made automatically for one pull request from a Git branch of the same repository. Its Own Copies of the repository's Services run the pull request's code with one replica each, and it closes when the pull request closes. Its changes land in its Destination when the pull request merges, through its On merge list; see the core glossary. A Sync from it into any Environment stages now.
+A Branch made automatically for one pull request from a Git branch of the same repository. Its Own Copies of the repository's Services run the pull request's code with one replica each, and it closes when the pull request closes. Nothing it changed lands anywhere when the pull request merges; a Sync from it into any Environment stages now.
 _Avoid_: Preview, preview deployment, review app. Exception: the public site calls it a preview environment, the phrase its readers use.
-
-**Exclude**:
-On a PR Environment, Never sync reads Exclude: the row stays in the preview and leaves the On merge list, shown greyed with Include.
-_Avoid_: Keep here, skip, ignore
 
 **Not set**:
 A secret with no value in this Environment. Nothing blocks on it: deploys skip it and say so, and it is highlighted where it lives.

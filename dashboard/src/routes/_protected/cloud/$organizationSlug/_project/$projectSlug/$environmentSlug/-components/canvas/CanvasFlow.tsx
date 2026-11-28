@@ -43,7 +43,6 @@ import { CanvasContextMenu } from "../../../../-components/service-create/Canvas
 import { useEnvironmentRenaming } from "../StoreRenameLock";
 import { CanvasFinder } from "./CanvasFinder";
 import { SyncButton } from "../sync/SyncButton";
-import { OnMergeButton } from "../sync/OnMerge";
 import { SyncDialog } from "../sync/SyncDialog";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { useProtectedAsk } from "#/modules/config-store/use-protected-ask";
@@ -161,7 +160,6 @@ export function CanvasFlow({
       </div>
       <CanvasNodeList store={store} selectedNodeId={selectedNodeId} />
       <div ref={keepOutRef} className="pointer-events-none absolute top-4 right-4 flex items-center gap-2">
-        <Suspense fallback={null}><OnMergeButton /></Suspense>
         <SyncButton />
         <CanvasFinder nodes={findableNodes} />
         <Button

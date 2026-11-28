@@ -535,16 +535,6 @@ fn deploy(
     deployment::admitted_by_user(tx, &summary.id, trusted)?;
     deployment::versions::post(tx, &summary.id, (&admit.versions, &admit.copies))?;
     deployment::versions::recreate(tx, &summary.id, &admit.recreate)?;
-    // What merges landed and this Deploy ships no longer waits for a push.
-    let shipped = frozen.targeting.as_ref().map(|_| {
-        frozen
-            .nodes
-            .iter()
-            .filter(|node| node.service().is_some())
-            .map(TargetNode::id)
-            .collect()
-    });
-    crate::automation::shipped_landed(tx, id, &saved_intent, &shipped)?;
     Ok(summary)
 }
 

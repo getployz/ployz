@@ -24,8 +24,8 @@ pub struct LegacyCount {
     /// In Working State, the Saved head, Applied State and Node Introductions of
     /// every Environment: what a reseal converts.
     pub current: u32,
-    /// In older Saved revisions, pending arrivals and merge values: kept as they
-    /// are, and a Deploy that would apply one is refused.
+    /// In older Saved revisions and pending arrivals: kept as they are, and a Deploy
+    /// that would apply one is refused.
     pub history: u32,
 }
 
@@ -75,10 +75,7 @@ pub(crate) fn legacy_count(
     )? {
         count.history += legacy_in(&row.intent(0, "Saved revision")?);
     }
-    for (table, column) in [
-        ("config_sync_arrival", "was"),
-        ("config_merge_value", "cell"),
-    ] {
+    for (table, column) in [("config_sync_arrival", "was")] {
         for row in tx.query(
             &format!(
                 "SELECT {column} FROM {table} WHERE organization_id = ?1 AND {column} IS NOT NULL"
@@ -802,7 +799,6 @@ mod tests {
             fingerprint: "s1:was".into(),
             value: legacy(&store.sealing, "was"),
         });
-        let plain = SealedCell::Cell(Cell::Value(json!("plain")));
         store
             .storage
             .write(|tx| {
@@ -816,24 +812,6 @@ mod tests {
                         serde_json::to_string(&was).unwrap().as_str().into(),
                     ],
                 )?;
-                tx.execute(
-                    "INSERT INTO config_merge_value (environment_id, destination_id, organization_id, lineage, at, cell) \
-                     VALUES (?1, ?1, ?2, 'lineage', 'env.B', ?3)",
-                    &[
-                        environment().as_str().into(),
-                        ORGANIZATION.into(),
-                        serde_json::to_string(&was).unwrap().as_str().into(),
-                    ],
-                )?;
-                tx.execute(
-                    "INSERT INTO config_merge_value (environment_id, destination_id, organization_id, lineage, at, cell) \
-                     VALUES (?1, ?1, ?2, 'lineage', 'env.C', ?3)",
-                    &[
-                        environment().as_str().into(),
-                        ORGANIZATION.into(),
-                        serde_json::to_string(&plain).unwrap().as_str().into(),
-                    ],
-                )?;
                 Ok(())
             })
             .unwrap();
@@ -842,7 +820,7 @@ mod tests {
             store.legacy_count(&organization).unwrap(),
             LegacyCount {
                 current: 2,
-                history: 4
+                history: 3
             }
         );
 
@@ -861,7 +839,7 @@ mod tests {
             store.legacy_count(&organization).unwrap(),
             LegacyCount {
                 current: 0,
-                history: 4
+                history: 3
             }
         );
         assert!(store.legacy_organizations().unwrap().is_empty());

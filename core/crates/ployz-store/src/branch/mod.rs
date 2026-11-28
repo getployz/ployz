@@ -37,9 +37,7 @@ pub use sync::{
     Mark, SecretRow, SyncChange, SyncChanges, SyncQuery, SyncRow, SyncView, Synced, UndoSync,
     Undone,
 };
-pub(crate) use sync::{
-    admit_secret_text, seal_secret, sealing_targets, sync, sync_view, take, undo,
-};
+pub(crate) use sync::{admit_secret_text, sealing_targets, sync, sync_view, take, undo};
 
 use std::collections::{BTreeMap, BTreeSet};
 

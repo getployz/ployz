@@ -25,12 +25,10 @@ use crate::build::BuildStatus;
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary, GitPush};
 use crate::error;
 use crate::id::{DeploymentId, EnvironmentId, Hostname, OrganizationId, ServiceLineageId};
-use crate::merge_deploy;
 use crate::policy::{self, is_repository_path};
-use crate::pull_request::on_merge::{MergedServices, Merging};
 use crate::review;
 use crate::scope::{self, EnvironmentSummary};
-use crate::storage::{Row, Tx, json_text, name_of};
+use crate::storage::{Tx, name_of};
 use crate::volume::size::VolumeResized;
 use crate::{Actor, Trusted, build};
 
@@ -146,10 +144,6 @@ pub struct Automated {
     /// Branches whose removal is due: Cloud admits it from the Servers under the
     /// mark (`Admit { remove }`).
     pub closing: Vec<EnvironmentSummary>,
-    /// Idle PR Environments that hold something for their merge, still on the
-    /// Servers: Cloud takes each off and keeps it (`Admit { shut_down }`).
-    #[serde(default)]
-    pub shutting_down: Vec<EnvironmentSummary>,
     /// Environments deleted: nothing of them runs on the Servers any more.
     pub removed: Vec<EnvironmentSummary>,
     /// Pull requests whose GitHub check Cloud publishes again.
@@ -306,7 +300,6 @@ fn branch_head(
     scope::lock_all(tx, environments.iter().cloned())?;
     // A Deployment still waiting for an older head's CI never ships now.
     deployment::supersede_held(tx, who, (repository_id, branch), Some(head))?;
-    remember(tx, who, repository_id, branch, head)?;
     // The first head seen deploys every Service that follows the branch.
     let changed = event.base.as_ref().and(event.changed.as_deref());
     let mut automated = Automated::default();
@@ -390,54 +383,6 @@ enum Select<'a> {
     Held(&'a DeploymentId),
 }
 
-/// How many of a branch's latest heads the Store remembers.
-const RECENT: usize = 50;
-
-fn remember(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    repository_id: RepositoryId,
-    branch: &BranchName,
-    head: &CommitSha,
-) -> Result<(), RpcError> {
-    let mut heads = recent(tx, who, repository_id, branch)?;
-    heads.retain(|seen| seen != head);
-    heads.push(head.clone());
-    let drop = heads.len().saturating_sub(RECENT);
-    heads.drain(..drop);
-    tx.execute(
-        "UPDATE config_branch SET recent = ?4 \
-         WHERE organization_id = ?1 AND repository_id = ?2 AND branch = ?3",
-        &[
-            who.organization.as_str().into(),
-            repository_id.into(),
-            branch.as_str().into(),
-            json_text(&heads).as_str().into(),
-        ],
-    )?;
-    Ok(())
-}
-
-/// The branch's recent heads, oldest first.
-fn recent(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    repository_id: RepositoryId,
-    branch: &BranchName,
-) -> Result<Vec<CommitSha>, RpcError> {
-    tx.query(
-        "SELECT recent FROM config_branch \
-         WHERE organization_id = ?1 AND repository_id = ?2 AND branch = ?3",
-        &[
-            who.organization.as_str().into(),
-            repository_id.into(),
-            branch.as_str().into(),
-        ],
-    )?
-    .first()
-    .map_or_else(|| Ok(Vec::new()), |row| row.json(0, "recent heads"))
-}
-
 /// Deploy `environment`'s Services the push selects, hold them for CI, or skip it.
 /// A Deployment waiting for CI that can't deploy once it passed is cancelled, saying
 /// why.
@@ -515,108 +460,10 @@ pub(crate) fn deploy_head(
     )
 }
 
-/// Deploy what a merge at `commit` into `branch` changed and removed in
-/// `environment`, `services`: now when the branch's head is or came after `commit`,
-/// else with the push that carries `commit`. Kept until a Deployment takes them.
-pub(crate) fn deploy_landed(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    environment: &EnvironmentId,
-    repository_id: RepositoryId,
-    merge: &Merging<'_>,
-    mut pending: MergedServices,
-    automated: &mut Automated,
-) -> Result<(), RpcError> {
-    let (branch, commit) = (merge.target, merge.commit);
-    let landed = merge_deploy::Landed {
-        environment,
-        repository_id,
-        branch: branch.as_str(),
-        commit: commit.as_str(),
-    };
-    if let Some(row) = merge_deploy::get(tx, landed)? {
-        pending.extend(merged_services(&row)?);
-    }
-    merge_deploy::put(
-        tx,
-        who.organization.as_str(),
-        landed,
-        &json_text(&pending.updates),
-        &json_text(&pending.removals),
-    )?;
-    let Some(head) = head(tx, &who.organization, repository_id, branch)? else {
-        return Ok(());
-    };
-    let recent = recent(tx, who, repository_id, branch)?;
-    let reached = |at: &CommitSha| *at == head || recent.contains(at);
-    // A push that skipped past the merge commit reached it all the same, when GitHub
-    // says the head Cloud read with the merge contains it.
-    if !reached(commit) && !merge.target_head.is_some_and(reached) {
-        return Ok(());
-    }
-    let push = GitPush {
-        repository_id,
-        branch: branch.clone(),
-        head,
-    };
-    // What still waits for this head's CI keeps waiting with it; else no path changed,
-    // so only what the merges landed deploys.
-    let held = deployment::held_by_push(tx, environment, &push)?;
-    let select = match &held {
-        Some(held) => Select::Held(held),
-        None => Select::Changed(Some(&[])),
-    };
-    deploy(
-        tx,
-        who,
-        environment,
-        &push,
-        select,
-        merge.trusted,
-        automated,
-    )
-}
-
-/// The Service IDs a merge Deploy row holds: `services`, then `removed_services`.
-fn merged_services(row: &Row) -> Result<MergedServices, RpcError> {
-    Ok(MergedServices {
-        updates: row.json(0, "merge deploy")?,
-        removals: row.json(1, "merge deploy")?,
-    })
-}
-
-/// What merges into the branch of `push` landed in `environment` that no Deployment
-/// took yet and `push` carries: their merge commits, and the Services they changed
-/// and removed. A head that is one of those commits carries it and the merges before
-/// it; any other head all.
-fn landed(
-    tx: &mut dyn Tx,
-    environment: &EnvironmentId,
-    push: &GitPush,
-) -> Result<(Vec<String>, MergedServices), RpcError> {
-    let rows = merge_deploy::on_branch(tx, environment, push.repository_id, push.branch.as_str())?;
-    let mut commits = rows
-        .iter()
-        .map(|row| row.text(2).map(str::to_owned))
-        .collect::<Result<Vec<_>, _>>()?;
-    if let Some(at) = commits
-        .iter()
-        .position(|commit| commit == push.head.as_str())
-    {
-        commits.truncate(at + 1);
-    }
-    let mut services = MergedServices::default();
-    for row in rows.iter().take(commits.len()) {
-        services.extend(merged_services(row)?);
-    }
-    Ok((commits, services))
-}
-
 /// What an automatic Deploy into one Environment came to.
 pub(crate) enum Deploy {
     Admitted(Box<DeploymentSummary>),
-    /// Nothing it would deploy: no Service it selects follows the branch, and no
-    /// merge landed.
+    /// Nothing it would deploy: no Service it selects follows the branch.
     Idle,
     /// It would deploy, but no Server could run it.
     NoServers,
@@ -716,18 +563,14 @@ fn admit(
     let Some(saved) = review::latest_saved(tx, id)? else {
         return Ok(None);
     };
-    // What a merge landed deploys whatever the Service follows: its config changed.
-    let (merges, landed) = landed(tx, id, push)?;
     let mut selected: Vec<(&SavedServiceIntent, bool)> = Vec::new();
     let mut wait = false;
     for service in &saved.intent.services {
-        let tracks = crate::git::tracks(service, push.repository_id, &push.branch);
-        let merged = landed.updates.contains(&service.id);
-        if !tracks && !merged {
+        if !crate::git::tracks(service, push.repository_id, &push.branch) {
             continue;
         }
         let policy = policy::load(tx, id, &service.id)?;
-        let follows = tracks && policy.auto_deploy;
+        let follows = policy.auto_deploy;
         let pushed = follows
             && match (select, &held) {
                 (Select::Changed(changed), _) => {
@@ -740,18 +583,18 @@ fn admit(
                 }
                 (Select::Held(_), None) => false,
             };
-        if pushed || merged {
-            wait |= tracks && policy.wait_for_ci;
+        if pushed {
+            wait |= policy.wait_for_ci;
             selected.push((service, follows));
         }
     }
     let plan = match shut_down {
         true => Plan::ShutDown,
         false => {
-            // A push ships every Saved change, so what the merges or a Save removed goes
-            // with it, unless it never ran.
+            // A push ships every Saved change, so what a Save removed goes with it,
+            // unless it never ran.
             let head = deployment::head(tx, &environment)?;
-            let mut removed = landed.removals.clone();
+            let mut removed = BTreeSet::new();
             for service in deployment::Landing::of(&head)
                 .dropped(&saved.intent)
                 .services
@@ -761,13 +604,8 @@ fn admit(
             Plan::Push(deployment::retirements(tx, id, &saved.intent, &removed)?)
         }
     };
-    // Only what it selects or the merges removed makes a push deploy.
-    let merged_removal = plan
-        .retire()
-        .iter()
-        .any(|gone| landed.removals.contains(&gone.id));
-    if selected.is_empty() && !merged_removal {
-        forget_landed(tx, id, push, &merges)?;
+    // Only what it selects makes a push deploy.
+    if selected.is_empty() {
         return Ok(Some(Deploy::Idle));
     }
     if !crate::pull_request::admits(tx, id, (push.repository_id, &push.head), trusted)? {
@@ -880,79 +718,7 @@ fn admit(
             trusted,
         )
     })?;
-    forget_landed(tx, id, push, &merges)?;
     Ok(Some(Deploy::Admitted(Box::new(summary))))
-}
-
-/// Forget what landed merges changed in `environment` that a Deployment of Saved
-/// revision `saved` just took: each Service `saved` holds, or those `shipped` names
-/// by ID.
-pub(crate) fn shipped_landed(
-    tx: &mut dyn Tx,
-    environment: &EnvironmentId,
-    saved: &SavedEnvironmentIntent,
-    shipped: &deployment::Targeting<BTreeSet<&str>>,
-) -> Result<(), RpcError> {
-    let rows = merge_deploy::of_environment(tx, environment)?;
-    for row in &rows {
-        let mut pending = merged_services(row)?;
-        let landed = merge_deploy::Landed {
-            environment,
-            repository_id: row.number(2, "merge deploy")?,
-            branch: row.text(3)?,
-            commit: row.text(4)?,
-        };
-        let before = (pending.updates.len(), pending.removals.len());
-        match shipped {
-            // Its outcome isn't known yet, so a removal stays for the next push, which
-            // finds nothing left to tear down once this Deploy did.
-            deployment::Targeting::Full { .. } => {
-                let kept = |id: &str| saved.services.iter().any(|service| service.id == id);
-                pending.updates.retain(|service| !kept(service));
-            }
-            deployment::Targeting::Named(services) => {
-                pending
-                    .updates
-                    .retain(|service| !services.contains(service.as_str()));
-            }
-        }
-        if (pending.updates.len(), pending.removals.len()) == before {
-            continue;
-        }
-        if pending.is_empty() {
-            merge_deploy::forget(tx, landed)?;
-        } else {
-            merge_deploy::replace(
-                tx,
-                landed,
-                &json_text(&pending.updates),
-                &json_text(&pending.removals),
-            )?;
-        }
-    }
-    Ok(())
-}
-
-/// Forget the merges at `commits` into the branch of `push` that landed in
-/// `environment`: a Deployment took them, or nothing is left of them.
-fn forget_landed(
-    tx: &mut dyn Tx,
-    environment: &EnvironmentId,
-    push: &GitPush,
-    commits: &[String],
-) -> Result<(), RpcError> {
-    for commit in commits {
-        merge_deploy::forget(
-            tx,
-            merge_deploy::Landed {
-                environment,
-                repository_id: push.repository_id,
-                branch: push.branch.as_str(),
-                commit,
-            },
-        )?;
-    }
-    Ok(())
 }
 
 /// The commit Service `service` (its ID) last built in Environment `id`, under

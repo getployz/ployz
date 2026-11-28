@@ -74,8 +74,7 @@ export const createStorePullRequest = (inngest: PloyzInngest, runEffect: EffectR
     async ({ event, step }) => {
       const done = await step.run("observe-pull-request", () => runEffect(observeStorePullRequest(event.data)));
       const followed = await followUp(step, done, runEffect);
-      // Its comment speaks on every event; its check only when the Store moved it.
-      const published = await step.run("publish-check", () => runEffect(publishStorePrCheck(event.data, { check: done.check })));
+      const published = await step.run("publish-check", () => runEffect(publishStorePrCheck(event.data)));
       return { ...followed, ...published };
     },
   );
