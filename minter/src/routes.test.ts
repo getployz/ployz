@@ -322,6 +322,71 @@ describe("/v1/check", () => {
   });
 });
 
+describe("/v1/comment", () => {
+  const PULL = `${repo}/pulls/3`;
+  const COMMENTS = `${repo}/issues/3/comments`;
+  const MARKED = "<!-- ployz-preview -->\n";
+  const comment = { installation_id: INSTALLATION, repository_id: REPOSITORY, number: 3, body: "[Deploy as a preview](https://cloud.ployz.test/cloud/acme/shop/previews/42/3)" };
+  const ours = (id: number, body: string) => ({ id, body, performed_via_github_app: { id: Number(APP_ID) } });
+  const pull = { [`GET ${PULL}`]: () => json({ number: 3 }) };
+
+  it("posts the line after its marker, with a token that only writes pull requests on that repository", async () => {
+    const minter = harness({
+      ...pull,
+      [`GET ${COMMENTS}`]: () => json([{ id: 1, body: `${MARKED}spoofed`, performed_via_github_app: { id: 999 } }, { id: 2, body: "LGTM", performed_via_github_app: null }]),
+      [`POST ${COMMENTS}`]: () => json({ id: 5 }, 201),
+    });
+    expect((await minter.call("/v1/comment", comment)).body).toEqual({ comment_id: 5 });
+    expect(sent(minter.calls, "POST", COMMENTS)[0]?.body).toEqual({ body: `${MARKED}${comment.body}` });
+    expect(tokenRequests(minter.calls)[0]?.body).toEqual({ permissions: { pull_requests: "write" }, repository_ids: [REPOSITORY] });
+  });
+
+  it("edits its own comment in place, and leaves it be when it already says the same", async () => {
+    let body = `${MARKED}[Open preview](https://web.pr-3.acme.ployz.test) https://web.pr-3.acme.ployz.test`;
+    const minter = harness({
+      ...pull,
+      [`GET ${COMMENTS}`]: () => json([ours(7, body)]),
+      [`PATCH ${repo}/issues/comments/7`]: (call) => {
+        body = (call.body as { body: string }).body;
+        return json({ id: 7 });
+      },
+    });
+    expect((await minter.call("/v1/comment", comment)).body).toEqual({ comment_id: 7 });
+    expect(body).toBe(`${MARKED}${comment.body}`);
+    await minter.call("/v1/comment", comment);
+    expect(sent(minter.calls, "PATCH", `${repo}/issues/comments/7`)).toHaveLength(1);
+    expect(sent(minter.calls, "POST", COMMENTS)).toEqual([]);
+  });
+
+  it("deletes its own comment when asked for no line, and only its own", async () => {
+    const minter = harness({
+      ...pull,
+      [`GET ${COMMENTS}`]: () => json([{ id: 6, body: `${MARKED}a person quoting it`, user: { login: "ada" } }, ours(7, `${MARKED}old`)]),
+      [`DELETE ${repo}/issues/comments/7`]: () => ({ status: 204 }),
+    });
+    const { body: _, ...none } = comment;
+    expect((await minter.call("/v1/comment", none)).body).toEqual({ comment_id: null });
+    expect(minter.calls.filter((call) => call.method === "DELETE").map((call) => call.path)).toEqual([`${repo}/issues/comments/7`]);
+  });
+
+  it("refuses more than one line, so a comment can't grow into a page", async () => {
+    const minter = harness(pull);
+    expect((await minter.call("/v1/comment", { ...comment, body: "line\n\n# Heading" })).status).toBe(400);
+    expect(minter.calls).toEqual([]);
+  });
+
+  it("never comments on an issue", async () => {
+    const minter = harness({ [`GET ${COMMENTS}`]: () => json([]), [`POST ${COMMENTS}`]: () => json({ id: 5 }, 201) });
+    expect((await minter.call("/v1/comment", comment)).status).toBe(502);
+    expect(sent(minter.calls, "POST", COMMENTS)).toEqual([]);
+  });
+
+  it("passes GitHub's refusal of the permission through, so Cloud can fall back to the check", async () => {
+    const minter = harness({ "POST /app/installations/11/access_tokens": () => json({ message: "The permissions requested are not granted to this installation." }, 422) });
+    expect((await minter.call("/v1/comment", comment)).body).toEqual({ error: "github", operation: "installation_token", failure: "status", status: 422 });
+  });
+});
+
 describe("/v1/connect", () => {
   const connectRoutes: StubRoutes = {
     "POST /login/oauth/access_token": (call) => {
