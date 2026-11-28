@@ -204,17 +204,11 @@ for a containerized proxy. The default names below still apply when you leave it
    runs on: Ployz Cloud is only the dashboard, and your apps run on the servers you add. The
    command the dashboard gives you already points at your address.
 
-To install a server with a [Fleet Token](servers/add-a-server.md#install-with-a-fleet-token), use the
-install line **Add servers** or `ployz server token create` shows. Both already point at your
-address. The **Add servers** line installs the release your Ployz Cloud runs. The
-`ployz server token create` line installs the release of the `ployz` CLI that made it, so if your
-CLI and your Ployz Cloud run different releases, use the dashboard's line or upgrade the CLI
-first. To write the line yourself, add your address, or the server checks in with ployz.dev. An address that answers but isn't Ployz Cloud ends the
-install with an error:
-
-```sh
-curl -fsSL https://ployz.sh | sudo PLOYZ_CLOUD_URL=https://cloud.example.com sh -s -- VERSION --enroll
-```
+The install line from **Add server** or `ployz server add --command` already points at your
+address: it ends with `--cloud-url` and your address. The **Add server** line installs the release
+your Ployz Cloud runs. The `ployz server add --command` line installs the release of the `ployz`
+CLI that printed it, so if your CLI and your Ployz Cloud run different releases, use the
+dashboard's line or upgrade the CLI first.
 
 The CLI signs in to ployz.dev unless you point it at yours:
 
@@ -222,8 +216,8 @@ The CLI signs in to ployz.dev unless you point it at yours:
 ployz login --cloud-url https://cloud.example.com
 ```
 
-Name the Cloud alone: you sign in on its approval page. `ployz login`, `ployz server add` and
-`ployz server checkin` refuse a Cloud URL with a user name, a password, a query or a fragment,
+Name the Cloud alone: you sign in on its approval page. `ployz login` and `ployz server add`
+refuse a Cloud URL with a user name, a password, a query or a fragment,
 from `--cloud-url` or `PLOYZ_CLOUD_URL`, before they store or send anything, since Ployz would
 store the URL and print it.
 

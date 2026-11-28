@@ -12,10 +12,7 @@ import { loadNamespaceDataLoss, removeNamespace } from "#/modules/machines/names
 import { requestServerDrain } from "#/modules/machines/server-drain.server";
 import { planKeyedServerPolicyChange, requestServerPolicyChange } from "#/modules/machines/server-policy.server";
 import { requestServerWebTraffic } from "#/modules/machines/server-web-traffic.server";
-import { cancelServerEnrollment, startServerEnrollment } from "#/modules/machines/waiting/enroll.server";
-import { createFleetToken, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
-import { openProbeSelection } from "#/modules/machines/waiting/probe.server";
-import { rejectWaitingServers } from "#/modules/machines/waiting/reject.server";
+import { mintMachineEnrollment } from "#/modules/machines/enrollment.server";
 import { SupportStaff, supportStaffOf } from "#/modules/organization/access.server";
 import { forgetServerFromDashboard } from "#/modules/operations/operations.server";
 import { provideServerAccess } from "#/modules/machines/server-access.server";
@@ -68,13 +65,7 @@ const gates: ReadonlyArray<readonly [string, Gated, string | RegExp, ReadonlyArr
   ["loadMachineDataLoss", (actor) => loadMachineDataLoss(actor, at) as never, "Error: Service not found: ployz/OrganizationRuntime", []],
   ["enqueueMachineRemove", (actor) => enqueueMachineRemove(actor, at) as never, "Error: Service not found: ployz/OrganizationRuntime", []],
   ["forgetServerFromDashboard", (actor) => forgetServerFromDashboard(caller(actor.userId), MACHINE as never, "forget") as never, "Error: Service not found: ployz/OrganizationRuntime", []],
-  ["createFleetToken", (actor) => createFleetToken(actor, { organizationSlug: SLUG, name: null, expiresIn: "1d", autoEnroll: null }, () => "lab-token") as never, /^\{"token":"pflt_[\w-]+","id":"[0-9a-f-]{36}","name":"lab-token","expiresAt":"[^"]+"\}$/, []],
-  ["revokeFleetToken", (actor) => revokeFleetToken(actor, { organizationSlug: SLUG, id: MISSING }) as never, "NotFound: No such Fleet Token.", []],
-  ["openProbeSelection", (actor) => openProbeSelection(actor, { organizationSlug: SLUG, ids: [] }) as never, '{"probing":0}', []],
-  ["rejectWaitingServers", (actor) => rejectWaitingServers(actor, { organizationSlug: SLUG, ids: [] }) as never, '{"rejected":0,"spared":[]}', []],
-  ["startServerEnrollment", (actor) =>
-    startServerEnrollment(actor, { organizationSlug: SLUG, ids: [MISSING], storage: { kind: "none" } } as never) as never, "Validation: Pick the first server: it sets up the cluster the rest join.", []],
-  ["cancelServerEnrollment", (actor) => cancelServerEnrollment(actor, { organizationSlug: SLUG, id: MISSING }) as never, "NotFound: No such enrollment.", []],
+  ["mintMachineEnrollment", (actor) => mintMachineEnrollment(actor, { organizationSlug: SLUG, ingressClosed: false }) as never, /^\{"token":"pmet_[\w-]+","expiresAt":"[^"]+","ingressClosed":false\}$/, []],
   ["deleteCopy", (actor) =>
     deleteCopy(actor, { organizationSlug: SLUG, volumeId: "v", environment: { project: "shop", environment: "production" }, server: MACHINE, copy: null }).pipe(
       Effect.provideService(OrganizationRuntime, silentCluster)) as never, JSON.stringify({ ok: false, refusal: { code: "unanswered", message: "Your servers aren't answering. Try again once they are.", details: null } }), []],

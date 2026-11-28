@@ -1,27 +1,15 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "#/components/ui/card";
 import { type ClusterNameControl, useClusterName } from "#/modules/cluster-name/cluster-name.hooks";
-import { ClusterSetup } from "#/modules/machines/waiting/ui/cluster-setup";
-import { InstallTabs } from "#/modules/machines/waiting/ui/copy-block";
-import { useMintFleetToken } from "#/modules/machines/waiting/use-waiting";
+import { InstallCommand } from "#/modules/machines/add-server/install-command";
+import { useMintInstallLine } from "#/modules/machines/add-server/use-install-line";
 
-/**
- * First run: mint a token in place, show the line once, and wait for a server to check in. Once one arrives the card
- * shrinks to the line, if this visit minted it, so the user can still run it on more servers.
- */
-export function FirstRun({ organizationSlug, arrived }: { organizationSlug: string; arrived: boolean }) {
-  return <FirstRunCard organizationSlug={organizationSlug} arrived={arrived} cluster={useClusterName(organizationSlug)} />;
+/** First run: mint one Server's token in place, show its line once, and wait for the Server to found the Cluster. */
+export function FirstRun({ organizationSlug }: { organizationSlug: string }) {
+  return <FirstRunCard organizationSlug={organizationSlug} cluster={useClusterName(organizationSlug)} />;
 }
 
-export function FirstRunCard({ organizationSlug, arrived, cluster }: { organizationSlug: string; arrived: boolean; cluster: ClusterNameControl }) {
-  const mint = useMintFleetToken(organizationSlug);
-  if (arrived) {
-    return mint.data === undefined ? null : (
-      <div className="flex flex-col gap-3">
-        <InstallTabs organizationSlug={organizationSlug} target={mint.data} />
-        <p className="text-sm text-muted-foreground">Run it on more servers to add them.</p>
-      </div>
-    );
-  }
+export function FirstRunCard({ organizationSlug, cluster }: { organizationSlug: string; cluster: ClusterNameControl }) {
+  const mint = useMintInstallLine(organizationSlug);
   return (
     <Card>
       <CardHeader>
@@ -29,7 +17,7 @@ export function FirstRunCard({ organizationSlug, arrived, cluster }: { organizat
         <CardDescription>Run one command as root on any Linux server. It installs Ployz, and Docker if it's missing.</CardDescription>
       </CardHeader>
       <CardContent>
-        <ClusterSetup organizationSlug={organizationSlug} cluster={cluster} mint={mint} />
+        <InstallCommand organizationSlug={organizationSlug} cluster={cluster} mint={mint} />
       </CardContent>
     </Card>
   );

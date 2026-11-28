@@ -5,8 +5,6 @@ import { deviceRequestCliRoutes } from "#/modules/devices/device-request.cli.ser
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { tokensCliRoutes } from "#/modules/identity/tokens.cli.server";
 import { serversCliRoutes } from "#/modules/machines/servers.cli.server";
-import { enrollCliRoutes } from "#/modules/machines/waiting/enroll.cli.server";
-import { fleetTokenCliRoutes } from "#/modules/machines/waiting/fleet-token.cli.server";
 import { organizationCliRoutes } from "#/modules/organization/organization.cli.server";
 import { passkeysCliRoutes } from "#/modules/passkeys/passkeys.cli.server";
 import { proposalsCliRoutes } from "#/modules/proposals/proposals.cli.server";
@@ -21,8 +19,6 @@ import { NotFound } from "#/server/public-error";
 const CLI_ROUTES = {
   ...organizationCliRoutes,
   ...tokensCliRoutes,
-  ...fleetTokenCliRoutes,
-  ...enrollCliRoutes,
   ...serversCliRoutes,
   ...serverUpgradeCliRoutes,
   ...approvalsCliRoutes,
@@ -37,7 +33,7 @@ const CLI_ROUTES = {
 const isCliRoute = (route: string): route is keyof typeof CLI_ROUTES => Object.hasOwn(CLI_ROUTES, route);
 
 /**
- * `/api/cli/*`: the `ployz` CLI's account surface (Organizations, making and removing them, Organization Tokens, signed-in devices, Fleet Tokens, Waiting Servers and their Server Enrollments,
+ * `/api/cli/*`: the `ployz` CLI's account surface (Organizations, making and removing them, Organization Tokens, signed-in devices,
  * GitHub connections), and removing, draining, upgrading or cleaning up after a Server Cloud manages through durable runs, or forgetting deleted ones (Forget Servers), reading or deciding an approval a destructive write waits on, and following a Deploy's proposal. Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
  */
 export const cliReply = Effect.fn("Cli.handle")(function* (request: Request) {

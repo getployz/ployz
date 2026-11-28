@@ -25,6 +25,14 @@ export const CliMintMachineEnrollmentInput = Schema.Struct({
 export type CliMintMachineEnrollmentInput =
   typeof CliMintMachineEnrollmentInput.Type;
 
+export const MintMachineEnrollmentInput = Schema.Struct({
+  organizationSlug: StrictOrganizationSlug,
+  /** Cloudflare Tunnel was chosen: the first Server founds the Cluster with ports 80 and 443 closed. */
+  ingressClosed: Schema.Boolean,
+});
+
+export type MintMachineEnrollmentInput = typeof MintMachineEnrollmentInput.Type;
+
 export const ReadMachineEnrollmentInput = Schema.Struct({
   organizationId: OrganizationId,
   id: Schema.String.check(Schema.isUUID()),

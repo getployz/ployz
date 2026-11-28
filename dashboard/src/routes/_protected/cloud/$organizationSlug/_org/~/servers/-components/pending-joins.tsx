@@ -4,8 +4,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "#/components/ui/button";
 import { type OnlyPasskey, PasskeyDeclined, signWithPasskey } from "#/modules/passkeys/passkey-statement";
 import { useRoleGate } from "#/modules/organization/members.queries";
-import { approvePasskeyJoinServerFn, pendingPasskeyJoinsServerFn } from "#/modules/machines/waiting/passkey-join.functions";
-import { pendingJoinsKey, pendingJoinsQueryOptions } from "#/modules/machines/waiting/passkey-join.queries";
+import { approvePasskeyJoinServerFn, pendingPasskeyJoinsServerFn } from "#/modules/machines/add-server/passkey-join.functions";
+import { pendingJoinsKey, pendingJoinsQueryOptions } from "#/modules/machines/add-server/passkey-join.queries";
 
 /** How long a passkey's approval stays open, at most: the join's own window may end sooner. */
 const APPROVAL_WINDOW_MS = 10 * 60_000;

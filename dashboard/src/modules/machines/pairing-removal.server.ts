@@ -11,7 +11,6 @@ import {
   clusterSealingKey, clusterSealingKeyGenerator, enrollmentAllocation, machineEnrollmentToken, machineRemoveAttempt,
   organizationMachine, serverAccess,
 } from "#/modules/machines/tables";
-import { cancelOpenServerEnrollments, cancelServerEnrollments, openFounderAttempt } from "#/modules/machines/waiting/enrollment-run.server";
 import { clusterRead, OrganizationRuntime, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { managementClientCleared, Ployz } from "#/modules/runtime/ployz.server";
 import { organizationPairing } from "#/modules/runtime/tables";
@@ -41,7 +40,6 @@ const decodeEndpoints = Effect.fn("PairingRemoval.decodeEndpoints")(
 
  export const deleteEnrollmentTokens = Effect.fn("PairingRemoval.deleteEnrollmentTokens")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
-  yield* cancelOpenServerEnrollments(organizationId);
   yield* drizzle.delete(machineEnrollmentToken).where(eq(machineEnrollmentToken.organizationId, organizationId));
 });
 
@@ -52,7 +50,6 @@ const foundingClaimLive = Effect.fn("PairingRemoval.foundingClaimLive")(function
     eq(machineEnrollmentToken.organizationId, pairing.organizationId),
     eq(machineEnrollmentToken.claimedMachineId, pairing.founderClaimMachineId),
     pairing.founderPublicKey === null ? undefined : eq(machineEnrollmentToken.claimedPublicKey, pairing.founderPublicKey),
-    sql`${machineEnrollmentToken.enrollmentRole} is distinct from 'joiner'`,
     isNull(machineEnrollmentToken.joinedMachineId),
     gt(machineEnrollmentToken.expiresAt, checkedNow()),
   )).limit(1);
@@ -153,17 +150,14 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
 );
 
 /**
- * Ends an unfounded pairing's founding claim: cancels the founder's open attempt, then expires every founding token its
- * Machine claimed, so it can neither publish nor complete. Held under the enrollment lock and the pairing row.
+ * Ends an unfounded pairing's founding claim: expires every founding token its Machine claimed, so it can neither
+ * publish nor complete. Held under the enrollment lock and the pairing row.
  */
 const endFoundingClaim = Effect.fn("PairingRemoval.endFoundingClaim")(function* (pairing: Pairing) {
-  const founding = yield* openFounderAttempt(pairing.organizationId);
-  if (founding !== undefined) yield* cancelServerEnrollments(pairing.organizationId, [founding.id]);
   const { drizzle } = yield* Database;
   yield* drizzle.update(machineEnrollmentToken).set({ expiresAt: sql`now()`, updatedAt: sql`now()` }).where(and(
     eq(machineEnrollmentToken.organizationId, pairing.organizationId),
     eq(machineEnrollmentToken.claimedMachineId, pairing.founderClaimMachineId),
-    sql`${machineEnrollmentToken.enrollmentRole} is distinct from 'joiner'`,
     isNull(machineEnrollmentToken.joinedMachineId),
     gt(machineEnrollmentToken.expiresAt, checkedNow()),
   ));

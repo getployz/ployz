@@ -301,11 +301,8 @@ error: This Server's Cluster is already connected to another Organization in Plo
 
 If `ployz server add` was going to show you a recovery code, the first line is
 `Recovery code not saved. Run ployz recovery rotate now to make one.` instead, with the same cause.
-`ployz server enroll --status` shows `Failed ·` and the same text without retry advice.
 With an older Ployz Cloud, the CLI still wraps this sentence in
 `Cloud enrollment completion failed; rerun the same ployz server add command without --reset (keep all other options).`
-and `--status` still advises running `ployz server enroll` again.
-**Servers > Waiting to join** shows **Failed at Going live** over that text.
 
 An older `ployz` doesn't show Ployz Cloud's sentence. Its cause reads
 `enroll HTTP 409: enrollment completion rejected`, which it prints for other refusals too, so rerun
@@ -354,8 +351,8 @@ error: Server joined, but Global catch-up is incomplete; it remains a Cluster me
 ```
 
 The `ployz` that ran the join is older than web-1, and it can't read what web-1 runs. That's the
-new server's own `ployz` when it joined with a Fleet Token, or the computer where you ran
-`ployz server add`. Usually web-1 runs a service with a
+`ployz` where you ran `ployz server add`: the new server's own when you ran its install line
+there, or your computer's. Usually web-1 runs a service with a
 [sealed variable](../services/variables.md#seal-a-secret), and that `ployz` is 0.3.3 or earlier.
 The message ends with `restore peer connectivity and redeploy`, but your network is fine. Releases
 after 0.3.5 say `this ployz can't read web-1's answer, so update ployz on this host` instead.
@@ -402,123 +399,33 @@ services, remove it and add it back:
    it, [add a volume](../services/volumes.md#add-a-volume) at that path and copy into it instead.
 5. Once the data is safe, remove each old volume on its server with `docker volume rm NAME`.
 
-## A server waits for approval and never shows up
+## A server that waited with a Fleet Token never joins
 
-A server you started with a Fleet Token runs `ployz server checkin --install`. That installs a
-service, `ployz-checkin`, which checks in with Ployz Cloud until you approve the server, and
-prepares Docker and ZFS meanwhile.
+`ployz status` on the server, or `sudo journalctl -u ployz-checkin`, says `Token revoked. Ployz
+Cloud no longer adds Servers from a Fleet Token…`.
 
-1. Run `ployz status` on the server. The **this server** line says where it stands, and `blocked`
-   lines say what stops it.
-2. Read the loop's log with `sudo journalctl -u ployz-checkin -n 100`, and preparation's with
-   `sudo journalctl -u ployz-prepare -n 200`. A failed preparation is retried 10 minutes later,
-   up to three times. Once you've fixed the cause, `sudo ployz server checkin --install` starts it
-   again right away. Preparation that stopped mid-step on every try reads as failed. Preparation
-   still running outside `ployz-prepare` is waited on, not retried or given up. That covers a run
-   you started by hand with `ployzd install --prepare`, including a build that outlived the
-   `ployzd` you ran. It needs a `ployzd` as new as the check-in loop, and `/var/lib/ployz/prepare`
-   on ext2, ext3, ext4, XFS, Btrfs, tmpfs, overlayfs or ZFS. An older `ployzd`, another
-   filesystem such as NFS, or a lock file check-in can't read leaves it judged by `ployz-prepare`
-   alone.
-3. `Check-in stopped` means the loop isn't running, so nothing checks in and, a few minutes
-   later, Ployz Cloud shows the server Offline. `last answer` is what it saw before it stopped,
-   and `checked in` says when. `sudo systemctl status ployz-checkin` says why it stopped, and
-   `sudo ployz server checkin --install` starts it again. Run `ployz status` with `sudo`: only
-   root can tell whether the loop runs.
-4. `Can't reach Cloud` means the server can't reach Ployz Cloud over HTTPS, or something in
-   between, such as a proxy, answered instead. It keeps trying every minute.
-5. `Clock is off` means Ployz Cloud refused the check-in and the server's clock is more than 4
-   minutes away from Cloud's, close to the 5 minutes Cloud allows, so the token isn't to blame.
-   The `reason` line says by how much, and says too when Cloud refused the token itself: a token
-   refusal from a server whose clock is that far off doesn't count against the token until the
-   clock is right. Set the clock right, for example with
-   `timedatectl set-ntp true`, and the running loop checks in again within a minute. If the
-   install itself said so, it started nothing: fix the clock and run the install again.
-6. `Not Ployz Cloud` means the check-in URL reaches something that answers but isn't Ployz
-   Cloud, such as a 404 or a web page. That can be a wrong `PLOYZ_CLOUD_URL`, or a proxy or
-   firewall in between. The `reason` line names the URL. The loop tries again every minute. Point
-   the URL at your Ployz Cloud, or let the server through, and run the install again.
-7. `Held by Cloud` means Ployz Cloud answered but held the check-in back, and the `reason` line
-   gives Cloud's message. `This Fleet Token already has N waiting servers.` means the token has
-   as many waiting servers as it allows. Rejected servers count too, so rejecting them frees
-   nothing, and a server you add frees its place once Cloud's cleanup runs, at least a week after
-   it joins. Run the install again with another token, or revoke the full one: that removes its
-   waiting servers that haven't started joining and stops them checking in. Servers already
-   joining finish, and joined servers stay. Otherwise Cloud is busy, and the loop asks again when
-   Cloud says to.
-8. `Needs a newer ployz` means Ployz Cloud couldn't read this server's check-in. The loop tries
-   again every hour. Install a newer `ployz` and run `sudo ployz server checkin --install`.
-9. `Token refused` means Ployz Cloud refused the Fleet Token once. The loop asks again once a
-   minute has passed on Cloud's clock since that refusal, even across a restart, and goes on as
-   before if Cloud accepts it. A new token in the file starts over with its own two chances. A
-   refusal during the install itself ends it with an error instead, since the token was only just
-   given, and starts nothing.
-10. `Rejected`, `Token expired` or `Token revoked` are final. The running check-in loop stops,
-   deletes `/etc/ployz/fleet-token`, or the file you named with `--token-file`, if it still holds
-   the token Cloud answered, and won't start again at boot. If the answer comes during
-   `ployz server checkin --install`, the install ends with an error and keeps the file. A token Cloud refuses twice in a row, at least a minute apart by Cloud's clock, because you revoked or
-   deleted it, reads `Token revoked`. If you put a new token in the file as the loop stops, it
-   keeps it and restarts with it, unless Cloud rejected the server. Put a new Fleet Token in that file and run `sudo ployz server checkin --install`
-   again to start a new check-in attempt. A non-rejection response clears the local rejection
-   status, but Cloud can still reject the server. If the token file goes missing, the loop stops
-   the next time it starts. Preparation already under way finishes.
-11. A `blocked` line saying `ployzd ... is older than this ployz` means you upgraded `ployz` but
-   not `ployzd`. The loop keeps checking in with the older one, and Cloud shows the server as
-   blocked until you run `sudo ployz server checkin --install`. It uses the first older one that
-   answers, trying the one install chose, then PATH, then its own copy, and doesn't prepare Docker
-   or ZFS with it. `No ployzd` means there is none at all: the loop exits until the same command
-   installs one.
-12. Once you approve the server, the loop enrolls it and the **this server** line walks through
-    `Installing`, `Enrolling`, `Queued to join`, `Setting up ZFS`, `Joining` and `Publishing`,
-    the same stages Ployz Cloud shows, where `Queued to join` reads **In line**, `Setting up ZFS`
-    reads **Setting up storage** and `Publishing` reads **Going live**. `Queued to join` means
-    other servers are joining the fleet first. When
-    it reads `Joined`, the running check-in loop turns itself off and deletes
-    `/etc/ployz/fleet-token`, or the file you named with `--token-file`.
-13. `Enroll failed` means a stage failed, and the line after it names the stage and why, for
-    example `Enroll failed at enrolling: Docker is not running`. The server goes back to waiting
-    and Ployz Cloud shows the same failure. Fix the cause, then approve the server again in Ployz
-    Cloud. If Cloud enrollment publication or completion failed, run `ployz server enroll`
-    again, or use **Enroll** in **Servers > Waiting to join**. If the loop restarts mid-enroll,
-    it picks up the same attempt rather than starting a second one and keeps the last reported
-    stage. A resumed join that had committed and then fails reports the stage it had reached,
-    such as `joining`, not the step it was retrying. If the join committed but a follow-up
-    failed, the server stays Joined, the loop cleans up, and its log and status name that
-    follow-up.
-14. Rejecting a server stops enrollment at the next safe point. A package install finishes
-    before stopping at the enroll or queue step. Storage setup finishes once begun in the
-    current run. After a restart from storage setup, rejection stops enrollment at the enroll
-    or queue step. Once the daemon accepts the join and Cloud records `Joining` or
-    `Publishing`, rejection lets enrollment finish, including after a restart. Cloud keeps
-    its enrollment token valid and continues answering the attempt until it joins or fails.
-    Expiring or revoking a Fleet Token lets an open enrollment finish.
-15. If Cloud selects a spare disk, the server builds its ZFS pool on that disk.
-16. When you check ports on waiting servers, each one listens on TCP 80 and 443 and UDP 51820 for
-    at most 10 seconds, then closes them. Nothing stays listening after that. A check that arrives
-    while `ployz server checkin --install` runs makes it pause for those seconds, and it says so.
-    The server tells Cloud what it heard only after it closes the ports. One that restarts while it
-    listens tells Cloud nothing for that check, so its ports read **Unknown · server didn't
-    report**: check again. **Open** means Cloud reached the port and the server answered.
-    **Closed** means the server listened but Cloud's connection was refused, so a firewall in front
-    of it turns the port away. **Couldn't listen · port in use** means Ployz couldn't listen on that
-    port in time. Usually another program, such as a web server, already holds it. Find it with
-    `sudo ss -lntup 'sport = :80'`, stop it, and check again. If nothing holds it, a delayed
-    check-in reply or a busy server may have left too little time to listen, so check again. A
-    server running a `ployz` older than this feature leaves every port Unknown.
+Ployz Cloud no longer adds servers from a Fleet Token, so a server that was waiting with one
+won't join on its own. Its check-in service is already turned off, and `/etc/ployz/fleet-token` is
+gone.
+
+1. Get an install command for it: click **Add server** on the **Servers** page and **Get install
+   command**, or run `ployz server add --command` where you're signed in.
+2. Run the line on the server and paste the token when it asks. See
+   [Add a server](../servers/add-a-server.md).
+
+To take Ployz off the server instead, run `sudo ployz-uninstall`. It removes what's left of the
+Fleet Token install too.
 
 ## Another program holds UDP port 51820
 
-A waiting server reads **Blocked** with `UDP port 51820 is in use by avahi-daemon (pid 812).`, or
-`ployz status` lists it under `blocked`. Ployz needs that port for WireGuard between servers, and
-while another program holds it, Ployz can't start on the server: an enroll would fail waiting for
-it. See what holds it with `sudo ss -ulpn 'sport = :51820'`, then stop or restart that program.
-avahi-daemon, for one, can take the port at random and lets it go when restarted. The block
-clears on the server's next check-in.
+`sudo journalctl -u ployz -n 50` says `UDP port 51820 is in use by avahi-daemon (pid 812), so
+WireGuard can't listen`, or `by another program` when it can't tell which, and Ployz keeps
+restarting. Ployz needs that port for WireGuard between servers, so it can't start on the server
+while another program holds it.
 
-A server that's already in a Cluster, or one you added with `ployz server add`, has no check-in.
-There, Ployz keeps restarting, and `sudo journalctl -u ployz -n 50` says `UDP port 51820 is in use
-by avahi-daemon (pid 812), so WireGuard can't listen`, or `by another program` when it can't tell
-which. Free the port the same way, and Ployz starts on its next restart.
+See what holds it with `sudo ss -ulpn 'sport = :51820'`, then stop or restart that program.
+avahi-daemon, for one, can take the port at random and lets it go when restarted. Ployz starts on
+its next restart.
 
 When `ss` lists the port with no program, another WireGuard interface, such as a tunnel set up with
 `wg-quick`, probably holds it. `sudo wg show all listen-port` names the interface. Move that
@@ -604,7 +511,7 @@ No other server can join until the first one finishes.
    under **Danger**, click **Forget servers**, or run
    `ployz server forget --confirm <your organization's slug>` where you're signed in. Forget
    deletes every enrollment token of your organization, so make a new one for each server, with
-   `ployz server add --command` or **Add servers**.
+   `ployz server add --command` or **Add server**.
 3. Add a server again.
 
 If your first server did finish joining, there's no founding to reset, and the CLI says so. To
@@ -976,11 +883,12 @@ while `ployz service ls` shows the target running.
 3. Read its logs with `sudo journalctl -u ployz-dns -n 200`.
 4. If the unit is missing, run `sudo systemctl restart ployz`. Ployz recreates it.
 
-## The bottom bar shows Add a server instead of Deploy
+## The bottom bar shows Add server instead of Deploy
 
 Your organization has no server, so nothing can deploy.
 
-[Add a server with `ployz server add`](../servers/add-a-server.md#add-one-server-that-joins-right-away). Your projects and settings are kept. Once it joins,
+[Add a server](../servers/add-a-server.md): run `ployz server add --command`, or click **Add
+server** and **Get install command**. Your projects and settings are kept. Once it joins,
 **Deploy** is back and Ployz deploys your environments to it. Staged changes stay in the bottom
 bar.
 
