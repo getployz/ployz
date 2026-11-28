@@ -18,7 +18,7 @@ import { pinImageDigests } from "#/modules/runtime/ployz.server";
 import { underRule } from "#/modules/deploy-approval/deploy-tap";
 import { Database } from "#/server/database.server";
 
-/** What a Server that enforces device approval needs to check a passkey's versions. */
+/** What a Server needs to check a passkey's versions. */
 const SIGNS = ["ployz.container.signed-version.proposal.v1", "ployz.authority.scoped-keys.v1"];
 
 /** What it also needs to take an automatic deploy rule a passkey signed as a step of a bundle. */
@@ -27,8 +27,8 @@ const SIGNS_RULE = [...SIGNS, "ployz.container.deploy-rule.v1"];
 const UNREACHED = "Couldn't reach your servers. Try again.";
 
 /**
- * What a person's Deploy needs before it asks for their passkey: nothing when no Server enforces device approval or the
- * person only asks for it, else the Cluster's key, the person's passkeys every enforcing Server trusts, the digest each
+ * What a person's Deploy needs before it asks for their passkey: nothing when no Server is paired yet or the person
+ * only asks for it, else the Cluster's key, the person's passkeys every Server trusts, the digest each
  * tag the plan signs runs as, and what each mount is compared with. Any other answer is why it can't ask, in words the
  * sheet shows.
  */
@@ -199,32 +199,33 @@ const gate = Effect.fn("DeployTap.gate")(function* <E, R>(userId: string | null,
   readonly namespace: string;
   /** Read only once the gate would ask. */
   readonly parents: Effect.Effect<Readonly<Record<string, Parent>>, E, R>;
-  /** The capabilities each enforcing Server needs to check what is signed. */
+  /** The capabilities each Server needs to check what is signed. */
   readonly needs: readonly string[];
 }) {
   const refused = (message: string): DeployTap => ({ kind: "refused", message });
-  // With no Server paired nothing enforces; the first one deploys what is saved.
+  // With no Server paired nothing checks; the first one deploys what is saved.
   const paired = yield* listOrganizationServers(organizationId);
   if (paired.length === 0) return { kind: "off" } satisfies DeployTap;
   const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.orElseSucceed(() => null));
-  // A Server the frame couldn't read may enforce: its answer is unknown, not off.
+  // A Server the frame couldn't read is unknown: its key and passkeys are unread.
   if (frame === null || frame.incomplete_ids.machines.length > 0) return refused(UNREACHED);
-  // A paired Server the frame doesn't list may enforce: name it rather than read its silence as off.
+  // A paired Server the frame doesn't list is named rather than skipped.
   const seen = new Set(frame.machines.map(({ machine }) => machine.id));
   const unseen = paired.find(({ id }) => !seen.has(id));
   if (unseen !== undefined) return refused(`Couldn't reach ${unseen.name ?? unseen.id}. Try again.`);
-  const enforcing = frame.machines.map(({ machine }) => machine).filter((machine) => machine.runtime.device_enforcement === true);
-  if (enforcing.length === 0) return { kind: "off" } satisfies DeployTap;
-  const older = enforcing.find(({ runtime: { capabilities = [] } }) => asked.needs.some((needed) => !capabilities.includes(needed)));
+  const servers = frame.machines.map(({ machine }) => machine);
+  // A Server that says it doesn't enforce runs Ployz 0.3, which refuses every signed version.
+  const older = servers.find(({ runtime: { capabilities = [], device_enforcement } }) =>
+    device_enforcement === false || asked.needs.some((needed) => !capabilities.includes(needed)));
   if (older !== undefined) return refused(`Upgrade ${older.name} first. Its ployz can't check your passkey.`);
-  const keyed = enforcing.flatMap(({ id, runtime }) => runtime.sealing?.kind === "held" ? [{ id, cluster: runtime.sealing.public_key }] : [])[0];
+  const keyed = servers.flatMap(({ id, runtime }) => runtime.sealing?.kind === "held" ? [{ id, cluster: runtime.sealing.public_key }] : [])[0];
   if (keyed === undefined) return refused("Your servers didn't report the cluster's key. Try again.");
   const { cluster } = keyed;
   const [found, listed] = yield* Effect.all([trustedPasskeys(organizationId), listContainers(organizationId, asked.namespace)], { concurrency: 2 });
   const answers = found ?? [];
   if (answers.length === 0) return refused(UNREACHED);
   const lists: (typeof answers)[number]["passkeys"][] = [];
-  for (const server of enforcing) {
+  for (const server of servers) {
     const held = answers.find(({ id }) => id === server.id)?.passkeys;
     if (held === null || held === undefined) return refused(`Couldn't reach ${server.name}. Try again.`);
     lists.push(held);

@@ -1196,6 +1196,13 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
                 .because(GateReason::FirstKeySpent)
                 .next("sudo ployz key add LINE on this Server, with the key line from your install command"),
         )),
+        LocalMachineError::Store(StoreError::NoFirstKey) => Err(gated(
+            tonic::Code::PermissionDenied,
+            &error,
+            &Gate::new(ployz_core::ENROLL_MACHINE_CAPABILITY)
+                .because(GateReason::NoFirstKey)
+                .next("ployz server add --command, then run the line it prints on this Server"),
+        )),
         LocalMachineError::Store(StoreError::JoinUnanchored) => Err(gated(
             tonic::Code::PermissionDenied,
             &error,
@@ -1446,6 +1453,7 @@ fn store_error(error: StoreError) -> RpcError {
         StoreError::JoinRefused(_)
         | StoreError::NotFirstKey { .. }
         | StoreError::FirstKeySpent
+        | StoreError::NoFirstKey
         | StoreError::JoinUnanchored
         | StoreError::JoinTrustMissing { .. } => RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
         StoreError::JoinRestrictionsPending => RpcErrorCode::Conflict,

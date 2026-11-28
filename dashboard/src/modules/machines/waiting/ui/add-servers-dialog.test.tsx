@@ -16,7 +16,7 @@ const TOKEN = "pflt_test-fixture-token";
 beforeEach(() => {
   vi.spyOn(fleetTokenFunctions, "listFleetTokensServerFn").mockResolvedValue([]);
   vi.spyOn(waitingFunctions, "listWaitingServersServerFn").mockResolvedValue([]);
-  vi.spyOn(passkeyFunctions, "installKeyServerFn").mockResolvedValue({ kind: "no_passkey" });
+  vi.spyOn(passkeyFunctions, "installKeyServerFn").mockResolvedValue({ kind: "key", key: "pk1_eyJraW5kIjoicGFzc2tleSJ9", account: "ada@example.com" });
 });
 
 afterEach(() => {
@@ -87,7 +87,7 @@ it("reads a one-day token's lifetime in hours", async () => {
 
 it("shows a Shell line that installs the Cloud's own release and asks for the token beside it", async () => {
   mintWith();
-  expect(await screen.findByText("curl -fsSL https://ployz.sh | sudo sh -s -- 1.2.3 --enroll")).toBeTruthy();
+  expect(await screen.findByText("curl -fsSL https://ployz.sh | sudo sh -s -- 1.2.3 --enroll --key pk1_eyJraW5kIjoicGFzc2tleSJ9")).toBeTruthy();
   expect(screen.getByText("Paste this Fleet Token when it asks. It doesn't show what you paste.")).toBeTruthy();
   expect(screen.getByText(TOKEN)).toBeTruthy();
 });

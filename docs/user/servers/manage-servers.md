@@ -534,10 +534,10 @@ run `ployz deploy` from an approved device to move those off. A service whose vo
 server moves with its data when it can; see [Services with a volume](#services-with-a-volume).
 
 `ployz server drain` sends the same signatures, read from Ployz Cloud, even with `--connect`.
-Signed out, it changes nothing when any copy could move to a server that enforces device
-approval: such a server starts a moved copy only from a signed version, since the move brings its
-image along instead of pulling it. A drain whose copies can only go to servers that don't enforce
-it, that stay because nothing can take them, or that only removes old copies, goes ahead:
+Signed out, it changes nothing when any copy could move to another server: a server starts a
+moved copy only from a signed version, since the move brings its image along instead of pulling
+it. A drain whose copies stay because nothing can take them, or that only removes old copies,
+goes ahead:
 
 ```text
 error: Nothing drained from web-1: shop-production/api needs a device's signature to start on another server, and a signed-out ployz can't read it.
@@ -829,8 +829,7 @@ route traffic to apps on a server still on `0.3.0-beta.6` until it upgrades too
 ([#2892](https://github.com/getployz/ployz/issues/2892)). As each server restarts, its domains can
 answer `503` briefly, for about 6 seconds when the app runs on another server.
 
-A server that enforces device approval starts a container made before its upgrade only from a
-signed deploy. After you upgrade one, deploy each of its services once with a current `ployz`.
+A server starts a container made before its upgrade only from a signed deploy. After you upgrade one, deploy each of its services once with a current `ployz`.
 See [After a server upgrade, deploy each service once](../deploy/deployments.md#after-a-server-upgrade-deploy-each-service-once).
 
 ### Turn on automatic upgrades
@@ -1192,9 +1191,9 @@ reinstall it first. A server cut off from the rest when you removed it learns of
 reaches them again.
 
 If a standalone context has no Servers left, runtime commands say which context is empty
-and print `ployz server add --standalone --context NAME` as the next step. This starts a
-new standalone Cluster in that empty context without signing in to Cloud. Run it on the
-Linux server, or append `root@HOST` to install over SSH from your computer. See
+and print `ployz server add --standalone '<DESTINATION>' --context NAME` as the next step.
+This starts a new standalone Cluster in that empty context without signing in to Cloud. Run it
+from your computer with the server's SSH destination, such as `root@HOST`. See
 [Add a standalone server](add-a-server.md#add-a-standalone-server).
 
 Your other servers also forget which replicas the removed server was sending requests to, so

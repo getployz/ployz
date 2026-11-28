@@ -397,8 +397,7 @@ a person deploys from a terminal again.
 
 ### Deploy with no key
 
-On servers that enforce device approval, a deploy from a computer with no device key or
-`PLOYZ_KEY` doesn't queue unsigned. When your passkey can sign every service it leaves unsigned,
+A deploy from a computer with no device key or `PLOYZ_KEY` doesn't queue unsigned. When your passkey can sign every service it leaves unsigned,
 `ployz deploy` and `ployz up` print a link to an approval page, and so does a coding agent's
 deploy. Open it, check what it destroys and the lines your passkey signs, and tap once. The
 deploy then starts as whoever asked. See [Deploy without a key](../cli/overview.md#deploy-without-a-key)
@@ -420,30 +419,36 @@ agent's deploy that still has services to sign is refused instead.
 
 ### Upgrade servers before you sign
 
-A server on 0.4.0-beta.2 or earlier that enforces device approval reads only the older kind
-of signature, so it refuses every version a newer `ployz` signs, and every rollback or
+A server on Ployz 0.3 checks no signature, and a server on 0.4.0-beta.2 or earlier reads only
+the older kind, so each refuses every version a newer `ployz` signs, and every rollback or
 redeploy Ployz Cloud sends it. Upgrade each such server first, then update `ployz` on your
 devices. Before it signs, `ployz deploy` asks every server whether it checks signed versions,
-which a server advertises as `ployz.container.signed-version.v1`. When one that enforces
-doesn't, the deploy signs nothing and names the server to upgrade:
+which a server advertises as `ployz.container.signed-version.v1`. When one doesn't, the deploy
+signs nothing and names the server to upgrade:
 
 ```text
-error: Upgrade web-1 first: it enforces device approval with an older ployz that can't check this device's signature, so it would refuse this deploy. Nothing signed or deployed.
+error: Upgrade web-1 first: it runs an older ployz that can't check this device's signature, so it would refuse this deploy. Nothing signed or deployed.
 next: ployz server upgrade beta web-1
 ```
 
-When a server that enforces doesn't say whether it checks signed versions, and doesn't answer
-when asked, the deploy signs nothing:
+When a server doesn't say whether it checks signed versions, and doesn't answer when asked, the
+deploy signs nothing:
 
 ```text
-error: Couldn't confirm web-2 can check this device's signature: it enforces device approval and didn't answer. Nothing signed or deployed.
+error: Couldn't confirm web-2 can check this device's signature: it didn't answer. Nothing signed or deployed.
+inspect: ployz status
+```
+
+When no server answers at all, the deploy signs nothing and says so:
+
+```text
+error: Couldn't reach your servers, so this device can't sign the deploy. Nothing deployed.
 inspect: ployz status
 ```
 
 ### After a server upgrade, deploy each service once
 
-A server that enforces device approval starts a container only from a deploy an approved device
-signed. A container made before the server upgraded has no record of one, so the server won't
+A server starts a container only from a deploy an approved device signed. A container made before the server upgraded has no record of one, so the server won't
 start it again. If a service stops, or a deploy that stops the old copy first fails, the old copy
 stays stopped. The line reads `Could not restore the old Container.`, and a start from the
 dashboard is refused too: `This container was made before this server's upgrade ...`. Deploy
@@ -457,8 +462,8 @@ that hold a volume. Until then, names from before the upgrade aren't
 
 ### Deploy from the dashboard
 
-When your servers enforce device approval, **Deploy** at the bottom of an environment asks for
-your passkey once for the services a server runs only signed. A sheet lists what your passkey
+**Deploy** at the bottom of an environment asks for your passkey once for the services a
+server runs only signed. A sheet lists what your passkey
 signs for each one, with its image by digest. Ployz Cloud looks up the digest of each tag, so
 check it. **Approve with passkey** signs them all in one prompt, and the deploy starts.
 
