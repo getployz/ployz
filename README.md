@@ -5,7 +5,7 @@
 <h1 align="center">Ployz</h1>
 
 <p align="center">
-  <strong>Rent a server. Get a cloud.</strong>
+  <strong>The agent-first platform for your own servers.</strong>
   <br>
   Preview environments on servers you own. One command from a fresh server to https.
 </p>
@@ -35,9 +35,9 @@ environment. Start with one server and add more when you need them.
   lists those changes on the pull request first.
 - **Review before you deploy.** Edits from the dashboard, the CLI or an agent wait as a draft. You
   read the diff, then deploy it.
-- **The CLI does what the dashboard does.** Commands print JSON with `--json`. A change that would
-  delete a service, a volume or a domain stops until a person approves it. An agent can't approve
-  it.
+- **The CLI does what the dashboard does.** Commands print JSON with `--json`. Every deploy, stop
+  or restart your agent asks for through `ployz mcp` waits for you to approve it, and a change that
+  would delete a service, a volume or a domain asks a person first.
 - **One private network across your servers.** Add a server with `ployz server add`. Your servers
   share a WireGuard network, and a service runs up to 50 replicas across them. A service with a
   volume runs on the server that holds its data, one replica by default.
@@ -116,7 +116,8 @@ backups and automatic failover today, wait. Ployz is young and changes quickly. 
   on a schedule and keep the dumps off your servers, or keep your hosted database.
 - **No automatic failover.** If a server dies, what ran only there stops. Replicas on other
   servers keep running.
-- **No Docker Compose files.** Add each container as its own service.
+- **Docker Compose files don't run as they are.** Your coding agent reads one and adds each
+  container as its own service.
 - **Alerts are email only.** Ployz Cloud emails you when a service crashes. With Production it also
   emails you when a service goes down.
 
