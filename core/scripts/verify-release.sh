@@ -38,19 +38,10 @@ check_archive() {
     done < <(tar -tvzf "$DIST/$archive" | awk '{print $1}')
 }
 
-check_checksums_and_formula() {
+check_checksums() {
     checksum_names=$(awk '{print $2}' "$DIST/checksums.txt" | sort)
     expected_checksums=$(release_archives | sort)
     [ "$checksum_names" = "$expected_checksums" ] || fail "checksums.txt must cover CLI and daemon archives"
-
-    formula=$(find "$DIST" -name 'ployz.rb' -print -quit)
-    [ -n "$formula" ] || fail "Homebrew formula was not generated"
-    while IFS= read -r archive; do
-        grep -Fq "${archive%.tar.gz}" "$formula" || fail "Homebrew formula omits $archive"
-        checksum=$(sha256 "$DIST/$archive")
-        grep -Fq "$checksum" "$formula" || fail "Homebrew formula has no checksum for $archive"
-    done < <(release_archives ployz)
-    grep -Fq 'bin.install "ployz"' "$formula" || fail "Homebrew formula does not install ployz"
 }
 
 run_archive() {
@@ -155,7 +146,7 @@ case "${1:-}" in
     artifacts)
         # shellcheck disable=SC2046
         require_archives $(release_archives)
-        check_checksums_and_formula
+        check_checksums
         ;;
     *) fail "usage: $0 macos|linux|artifacts" ;;
 esac

@@ -1,6 +1,6 @@
 # Install (INS)
 
-Getting Ployz onto machines: the `ployz` CLI install line and Homebrew, the server install script (`core/install.sh`: version or channel argument, `--enroll`, `--key`, `PLOYZ_FLEET_TOKEN`, `PLOYZ_CLOUD_URL`, `PLOYZ_SKIP_ZFS`, the download mirrors), cloud-init user data, storage choices at install (ZFS on the main disk, a spare disk, Docker only), the host checks the installer and daemon refuse on (Docker, nftables, firewalld, UDP 51820, OS, disk), `ployz-uninstall`, and self-hosted Ployz Cloud (`dashboard/self-host/compose.yml`: configure, start, upgrade, the optional `observe` profile). Joining, enrolling and approving after the install are in [servers.md](servers.md). Verifiers start on `scripts/verify-cluster up --bare` hosts (fresh Ubuntu 24.04 Boat sandboxes, UFW on, nothing installed; `--distro debian-12` for the ZFS build path); a published install line keeps a staged `ployzd` whose version matches (`ployzd <version> retained`). Compat facts used below: `install.sh --key` breaks only when passed with a 0.3 version; `ENROLL_MIN_CLI_VERSION = 0.3.0-beta.6`; Release Channels (`v0/stable`, `v0/beta`) stay on 0.3.x, so `curl … | sh` and `sh -s -- beta` install 0.3.x until promotion; the self-host Cloud database crosses migrations 0047–0059 and a beta.3 → beta.2 rollback likely breaks on 0057.
+Getting Ployz onto machines: the `ployz` CLI install line, the server install script (`core/install.sh`: version or channel argument, `--enroll`, `--key`, `PLOYZ_FLEET_TOKEN`, `PLOYZ_CLOUD_URL`, `PLOYZ_SKIP_ZFS`, the download mirrors), cloud-init user data, storage choices at install (ZFS on the main disk, a spare disk, Docker only), the host checks the installer and daemon refuse on (Docker, nftables, firewalld, UDP 51820, OS, disk), `ployz-uninstall`, and self-hosted Ployz Cloud (`dashboard/self-host/compose.yml`: configure, start, upgrade, the optional `observe` profile). Joining, enrolling and approving after the install are in [servers.md](servers.md). Verifiers start on `scripts/verify-cluster up --bare` hosts (fresh Ubuntu 24.04 Boat sandboxes, UFW on, nothing installed; `--distro debian-12` for the ZFS build path); a published install line keeps a staged `ployzd` whose version matches (`ployzd <version> retained`). Compat facts used below: `install.sh --key` breaks only when passed with a 0.3 version; `ENROLL_MIN_CLI_VERSION = 0.3.0-beta.6`; Release Channels (`v0/stable`, `v0/beta`) stay on 0.3.x, so `curl … | sh` and `sh -s -- beta` install 0.3.x until promotion; the self-host Cloud database crosses migrations 0047–0059 and a beta.3 → beta.2 rollback likely breaks on 0057.
 
 ### INS-01 Install or upgrade the CLI with one line
 - **Surface:** install
@@ -10,15 +10,6 @@ Getting Ployz onto machines: the `ployz` CLI install line and Homebrew, the serv
 - **Drive:** verify-server `--bare`
 - **Compat:** upgrade: `stable` and `beta` resolve through `ployz.sh` channel pointers that stay on 0.3.x until promotion; releases up to 0.3.0-beta.2 are unsigned and refused
 - **Docs:** cli/overview.md#install-the-cli
-
-### INS-02 Install the CLI with Homebrew
-- **Surface:** install
-- **Reach:** `brew install getployz/ployz/ployz` (tap `getployz/homebrew-ployz`, `Formula/ployz.rb`, written by `core/scripts/homebrew-formula.sh` from `promote-release.sh`)
-- **Proof:** `ployz --version` equals the newest stable tag; the formula's sha256 for the platform archive matches `checksums.txt` of that release; a beta never reaches the tap (only the unscoped stable pointer pushes it)
-- **Needs:** 0 Machines · Volumes: none · Cloud: no (Standalone) · External: Homebrew on macOS or Linuxbrew; a published stable release
-- **Drive:** none (run on a Mac or Linuxbrew host; no verify skill covers it)
-- **Compat:** none
-- **Docs:** **undocumented**
 
 ### INS-03 Install a server with a Fleet Token at a hidden prompt
 - **Surface:** install

@@ -5,7 +5,7 @@ Two human steps. Everything else is automation.
 ```text
 1. git tag && git push     → CI creates a GitHub draft
 2. Edit Notes, click Publish
-     stable  → ployz.sh/stable, /v<major>/stable, both betas + Homebrew
+     stable  → ployz.sh/stable, /v<major>/stable, both betas
      beta    → ployz.sh/beta, /v<major>/beta
 ```
 
@@ -76,11 +76,10 @@ Staging is deployed separately.
 - Writes one-line pointer files (`v0.2.0`) on the `channels` branch: the tag's line pointer (`v0/stable` or `v0/beta`) and the unscoped one (`stable` or `beta`). A stable tag also writes both `beta` pointers.
 - A pointer only moves to a higher semver tag. Publishing an older-line fix moves that line's pointers only; an older tag moves nothing.
 - The `v0` pointers stay on the minor they hold, since 0.3 Servers and Cloud read them and can't drive 0.4. A 0.4 tag moves only the unscoped pointers, so 0.4 Servers upgrade by exact version until 0.4 has its own line pointer.
-- Only when the unscoped `stable` pointer names the published tag: regenerates `Formula/ployz.rb` from `checksums.txt` and pushes `getployz/homebrew-ployz`.
 
 Promotion runs one at a time. GitHub keeps only one waiting run, so publishing three releases in quick succession cancels the middle one's promotion: re-run any cancelled **Promote published release** run. Re-running is safe; pointers only move forward.
 
-Needs repo secret `HOMEBREW_TAP_TOKEN` (write access to the tap). Channel updates use `GITHUB_TOKEN`. Publish then dispatches `ployz.sh`, which deploys `install.sh` plus the `channels` branch files to Cloudflare Pages.
+Channel updates use `GITHUB_TOKEN`. Publish then dispatches `ployz.sh`, which deploys `install.sh` plus the `channels` branch files to Cloudflare Pages.
 
 ## Install
 
@@ -88,7 +87,6 @@ Needs repo secret `HOMEBREW_TAP_TOKEN` (write access to the tap). Channel update
 curl -fsSL https://ployz.sh | sh              # stable
 curl -fsSL https://ployz.sh | sh -s beta      # highest published release, beta or stable
 curl -fsSL https://ployz.sh | sh -s 0.2.0     # pin
-brew install getployz/ployz/ployz             # stable
 ```
 
 `stable` and `beta` are the only channels.
@@ -113,10 +111,6 @@ Needs repo secrets `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`.
 
 Apex and channel URLs must serve these bodies.
 
-## Homebrew
-
-Goreleaser does not touch the tap: the config has no Homebrew step, and the release workflow also passes `--skip=homebrew`. `scripts/promote-release.sh` writes the formula. Bottles 404 if the formula is pushed while the GitHub release is still a draft. The tap updates only when a **stable** Publish leaves the unscoped `stable` pointer on that tag.
-
 ## Machine daemon
 
 `ployzd install` on Linux installs or replaces a Machine daemon. It accepts `--version stable`, `--version beta`, or an exact version. A channel reads the daemon's own line pointer, `ployz.sh/v<major>/<channel>`, and keeps an installed daemon that is newer than the pointer; only an exact version moves a Machine backwards or across lines. Use `--software-only` for ordinary replacement after the Machine has already been prepared. Setup downloads and verifies the CLI release's daemon as a temporary bootstrap, then that daemon installs the selected Machine release through this interface.
@@ -124,7 +118,7 @@ Goreleaser does not touch the tap: the config has no Homebrew step, and the rele
 ## Management transport
 
 Each of the six archives contains a single binary, covered by `checksums.txt`;
-Homebrew, the CLI installer, and Machine installation copy one file. The iroh
+the CLI installer and Machine installation copy one file. The iroh
 management transport is in-process in the CLI, the daemon, and every native SDK
 binding, so no helper is packaged and no extra systemd unit is installed.
 

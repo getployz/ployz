@@ -10,7 +10,7 @@ Every user-visible feature of Ployz, how to reach it and what result proves it w
 | --- | --- | --- |
 | [account.md](account.md) | ACC | Sign-in, Organizations, members and roles, tokens, approvals, billing, the sandbox claim |
 | [cli-and-agents.md](cli-and-agents.md) | CLI, AGT | CLI plumbing (contexts, links, status, docs, settings catalog) and the agent surface: `ployz mcp`, remote MCP, the Agent sidebar |
-| [install.md](install.md) | INS | Install line, cloud-init, Homebrew, uninstall, self-hosted Cloud |
+| [install.md](install.md) | INS | Install line, cloud-init, uninstall, self-hosted Cloud |
 | [servers.md](servers.md) | SRV | Adding, approving, upgrading, draining, removing and recovering Servers; devices, keys and regions |
 | [services.md](services.md) | SVC | Services, settings, variables, Configs, databases, scaling, runtime control |
 | [environments.md](environments.md) | ENV | Projects, Environments, Branches, Sync, PR Environments |

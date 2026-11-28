@@ -248,7 +248,6 @@ A verifier reports each entry as PASS, ISSUES or BLOCKED with evidence, against 
 **Install paths on bare hosts.** Setup: `verify-cluster up --bare --machines 2 --daemon checkout` (and `--distro debian-12`); a published install line needs Phase A assets (soak Release phases). Drive: verify-server (Bare hosts).
 
 - [INS-01](install.md#ins-01-install-or-upgrade-the-cli-with-one-line) Install or upgrade the CLI with one line
-- [INS-02](install.md#ins-02-install-the-cli-with-homebrew) Install the CLI with Homebrew
 - [INS-03](install.md#ins-03-install-a-server-with-a-fleet-token-at-a-hidden-prompt) Install a server with a Fleet Token at a hidden prompt
 - [INS-04](install.md#ins-04-the-install-line-carries-the-key-the-server-trusts-first) The install line carries the key the server trusts first
 - [INS-05](install.md#ins-05-install-from-cloud-init-user-data) Install from cloud-init user data
